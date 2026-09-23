@@ -11,8 +11,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 libc = "0.2"
-tree-sitter = "0.27"
-tree-sitter-bash = "0.25"
+# src/syntax.rs works around how these exact versions recover from errors;
+# its tests hold it to tests/data/syntax-cases.txt, and tests/syntax_corpus.rs
+# holds that file to bash. Update the two crates together and rerun the tests.
+tree-sitter = "=0.27.0"
+tree-sitter-bash = "=0.25.1"
 unicode-width = "0.2"
 
 [dev-dependencies]
