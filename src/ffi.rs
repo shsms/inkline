@@ -171,6 +171,14 @@ pub fn variable_on(name: &CStr) -> bool {
 
 unsafe extern "C" {
     fn rl_get_termcap(cap: *const c_char) -> *mut c_char;
+    static mut _rl_echoing_p: c_int;
+}
+
+/// Whether readline draws the line being edited. It does not if the terminal's
+/// echo was off when readline set up the terminal. `read -e -s` turns echo off
+/// before readline starts, unless `-n`, `-N` or `-d` is given.
+pub fn echoing() -> bool {
+    unsafe { _rl_echoing_p != 0 }
 }
 
 /// Whether readline knows how to move the cursor up. Without it, readline

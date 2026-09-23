@@ -119,6 +119,56 @@ fn non_utf8_locale() {
     );
 }
 
+/// Options with `history` and a `show` command, which reads a line with echo
+/// off and prints it in brackets.
+fn reading_silently(history: &'static [&'static str]) -> impl Fn() -> Options {
+    move || Options {
+        rc: "show() { read -e -s -p 'pw: ' x; printf '[%s]\\n' \"$x\"; }\n".into(),
+        history: history.to_vec(),
+        ..Options::default()
+    }
+}
+
+/// Runs `show`, types `keys` and Enter, and waits for the `n`th printed value.
+fn show(sh: &mut Shell, keys: &str, n: usize) {
+    sh.send(&format!("show\r{keys}\r"));
+    sh.wait_for("the value and the next prompt", |s| {
+        let values = (0..s.size().0)
+            .filter(|&row| row_text(s, row).starts_with('['))
+            .count();
+        values == n && cursor_row(s) == "$"
+    });
+}
+
+/// `read -s` turns off the terminal's echo: readline shows only the prompt, and
+/// neither the typed text nor a suggestion may appear. `C-e` only moves to the
+/// end, so a history entry cannot complete the hidden text.
+#[test]
+fn read_silent() {
+    same_after(
+        reading_silently(&["echo secretword"]),
+        |sh| show(sh, "echo secr\x05", 1),
+        "reading with echo off",
+    );
+}
+
+/// While echo is off, brackets, quotes and Backspace edit the text as readline
+/// does on its own, so `read -e -s` stores what the user typed.
+#[test]
+fn read_silent_without_pairing() {
+    same_after(
+        reading_silently(&[]),
+        |sh| {
+            // An opener, a quote, a closer before the same closer, and
+            // Backspace between an opener and its closer.
+            for (n, keys) in (1..).zip(["a(b", "say \"hi", "h)\x02)", "g()\x02\x7f"]) {
+                show(sh, keys, n);
+            }
+        },
+        "reading with echo off",
+    );
+}
+
 /// Options with `rc` and a history entry that suggests after `echo hel`.
 fn setup(rc: &'static str) -> impl Fn() -> Options {
     move || Options {

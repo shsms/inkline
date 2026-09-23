@@ -74,6 +74,9 @@ this only matters if you changed them with `stty`.
   inside comments and strings, and with a count prefix. Pasted text is never
   paired.
 
+While the terminal's echo is off, as in `read -e -s`, inkline leaves the line to
+readline: no colours, no suggestion and no pairing.
+
 Each keystroke's output is sent as one synchronized update (DEC private mode
 2026), so terminals that support it, such as alacritty, kitty, foot and WezTerm,
 show a single frame per key. Terminals without it ignore the markers, and there

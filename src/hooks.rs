@@ -382,10 +382,11 @@ extern "C" fn redisplay() {
     ffi::flush_out();
 }
 
-/// Setups where inkline cannot tell where readline put each character, so
-/// readline's own drawing is left alone.
+/// Setups where readline's own drawing is left alone: readline does not draw
+/// the line, or inkline cannot tell where readline put each character.
 fn left_to_readline() -> bool {
-    ffi::variable_on(c"horizontal-scroll-mode")
+    !ffi::echoing()
+        || ffi::variable_on(c"horizontal-scroll-mode")
         // The mode string and the modified-line mark are drawn before the
         // prompt but are not part of `rl_display_prompt`.
         || ffi::variable_on(c"show-mode-in-prompt")
@@ -493,8 +494,9 @@ fn accept(
 }
 
 /// Runs a pairing command: `edit` gets the line and cursor and returns whether
-/// it handled the key. Otherwise, and after `enable -d` or a panic, `fallback`
-/// runs, the readline command the key normally runs.
+/// it handled the key. Otherwise `fallback` runs, the readline command the key
+/// normally runs. It also runs after `enable -d`, after a panic, and while echo
+/// is off, where the user cannot see a closer inkline would add.
 fn pairing(
     count: c_int,
     key: c_int,
@@ -503,8 +505,9 @@ fn pairing(
 ) -> c_int {
     guard(
         || {
-            let unloaded = STATE.with_borrow(|s| s.unloaded);
-            if let Some(line) = ffi::line().filter(|_| !unloaded)
+            if !STATE.with_borrow(|s| s.unloaded)
+                && ffi::echoing()
+                && let Some(line) = ffi::line()
                 && edit(&line, ffi::point())
             {
                 0
