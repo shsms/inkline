@@ -222,16 +222,23 @@ pub fn known_to_bash(word: &str) -> bool {
     }
 }
 
-/// Writes to readline's output stream, so the bytes stay in order with
-/// what readline writes.
-pub fn write_out(bytes: &[u8]) {
+/// Adds to readline's output stream without flushing, so the bytes stay in
+/// order with what readline writes and reach the terminal with its next flush.
+pub fn write_queued(bytes: &[u8]) {
     unsafe {
         let out = rl_outstream;
-        if out.is_null() {
-            return;
+        if !out.is_null() {
+            libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), out);
         }
-        libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), out);
-        libc::fflush(out);
+    }
+}
+
+pub fn flush_out() {
+    unsafe {
+        let out = rl_outstream;
+        if !out.is_null() {
+            libc::fflush(out);
+        }
     }
 }
 

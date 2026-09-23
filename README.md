@@ -74,6 +74,12 @@ this only matters if you changed them with `stty`.
   inside comments and strings, and with a count prefix. Pasted text is never
   paired.
 
+Each keystroke's output is sent as one synchronized update (DEC private mode
+2026), so terminals that support it, such as alacritty, kitty, foot and WezTerm,
+show a single frame per key. Terminals without it ignore the markers, and there
+the grey text and new characters can flicker briefly as readline and inkline
+draw in turn.
+
 ## Colours
 
 Set `INKLINE_COLORS` in the same format as `LS_COLORS`. Any SGR codes work,
@@ -111,6 +117,9 @@ INKLINE_COLORS='command=32:unknown=31:keyword=35:option=36:string=33:variable=34
   only replaces it while a key is being handled.
 - A completion listing triggered in the same burst of typed-ahead keys as the
   text before it can leave grey suggestion text above the list.
+- A `bind -x` key pressed while a suggestion shows runs its command inside the
+  synchronized update, so a terminal that supports it holds the command's output
+  back until the command ends or the terminal's time limit for an update passes.
 
 ## Testing
 

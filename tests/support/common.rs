@@ -96,6 +96,8 @@ impl Default for Options {
 /// a terminal emulator.
 pub struct Shell {
     parser: Arc<Mutex<vt100::Parser>>,
+    /// Everything bash wrote since the last `take_output`.
+    output: Arc<Mutex<Vec<u8>>>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -153,19 +155,23 @@ impl Shell {
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(opts.rows, opts.cols, 0)));
         let mut reader = pty.master.try_clone_reader().unwrap();
+        let output = Arc::new(Mutex::new(Vec::new()));
         let screen = parser.clone();
+        let raw = output.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 {
                     break;
                 }
+                raw.lock().unwrap().extend_from_slice(&buf[..n]);
                 screen.lock().unwrap().process(&buf[..n]);
             }
         });
         let writer = pty.master.take_writer().unwrap();
         let sh = Shell {
             parser,
+            output,
             writer,
             master: pty.master,
             child,
@@ -180,6 +186,11 @@ impl Shell {
     pub fn send(&mut self, keys: &str) {
         self.writer.write_all(keys.as_bytes()).unwrap();
         self.writer.flush().unwrap();
+    }
+
+    /// The bytes bash wrote since the last call.
+    pub fn take_output(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.output.lock().unwrap())
     }
 
     pub fn screen(&self) -> vt100::Screen {

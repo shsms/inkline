@@ -43,8 +43,17 @@ struct State {
 
 static REGISTER: Once = Once::new();
 
+/// Start and end of a synchronized update (DEC private mode 2026): a terminal
+/// that supports it shows nothing written in between until the end, so a key's
+/// erase, readline's echo and inkline's repaint appear as one frame instead of
+/// flickering. Other terminals ignore both.
+const BEGIN_UPDATE: &[u8] = b"\x1b[?2026h";
+const END_UPDATE: &[u8] = b"\x1b[?2026l";
+
 thread_local! {
     static ORIGINALS: Cell<Originals> = Cell::default();
+    /// Whether a synchronized update is open.
+    static UPDATING: Cell<bool> = const { Cell::new(false) };
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
         lexer: Lexer::new(),
@@ -155,6 +164,8 @@ fn enable() {
 /// not depend on `STATE` being borrowable.
 fn disable() {
     let _ = catch_unwind(erase_suggestion);
+    end_update();
+    ffi::flush_out();
     let enabled = STATE.try_with(|s| {
         s.try_borrow_mut().map(|mut s| {
             s.suggestion = None;
@@ -191,11 +202,21 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
     let interrupted = guard(
         || {
             ffi::set_redisplay_function(originals().redisplay);
+            // Nothing may be held back while waiting for a key.
+            end_update();
+            ffi::flush_out();
             let shown = STATE.with_borrow(|s| s.shown_at.is_some());
             if !shown {
                 return false;
             }
             let interrupted = !ffi::wait_for_input(stream);
+            // The update opens here only to hide the erase; otherwise it opens
+            // when readline redraws. The key's command may run a `bind -x`
+            // command, whose output a terminal would hold back while the
+            // update is open.
+            if !interrupted {
+                begin_update();
+            }
             erase_suggestion();
             interrupted
         },
@@ -237,12 +258,14 @@ extern "C" fn deprep_terminal() {
                 } else {
                     format!("\x1b[A\x1b[{}G\x1b[K\x1b[B\r", col + 1)
                 };
-                ffi::write_out(erase.as_bytes());
+                ffi::write_queued(erase.as_bytes());
             }
             ffi::set_redisplay_function(originals().redisplay);
         },
         || (),
     );
+    end_update();
+    ffi::flush_out();
     ffi::call_deprep(originals().deprep);
 }
 
@@ -251,14 +274,34 @@ extern "C" fn deprep_terminal() {
 fn erase_suggestion() {
     let shown = STATE.with_borrow_mut(|s| s.shown_at.take());
     if shown.is_some() {
-        ffi::write_out(b"\x1b[K");
+        ffi::write_queued(b"\x1b[K");
+    }
+}
+
+fn begin_update() {
+    if !UPDATING.replace(true) {
+        ffi::write_queued(BEGIN_UPDATE);
+    }
+}
+
+fn end_update() {
+    if UPDATING.replace(false) {
+        ffi::write_queued(END_UPDATE);
     }
 }
 
 extern "C" fn redisplay() {
-    guard(erase_suggestion, || ());
+    guard(
+        || {
+            begin_update();
+            erase_suggestion();
+        },
+        || (),
+    );
     ffi::call_redisplay(originals().redisplay);
     guard(draw, || ());
+    end_update();
+    ffi::flush_out();
 }
 
 /// Setups where inkline cannot tell where readline put each character, so
@@ -324,7 +367,7 @@ fn draw() {
         let Some(out) = render::build(&repaint) else {
             return;
         };
-        ffi::write_out(&out.bytes);
+        ffi::write_queued(&out.bytes);
         s.shown_at = out.suggestion_col;
         if let (Some(_), Some(rest)) = (out.suggestion_col, suggestion) {
             s.suggestion = Some((line.clone(), rest));
