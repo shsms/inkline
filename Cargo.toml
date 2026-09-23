@@ -1,0 +1,21 @@
+[package]
+name = "inkline"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "Syntax highlighting, history suggestions and bracket pairing for bash's readline"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+tree-sitter = "0.27"
+tree-sitter-bash = "0.25"
+unicode-width = "0.2"
+
+[dev-dependencies]
+portable-pty = "0.9"
+tempfile = "3"
+vt100 = "0.16"
