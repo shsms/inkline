@@ -131,7 +131,7 @@ INKLINE_COLORS='command=32:unknown=31:keyword=35:option=36:string=33:variable=34
 
 ```sh
 cargo test
-scripts/build-bash-5.0.sh      # needs libncurses-dev / ncurses-devel
+scripts/build-bash.sh 5.0      # needs libncurses-dev / ncurses-devel
 INKLINE_TEST_BASH=target/bash-5.0/bin/bash cargo test
 ```
 

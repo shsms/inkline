@@ -403,3 +403,40 @@ pub fn count_bytes(haystack: &[u8], needle: &[u8]) -> usize {
         .filter(|w| *w == needle)
         .count()
 }
+
+/// Keys, as a terminal sends them.
+pub const ENTER: &str = "\r";
+/// Alt+Enter, or Esc then Enter.
+pub const ALT_ENTER: &str = "\x1b\r";
+pub const UP: &str = "\x1b[A";
+pub const DOWN: &str = "\x1b[B";
+/// `C-v C-j`: a newline inserted as text, as plain bash takes it.
+pub const LITERAL_NEWLINE: &str = "\x16\n";
+/// `C-v Tab`: a tab inserted as text.
+pub const LITERAL_TAB: &str = "\x16\t";
+
+/// The major and minor version of the bash under test, such as (5, 2).
+pub fn bash_version() -> (u32, u32) {
+    let out = bash_command()
+        .args(["-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let mut parts = text.split_whitespace().map(|p| p.parse().unwrap());
+    (parts.next().unwrap(), parts.next().unwrap())
+}
+
+/// Whether any cell on the screen is underlined.
+pub fn any_underlined(screen: &vt100::Screen) -> bool {
+    let (rows, cols) = screen.size();
+    (0..rows).any(|row| (0..cols).any(|col| screen.cell(row, col).is_some_and(|c| c.underline())))
+}
+
+/// Whether `needle`, which must be ASCII, is on screen with every cell
+/// underlined.
+pub fn underlined(screen: &vt100::Screen, needle: &str) -> bool {
+    let Some((row, col)) = find(screen, needle) else {
+        return false;
+    };
+    (0..needle.len() as u16).all(|i| screen.cell(row, col + i).is_some_and(|c| c.underline()))
+}
