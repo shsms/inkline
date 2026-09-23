@@ -22,6 +22,7 @@ struct Originals {
     redisplay: Option<ffi::VoidFn>,
     getc: Option<ffi::GetcFn>,
     deprep: Option<ffi::VoidFn>,
+    pre_input: Option<ffi::HookFn>,
 }
 
 struct State {
@@ -138,9 +139,9 @@ fn run_builtin(args: &[String]) -> c_int {
     }
 }
 
-/// Installs the key-reading and terminal-restore hooks. The drawing hook is
-/// installed by `getc` once a key arrives: readline changes how it sets up the
-/// terminal and how it redraws after a resize whenever a custom drawing
+/// Installs the key-reading, pre-input and terminal-restore hooks. The drawing
+/// hook is installed by `getc` once a key arrives: readline changes how it sets
+/// up the terminal and how it redraws after a resize whenever a custom drawing
 /// function is in place (it skips the terminal description, losing cursor
 /// movement and bracketed paste, and redraws below the old line), so inkline's
 /// is only in place while a key's command runs.
@@ -153,9 +154,11 @@ fn enable() {
             redisplay: ffi::redisplay_function(),
             getc: ffi::getc_function(),
             deprep: ffi::deprep_function(),
+            pre_input: ffi::pre_input_hook(),
         });
         ffi::set_getc_function(Some(getc as ffi::GetcFn));
         ffi::set_deprep_function(Some(deprep_terminal as ffi::VoidFn));
+        ffi::set_pre_input_hook(Some(pre_input as ffi::HookFn));
         s.enabled = true;
     });
 }
@@ -178,6 +181,7 @@ fn disable() {
         ffi::set_redisplay_function(orig.redisplay);
         ffi::set_getc_function(orig.getc);
         ffi::set_deprep_function(orig.deprep);
+        ffi::set_pre_input_hook(orig.pre_input);
     }
 }
 
@@ -282,13 +286,28 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
     key
 }
 
-/// Readline calls this when it returns a line. Enter can reach readline
-/// without `getc` (typed ahead in one burst); readline's final update has
-/// then left the cursor at the start of the row below the line, so the
-/// suggestion is erased there: one row up, or on the cursor's own row when
-/// the line exactly filled its last row and the suggestion started at column
-/// 0 of the next. Readline's own drawing function goes back in place, so a
-/// later terminal setup (such as after `TERM` changes) sees it.
+/// Readline calls this once it has drawn the prompt and before the first key. A
+/// line it filled in by then (the next history entry after `C-o`, `read -e -i`)
+/// was drawn with readline's own drawing function, so inkline paints it here.
+extern "C" fn pre_input() -> c_int {
+    let result = ffi::call_hook(originals().pre_input);
+    guard(
+        || {
+            draw();
+            ffi::flush_out();
+        },
+        || (),
+    );
+    result
+}
+
+/// Readline calls this when it returns a line. Enter can reach readline without
+/// `getc` (typed ahead in one burst); readline's final update has then left the
+/// cursor at the start of the row below the line, so the suggestion is erased
+/// there: one row up, or on the cursor's own row when the line exactly filled
+/// its last row and the suggestion started at column 0 of the next. Readline's
+/// own drawing function goes back in place, so a later terminal setup (such as
+/// after `TERM` changes) sees it.
 extern "C" fn deprep_terminal() {
     guard(
         || {
@@ -363,10 +382,10 @@ fn left_to_readline() -> bool {
         || ffi::region_active()
 }
 
-/// Repaints the line readline just drew, in colour, with a suggestion after
-/// it when the cursor is at the end. Outside plain editing (a count prefix,
-/// a search) the stored suggestion is kept, so `M-3 C-f` can still take
-/// from it; `accept` checks it against the line before using it.
+/// Repaints the line readline just drew, in colour, with a suggestion after it
+/// when the cursor is at the end. Outside plain editing (a count prefix, a
+/// search) the stored suggestion is kept, so `M-3 C-f` can still take from it;
+/// `accept` checks it against the line before using it.
 fn draw() {
     let editing = ffi::normal_editing();
     if editing {

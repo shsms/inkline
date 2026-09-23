@@ -181,3 +181,30 @@ fn control_characters_left_plain() {
     plain.send("c");
     wait_same(&with, &plain, "typing after a control character");
 }
+
+/// `C-o` on a line from history fills the next prompt with the following entry
+/// before any key is typed.
+#[test]
+fn line_filled_in_by_ctrl_o_is_coloured() {
+    let mut sh = Shell::start(Options {
+        history: vec!["echo one", "echo two"],
+        ..Options::default()
+    });
+    sh.send("\x10\x10");
+    sh.wait_for("the older entry", |s| cursor_row(s) == "$ echo one");
+    sh.send("\x0f");
+    sh.wait_for("the next entry, coloured", |s| {
+        s.cursor_position().0 >= 2
+            && cursor_row(s) == "$ echo two"
+            && fg_is(s, "echo two", Color::Idx(2))
+    });
+}
+
+#[test]
+fn line_filled_in_by_read_i_is_coloured() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("read -e -i 'ls -l' line\r");
+    sh.wait_for("the filled-in line, coloured", |s| {
+        cursor_row(s) == "ls -l" && fg_is(s, "ls", Color::Idx(2)) && fg_is(s, "-l", Color::Idx(6))
+    });
+}

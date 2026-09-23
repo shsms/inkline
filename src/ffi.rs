@@ -280,6 +280,26 @@ pub fn call_deprep(f: Option<VoidFn>) {
     }
 }
 
+/// A readline hook that returns an int, such as `rl_pre_input_hook`.
+pub type HookFn = unsafe extern "C" fn() -> c_int;
+
+unsafe extern "C" {
+    static mut rl_pre_input_hook: Option<HookFn>;
+}
+
+pub fn pre_input_hook() -> Option<HookFn> {
+    unsafe { rl_pre_input_hook }
+}
+
+pub fn set_pre_input_hook(f: Option<HookFn>) {
+    unsafe { rl_pre_input_hook = f }
+}
+
+/// Calls `f` if there is one, returning its result or 0.
+pub fn call_hook(f: Option<HookFn>) -> c_int {
+    f.map_or(0, |f| unsafe { f() })
+}
+
 // ---- Suggestions ----
 
 // rl_readline_state flags; the same values in readline 8.0 and 8.2.
