@@ -89,3 +89,21 @@ fn assert_no_update_open_at(out: &[u8], marker: &[u8]) {
         "{shown:?}"
     );
 }
+
+/// A `WINCH` trap runs while readline handles a resize. Its output must not be
+/// held back.
+#[test]
+fn winch_trap_output_is_not_held_back() {
+    let mut sh = Shell::start(Options {
+        rc: "trap 'echo winch-trap' WINCH\n".into(),
+        ..Options::default()
+    });
+    sh.send("ls");
+    sh.wait_for("the line", |s| fg_is(s, "ls", Color::Idx(2)));
+    sh.settle();
+    sh.take_output();
+    sh.resize(24, 60);
+    sh.wait_for_output("the trap", b"winch-trap");
+    sh.settle();
+    assert_no_update_open_at(&sh.take_output(), b"winch-trap");
+}

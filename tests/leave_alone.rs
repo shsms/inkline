@@ -118,3 +118,117 @@ fn non_utf8_locale() {
         "echo \u{e9}\x02x",
     );
 }
+
+/// Options with `rc` and a history entry that suggests after `echo hel`.
+fn setup(rc: &'static str) -> impl Fn() -> Options {
+    move || Options {
+        rc: format!("{rc}\n"),
+        history: vec!["echo hello-world"],
+        ..Options::default()
+    }
+}
+
+/// Starts the same setup with and without inkline, runs `steps` in both and
+/// checks the screens match.
+fn same_after(opts: impl Fn() -> Options, steps: impl Fn(&mut Shell), what: &str) {
+    let (mut with, mut plain) = with_and_without(opts);
+    steps(&mut with);
+    steps(&mut plain);
+    wait_same(&with, &plain, what);
+}
+
+/// Types `echo hel`, which shows a suggestion with `setup`'s history.
+fn type_before_a_signal(sh: &mut Shell) {
+    sh.send("echo hel");
+    sh.wait_for("the line", |s| find(s, "echo hel").is_some());
+    sh.settle();
+}
+
+/// Starts a short background job and waits for the next prompt.
+fn start_job(sh: &mut Shell) {
+    sh.send("sleep 0.3 &\r");
+    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 2);
+}
+
+/// With `set -b`, bash prints a job's notice while waiting for a key, and the
+/// cursor is no longer where readline thinks it is; the keys after it must be
+/// drawn as readline draws them.
+#[test]
+fn job_notice_with_set_b() {
+    let (mut with, mut plain) = with_and_without(setup("set -b"));
+    for sh in [&mut with, &mut plain] {
+        start_job(sh);
+        // Clears the job number, which differs between the shells.
+        sh.send("\x0cecho hel");
+    }
+    with.wait_for("the notice", |s| find(s, "Done").is_some());
+    wait_same(&with, &plain, "the notice");
+    with.send("l");
+    plain.send("l");
+    wait_same(&with, &plain, "a key after the notice");
+}
+
+/// A `WINCH` trap runs while readline handles a resize, and what it prints moves
+/// the cursor; the keys after it must be drawn as readline draws them.
+#[test]
+fn resize_with_a_winch_trap() {
+    same_after(
+        setup("trap 'echo winch-trap' WINCH"),
+        |sh| {
+            type_before_a_signal(sh);
+            sh.resize(24, 60);
+            sh.wait_for("the trap", |s| find(s, "winch-trap").is_some());
+            sh.send("l");
+        },
+        "a key after the trap",
+    );
+}
+
+/// Readline restores the terminal while it handles `SIGQUIT`, and then bash
+/// runs the trap, which prints on the same line.
+#[test]
+fn quit_trap_that_prints() {
+    same_after(
+        setup("trap 'echo quit-trap' QUIT"),
+        |sh| {
+            type_before_a_signal(sh);
+            sh.send("\x1c");
+            sh.wait_for("the trap", |s| find(s, "quit-trap").is_some());
+            sh.send("l");
+        },
+        "a key after the trap",
+    );
+}
+
+/// After a job notice overwrote the suggestion, the accept keys do what
+/// readline's commands do.
+#[test]
+fn accept_after_a_job_notice() {
+    same_after(
+        setup("set -b"),
+        |sh| {
+            start_job(sh);
+            // A count keeps the stored suggestion past the redraw.
+            sh.send("\x0cecho hel\x1b3");
+            sh.wait_for("the notice", |s| find(s, "Done").is_some());
+            sh.send("\x06x");
+        },
+        "C-f after the notice",
+    );
+}
+
+/// The next line after a job notice is drawn by inkline again.
+#[test]
+fn coloured_again_after_a_job_notice() {
+    let mut sh = Shell::start(Options {
+        rc: "set -b\n".into(),
+        ..Options::default()
+    });
+    start_job(&mut sh);
+    sh.send("echo x");
+    sh.wait_for("the notice", |s| find(s, "Done").is_some());
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("ls");
+    sh.wait_for("colours", |s| fg_is(s, "ls", Color::Idx(2)));
+}

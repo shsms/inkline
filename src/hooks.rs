@@ -37,6 +37,10 @@ struct State {
     suggestion: Option<(String, String)>,
     /// The column where the suggestion on screen starts, if one is showing.
     shown_at: Option<usize>,
+    /// Set when bash may have printed while the line was being edited: the
+    /// cursor may not be where readline thinks it is, so readline draws the
+    /// rest of the line on its own. Cleared when the next line starts.
+    displaced: bool,
     /// Set by `enable -d`: the readline commands stay registered but only run
     /// readline's own.
     unloaded: bool,
@@ -63,6 +67,7 @@ thread_local! {
         paths: PathCache::default(),
         suggestion: None,
         shown_at: None,
+        displaced: false,
         unloaded: false,
     });
 }
@@ -204,7 +209,8 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
 ///   grey text behind;
 /// - after a signal interrupts the wait and bash returns to it (a window
 ///   resize, a background job ending), inkline repaints the line straight away;
-///   for a resize, readline has redrawn it first.
+///   for a resize, readline has redrawn it first. If bash may have printed
+///   while handling the signal, readline draws the rest of the line instead.
 ///
 /// Readline's own drawing function is in place while waiting, so a resize is
 /// redrawn the way readline expects; inkline's is installed once the key
@@ -237,10 +243,18 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             ffi::Wait::Signal(signal) => {
                 // Readline's redraw after a resize and inkline's repaint go out
                 // as one update. Other signals are not held back: bash may jump
-                // from them to a new prompt and run commands there.
+                // from them to a new prompt and run commands there. Bash may
+                // also print while it handles a signal, which can move the
+                // cursor: then readline draws the rest of the line on its own.
+                let may_print = ffi::signal_may_print(signal);
                 guard(
                     || {
-                        if signal == libc::SIGWINCH {
+                        if may_print {
+                            STATE.with_borrow_mut(|s| {
+                                s.displaced = true;
+                                s.suggestion = None;
+                            });
+                        } else if signal == libc::SIGWINCH {
                             begin_update();
                         }
                         erase_suggestion();
@@ -286,13 +300,15 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
     key
 }
 
-/// Readline calls this once it has drawn the prompt and before the first key. A
-/// line it filled in by then (the next history entry after `C-o`, `read -e -i`)
-/// was drawn with readline's own drawing function, so inkline paints it here.
+/// Readline calls this at the start of each line, once it has drawn the prompt
+/// and before the first key. A line it filled in by then (the next history
+/// entry after `C-o`, `read -e -i`) was drawn with readline's own drawing
+/// function, so inkline paints it here.
 extern "C" fn pre_input() -> c_int {
     let result = ffi::call_hook(originals().pre_input);
     guard(
         || {
+            STATE.with_borrow_mut(|s| s.displaced = false);
             draw();
             ffi::flush_out();
         },
@@ -392,7 +408,7 @@ fn draw() {
         STATE.with_borrow_mut(|s| s.suggestion = None);
     }
     let Some(line) = ffi::line() else { return };
-    if line.is_empty() || left_to_readline() {
+    if line.is_empty() || STATE.with_borrow(|s| s.displaced) || left_to_readline() {
         return;
     }
     let Some(prompt_width) = render::prompt_width(&ffi::display_prompt()) else {

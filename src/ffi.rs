@@ -444,6 +444,25 @@ pub fn read_error() -> c_int {
     }
 }
 
+unsafe extern "C" {
+    static mut asynchronous_notification: c_int;
+    fn signal_is_trapped(signal: c_int) -> c_int;
+}
+
+/// Whether bash may write to the terminal while it handles `signal`, a value
+/// from `Wait::Signal`: under `set -b`, a job notice from its `SIGCHLD`
+/// handler (0: readline does not catch it), or a trap on a signal readline
+/// catches. A `WINCH` trap runs while readline handles the resize.
+pub fn signal_may_print(signal: c_int) -> bool {
+    unsafe {
+        if signal == 0 {
+            asynchronous_notification != 0
+        } else {
+            signal_is_trapped(signal) != 0
+        }
+    }
+}
+
 /// Does what `rl_getc` does after a signal interrupts its read: readline
 /// handles the signal (for `C-c`: echoes `^C` and passes the signal on to
 /// bash), then the application's event hook runs (bash's jumps back to a new

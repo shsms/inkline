@@ -112,6 +112,14 @@ INKLINE_COLORS='command=32:unknown=31:keyword=35:option=36:string=33:variable=34
   pasted text.
 - A completion listing triggered in the same burst of typed-ahead keys as the
   text before it can leave grey suggestion text above the list.
+- Bash can print while you type: a job notice when a background job ends under
+  `set -b`, or a trap on a signal such as `WINCH`. When such a signal arrives
+  while you type, inkline leaves the rest of that line to readline, which draws
+  it without colours or a suggestion, even if nothing was printed. A job notice
+  is written over the suggestion, and the end of a suggestion longer than the
+  notice stays on screen. inkline does not notice a job that ends, or a trapped
+  signal that arrives, while readline handles a key, and can then draw the rest
+  of that line in the wrong place.
 - A `bind -x` key pressed while a suggestion shows runs its command inside the
   synchronized update, so a terminal that supports it holds the command's output
   back until the command ends or the terminal's time limit for an update passes.
