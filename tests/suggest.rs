@@ -1,0 +1,143 @@
+#[path = "support/common.rs"]
+mod common;
+
+use common::*;
+
+fn with_history(history: Vec<&'static str>) -> Options {
+    Options {
+        history,
+        ..Options::default()
+    }
+}
+
+fn showing(opts: Options, keys: &str, row: &str) -> Shell {
+    let mut sh = Shell::start(opts);
+    sh.send(keys);
+    sh.wait_for("the suggestion", |s| cursor_row(s) == row);
+    sh
+}
+
+#[test]
+fn suggests_the_newest_matching_entry() {
+    let sh = showing(
+        with_history(vec!["git stash", "git status"]),
+        "git st",
+        "$ git status",
+    );
+    let s = sh.screen();
+    assert_eq!(fg(&s, "atus"), Color::Idx(8));
+    assert_eq!(s.cursor_position(), (0, 8));
+}
+
+#[test]
+fn hidden_when_the_cursor_moves_left() {
+    let mut sh = showing(with_history(vec!["git status"]), "git st", "$ git status");
+    sh.send("\x02");
+    sh.wait_for("no suggestion", |s| cursor_row(s) == "$ git st");
+}
+
+#[test]
+fn nothing_without_a_match() {
+    let mut sh = Shell::start(with_history(vec!["git status"]));
+    sh.send("zzz");
+    assert_eq!(cursor_row(&sh.settle()), "$ zzz");
+}
+
+#[test]
+fn erased_after_enter() {
+    let mut sh = showing(
+        with_history(vec!["echo hello-world"]),
+        "echo hel",
+        "$ echo hello-world",
+    );
+    sh.send("\r");
+    let s = sh.wait_for("the output", |s| has_row(s, "hel"));
+    assert_eq!(row_text(&s, 0), "$ echo hel");
+}
+
+#[test]
+fn erased_after_enter_in_same_burst() {
+    let mut sh = Shell::start(with_history(vec!["echo hello-world"]));
+    sh.send("echo hel\r");
+    let s = sh.wait_for("the output", |s| has_row(s, "hel"));
+    assert_eq!(row_text(&s, 0), "$ echo hel");
+}
+
+#[test]
+fn erased_after_ctrl_c() {
+    let mut sh = showing(
+        with_history(vec!["echo hello-world"]),
+        "echo hel",
+        "$ echo hello-world",
+    );
+    sh.send("\x03");
+    let s = sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
+    assert!(row_text(&s, 0).starts_with("$ echo hel"));
+    // `^C` is echoed over the first two cells of the suggestion.
+    assert!(!row_text(&s, 0).contains("world"));
+}
+
+#[test]
+fn erased_after_ctrl_o() {
+    let mut sh = showing(
+        with_history(vec!["echo hello-world"]),
+        "echo hel",
+        "$ echo hello-world",
+    );
+    sh.send("\x0f");
+    let s = sh.wait_for("the output", |s| has_row(s, "hel"));
+    assert_eq!(row_text(&s, 0), "$ echo hel");
+}
+
+#[test]
+fn erased_before_completion_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("zz1"), "").unwrap();
+    std::fs::write(dir.path().join("zz2"), "").unwrap();
+    let opts = Options {
+        history: vec!["ls zz-long-suggestion"],
+        cwd: Some(dir.path().to_path_buf()),
+        ..Options::default()
+    };
+    let mut sh = showing(opts, "ls z", "$ ls zz-long-suggestion");
+    sh.send("\t");
+    sh.wait_for("the common prefix", |s| s.cursor_position() == (0, 7));
+    // The TAB after a partial completion completes again; the next one lists.
+    sh.send("\t\t");
+    let s = sh.wait_for("the listing", |s| {
+        find(s, "zz1").is_some() && s.cursor_position().0 > 1
+    });
+    assert_eq!(row_text(&s, 0), "$ ls zz");
+}
+
+#[test]
+fn none_while_searching() {
+    let mut sh = Shell::start(with_history(vec!["echo hello-world"]));
+    sh.send("\x12hel");
+    let s = sh.wait_for("the search", |s| {
+        cursor_row(s) == "(reverse-i-search)`hel': echo hello-world"
+    });
+    assert_eq!(cursor_row(&sh.settle()), cursor_row(&s));
+}
+
+#[test]
+fn none_while_reading_a_count() {
+    let mut sh = showing(
+        with_history(vec!["echo hello-world"]),
+        "echo hel",
+        "$ echo hello-world",
+    );
+    sh.send("\x1b3");
+    sh.wait_for("the count prompt", |s| cursor_row(s) == "(arg: 3) echo hel");
+}
+
+#[test]
+fn multi_line_history_entry() {
+    showing(
+        with_history(vec!["for i in 1\ndo echo $i; done"]),
+        "for i",
+        "$ for i in 1",
+    );
+}

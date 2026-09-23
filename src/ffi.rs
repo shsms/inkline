@@ -4,7 +4,7 @@
 //! The symbols are left undefined in the library and resolved against the bash
 //! binary when `enable -f` loads it.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
 
 pub const EXECUTION_SUCCESS: c_int = 0;
 /// bash reports this as exit status 2, a usage error.
@@ -238,5 +238,106 @@ pub fn set_deprep_function(f: Option<VoidFn>) {
 pub fn call_deprep(f: Option<VoidFn>) {
     if let Some(f) = f {
         unsafe { f() }
+    }
+}
+
+// ---- Suggestions ----
+
+// rl_readline_state flags; the same values in readline 8.0 and 8.2.
+const RL_STATE_MOREINPUT: c_ulong = 0x40;
+const RL_STATE_ISEARCH: c_ulong = 0x80;
+const RL_STATE_NSEARCH: c_ulong = 0x100;
+const RL_STATE_SEARCH: c_ulong = 0x200;
+const RL_STATE_NUMERICARG: c_ulong = 0x400;
+const RL_STATE_DONE: c_ulong = 0x2000000;
+
+#[repr(C)]
+struct HistEntry {
+    line: *mut c_char,
+    timestamp: *mut c_char,
+    data: *mut c_void,
+}
+
+unsafe extern "C" {
+    static mut rl_readline_state: c_ulong;
+    static mut rl_done: c_int;
+    static mut history_base: c_int;
+    static mut history_length: c_int;
+    fn history_get(offset: c_int) -> *mut HistEntry;
+}
+
+/// Whether readline is doing plain editing: not searching, reading a count,
+/// reading a quoted character, or finishing the line.
+pub fn normal_editing() -> bool {
+    let busy = RL_STATE_MOREINPUT
+        | RL_STATE_ISEARCH
+        | RL_STATE_NSEARCH
+        | RL_STATE_SEARCH
+        | RL_STATE_NUMERICARG
+        | RL_STATE_DONE;
+    unsafe { rl_readline_state & busy == 0 && rl_done == 0 }
+}
+
+/// Whether readline has accepted the line.
+pub fn line_done() -> bool {
+    unsafe { rl_done != 0 }
+}
+
+/// Calls `f` on the history entries from newest to oldest, until it returns
+/// Some. Entries that are not valid UTF-8 are skipped.
+pub fn history_find_map<T>(mut f: impl FnMut(&str) -> Option<T>) -> Option<T> {
+    let (base, length) = unsafe { (history_base, history_length) };
+    for offset in (base..base + length).rev() {
+        // SAFETY: offsets history_base .. history_base + history_length - 1 are
+        // valid, and history does not change while `f` runs.
+        let text = unsafe {
+            let entry = history_get(offset);
+            if entry.is_null() {
+                continue;
+            }
+            c_str((*entry).line)
+        };
+        let Some(Ok(text)) = text.map(CStr::to_str) else {
+            continue;
+        };
+        if let Some(found) = f(text) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+unsafe extern "C" {
+    static mut rl_signal_event_hook: Option<unsafe extern "C" fn() -> c_int>;
+    fn rl_check_signals();
+}
+
+/// Blocks until `stream` has input or a signal arrives. Returns false when
+/// a signal interrupted the wait.
+pub fn wait_for_input(stream: *mut libc::FILE) -> bool {
+    let fd = if stream.is_null() {
+        0
+    } else {
+        unsafe { libc::fileno(stream) }
+    };
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut poll, 1, -1) >= 0 }
+}
+
+/// Does what `rl_getc` does after a signal interrupts its read: readline
+/// handles the signal (for `C-c`: echoes `^C` and passes the signal on to
+/// bash), then the application's event hook runs (bash's jumps back to a new
+/// prompt). Only needed when the signal interrupted inkline's wait rather than
+/// readline's read.
+pub fn handle_interrupted_wait() {
+    unsafe {
+        rl_check_signals();
+        if let Some(hook) = rl_signal_event_hook {
+            hook();
+        }
     }
 }

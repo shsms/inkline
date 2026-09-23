@@ -10,6 +10,7 @@ use crate::commands::{self, PathCache};
 use crate::ffi;
 use crate::lexer::Lexer;
 use crate::render::{self, Repaint};
+use crate::suggest;
 
 struct State {
     enabled: bool,
@@ -21,6 +22,11 @@ struct State {
     /// The `INKLINE_COLORS` value `colors` was parsed from.
     colors_spec: Option<String>,
     paths: PathCache,
+    /// The line a suggestion was drawn for, and the suggestion, for the accept
+    /// commands.
+    suggestion: Option<(String, String)>,
+    /// The column where the suggestion on screen starts, if one is showing.
+    shown_at: Option<usize>,
 }
 
 thread_local! {
@@ -33,6 +39,8 @@ thread_local! {
         colors: Colors::default(),
         colors_spec: None,
         paths: PathCache::default(),
+        suggestion: None,
+        shown_at: None,
     });
 }
 
@@ -88,6 +96,7 @@ fn enable() {
 }
 
 fn disable() {
+    erase_suggestion();
     STATE.with_borrow_mut(|s| {
         if !s.enabled {
             return;
@@ -95,6 +104,7 @@ fn disable() {
         ffi::set_redisplay_function(s.orig_redisplay);
         ffi::set_getc_function(s.orig_getc);
         ffi::set_deprep_function(s.orig_deprep);
+        s.suggestion = None;
         s.enabled = false;
     });
 }
@@ -111,12 +121,24 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
     }
 }
 
-/// Readline's key reader. Readline's own drawing function is in place while
-/// it waits for the key, so a resize is redrawn the way readline expects;
-/// inkline's is installed once the key arrives.
+/// Readline's key reader. Once the next key arrives, erases the suggestion
+/// before readline runs the key's command, so Enter, `C-o`, a completion
+/// listing or `C-c` never leave grey text behind. Readline's own drawing
+/// function is in place while it waits for the key, so a resize is redrawn
+/// the way readline expects; inkline's is installed once the key arrives.
 extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
-    let (orig_getc, orig_redisplay) = STATE.with_borrow(|s| (s.orig_getc, s.orig_redisplay));
+    let (orig_getc, orig_redisplay, shown) =
+        STATE.with_borrow(|s| (s.orig_getc, s.orig_redisplay, s.shown_at.is_some()));
     ffi::set_redisplay_function(orig_redisplay);
+    if shown {
+        let interrupted = !ffi::wait_for_input(stream);
+        guard(erase_suggestion, || ());
+        if interrupted {
+            // Bash may jump out of here back to a new prompt; nothing in
+            // this frame needs dropping.
+            ffi::handle_interrupted_wait();
+        }
+    }
     let key = ffi::call_getc(orig_getc, stream);
     if STATE.with_borrow(|s| s.enabled) {
         ffi::set_redisplay_function(Some(redisplay as ffi::VoidFn));
@@ -124,23 +146,43 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
     key
 }
 
-/// Readline calls this when it returns a line. Readline's own drawing
+/// Readline calls this when it returns a line. Enter can reach readline
+/// without `getc` (typed ahead in one burst); readline has then moved to the
+/// row below, so the suggestion is erased one row up. Readline's own drawing
 /// function goes back in place, so a later terminal setup (such as after
 /// `TERM` changes) sees it.
 extern "C" fn deprep_terminal() {
-    let (orig_deprep, orig_redisplay) = STATE.with_borrow(|s| (s.orig_deprep, s.orig_redisplay));
+    let (orig_deprep, orig_redisplay, shown_at) =
+        STATE.with_borrow_mut(|s| (s.orig_deprep, s.orig_redisplay, s.shown_at.take()));
+    if let Some(col) = shown_at
+        && ffi::line_done()
+    {
+        ffi::write_out(format!("\x1b[A\x1b[{}G\x1b[K\x1b[B\r", col + 1).as_bytes());
+    }
     ffi::set_redisplay_function(orig_redisplay);
     ffi::call_deprep(orig_deprep);
 }
 
+/// Clears from the cursor to the end of its row. The cursor is where the last
+/// draw left it: at the end of the line, where the suggestion starts.
+fn erase_suggestion() {
+    let shown = STATE.with_borrow_mut(|s| s.shown_at.take());
+    if shown.is_some() {
+        ffi::write_out(b"\x1b[K");
+    }
+}
+
 extern "C" fn redisplay() {
+    guard(erase_suggestion, || ());
     let orig = STATE.with_borrow(|s| s.orig_redisplay);
     ffi::call_redisplay(orig);
     guard(draw, || ());
 }
 
-/// Repaints the line readline just drew, in colour.
+/// Repaints the line readline just drew, in colour, with a suggestion after
+/// it when the cursor is at the end.
 fn draw() {
+    STATE.with_borrow_mut(|s| s.suggestion = None);
     let Some(line) = ffi::line() else { return };
     if line.is_empty() || ffi::horizontal_scroll_mode() {
         return;
@@ -150,6 +192,11 @@ fn draw() {
     let prompt_width = render::prompt_width(&ffi::display_prompt());
     let colors_spec = ffi::shell_variable("INKLINE_COLORS");
     let path = ffi::shell_variable("PATH").unwrap_or_default();
+    let suggestion = if point == line.len() && ffi::normal_editing() {
+        ffi::history_find_map(|entry| suggest::rest(&line, entry).map(str::to_owned))
+    } else {
+        None
+    };
     STATE.with_borrow_mut(|s| {
         if s.colors_spec != colors_spec {
             s.colors = Colors::parse(colors_spec.as_deref().unwrap_or(""));
@@ -165,12 +212,17 @@ fn draw() {
             point,
             spans: &spans,
             colors: &s.colors,
-            suggestion: None,
+            suggestion: suggestion.as_deref(),
             rows,
             cols,
         };
-        if let Some(out) = render::build(&repaint) {
-            ffi::write_out(&out.bytes);
+        let Some(out) = render::build(&repaint) else {
+            return;
+        };
+        ffi::write_out(&out.bytes);
+        s.shown_at = out.suggestion_col;
+        if let (Some(_), Some(rest)) = (out.suggestion_col, suggestion) {
+            s.suggestion = Some((line.clone(), rest));
         }
     });
 }
