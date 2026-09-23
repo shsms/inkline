@@ -341,3 +341,39 @@ pub fn handle_interrupted_wait() {
         }
     }
 }
+
+// ---- Commands ----
+
+pub type CommandFn = unsafe extern "C" fn(c_int, c_int) -> c_int;
+
+unsafe extern "C" {
+    fn rl_add_defun(name: *const c_char, function: Option<CommandFn>, key: c_int) -> c_int;
+    fn rl_insert_text(text: *const c_char) -> c_int;
+    fn rl_forward_char(count: c_int, key: c_int) -> c_int;
+    fn rl_forward_word(count: c_int, key: c_int) -> c_int;
+    fn rl_end_of_line(count: c_int, key: c_int) -> c_int;
+}
+
+/// Registers a readline command under `name` without binding a key.  Readline
+/// keeps the name pointer, so it must be `'static`.
+pub fn add_command(name: &'static CStr, f: CommandFn) {
+    unsafe { rl_add_defun(name.as_ptr(), Some(f), -1) };
+}
+
+pub fn insert_text(text: &str) {
+    if let Ok(text) = CString::new(text) {
+        unsafe { rl_insert_text(text.as_ptr()) };
+    }
+}
+
+pub fn forward_char(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_forward_char(count, key) }
+}
+
+pub fn forward_word(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_forward_word(count, key) }
+}
+
+pub fn end_of_line(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_end_of_line(count, key) }
+}

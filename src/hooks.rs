@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::ffi::c_int;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Once;
 
 use crate::colors::Colors;
 use crate::commands::{self, PathCache};
@@ -29,6 +30,8 @@ struct State {
     shown_at: Option<usize>,
 }
 
+static REGISTER: Once = Once::new();
+
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
@@ -45,6 +48,13 @@ thread_local! {
 }
 
 pub fn load() {
+    // Readline has no way to remove a command, and the library stays loaded
+    // (see build.rs), so the commands are registered once per process.
+    REGISTER.call_once(|| {
+        ffi::add_command(c"accept-suggestion-char", accept_suggestion_char);
+        ffi::add_command(c"accept-suggestion-word", accept_suggestion_word);
+        ffi::add_command(c"accept-suggestion", accept_suggestion);
+    });
     enable();
 }
 
@@ -180,9 +190,14 @@ extern "C" fn redisplay() {
 }
 
 /// Repaints the line readline just drew, in colour, with a suggestion after
-/// it when the cursor is at the end.
+/// it when the cursor is at the end. Outside plain editing (a count prefix,
+/// a search) the stored suggestion is kept, so `M-3 C-f` can still take
+/// from it; `accept` checks it against the line before using it.
 fn draw() {
-    STATE.with_borrow_mut(|s| s.suggestion = None);
+    let editing = ffi::normal_editing();
+    if editing {
+        STATE.with_borrow_mut(|s| s.suggestion = None);
+    }
     let Some(line) = ffi::line() else { return };
     if line.is_empty() || ffi::horizontal_scroll_mode() {
         return;
@@ -192,7 +207,7 @@ fn draw() {
     let prompt_width = render::prompt_width(&ffi::display_prompt());
     let colors_spec = ffi::shell_variable("INKLINE_COLORS");
     let path = ffi::shell_variable("PATH").unwrap_or_default();
-    let suggestion = if point == line.len() && ffi::normal_editing() {
+    let suggestion = if editing && point == line.len() {
         ffi::history_find_map(|entry| suggest::rest(&line, entry).map(str::to_owned))
     } else {
         None
@@ -225,4 +240,43 @@ fn draw() {
             s.suggestion = Some((line.clone(), rest));
         }
     });
+}
+
+extern "C" fn accept_suggestion_char(count: c_int, key: c_int) -> c_int {
+    accept(count, key, suggest::chars, ffi::forward_char)
+}
+
+extern "C" fn accept_suggestion_word(count: c_int, key: c_int) -> c_int {
+    accept(count, key, suggest::words, ffi::forward_word)
+}
+
+extern "C" fn accept_suggestion(count: c_int, key: c_int) -> c_int {
+    accept(count, key, suggest::all, ffi::end_of_line)
+}
+
+/// Inserts the part of the suggestion `take` picks. Without a suggestion for
+/// the current line and cursor, runs readline's own command instead.
+fn accept(
+    count: c_int,
+    key: c_int,
+    take: fn(&str, usize) -> &str,
+    fallback: fn(c_int, c_int) -> c_int,
+) -> c_int {
+    guard(
+        || {
+            let suggestion = STATE.with_borrow(|s| s.suggestion.clone());
+            match suggestion {
+                Some((line, rest))
+                    if count > 0
+                        && ffi::point() == line.len()
+                        && ffi::line().as_deref() == Some(line.as_str()) =>
+                {
+                    ffi::insert_text(take(&rest, count as usize));
+                    0
+                }
+                _ => fallback(count, key),
+            }
+        },
+        || fallback(count, key),
+    )
 }

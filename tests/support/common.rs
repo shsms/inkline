@@ -38,7 +38,12 @@ pub fn bash_command() -> Command {
 }
 
 /// `bind` lines the tests load right after inkline.
-pub const BINDINGS: &str = "";
+pub const BINDINGS: &str = r#"bind '"\C-f": accept-suggestion-char'
+bind '"\e[C": accept-suggestion-char'
+bind '"\ef": accept-suggestion-word'
+bind '"\C-e": accept-suggestion'
+bind '"\e[F": accept-suggestion'
+"#;
 
 pub struct Options {
     pub rows: u16,
