@@ -7,6 +7,7 @@ pub mod lexer;
 pub mod pairs;
 pub mod render;
 pub mod suggest;
+pub mod syntax;
 
 // These reference symbols that only exist inside bash, so they are left out of
 // the unit-test binary, which runs without bash.
