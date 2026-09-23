@@ -10,6 +10,7 @@ use crate::colors::Colors;
 use crate::commands::{self, PathCache};
 use crate::ffi;
 use crate::lexer::Lexer;
+use crate::pairs::{self, Action};
 use crate::render::{self, Repaint};
 use crate::suggest;
 
@@ -58,6 +59,9 @@ pub fn load() {
         ffi::add_command(c"accept-suggestion-char", accept_suggestion_char);
         ffi::add_command(c"accept-suggestion-word", accept_suggestion_word);
         ffi::add_command(c"accept-suggestion", accept_suggestion);
+        ffi::add_command(c"insert-pair", insert_pair);
+        ffi::add_command(c"insert-close", insert_close);
+        ffi::add_command(c"delete-pair", delete_pair);
     });
     STATE.with_borrow_mut(|s| s.unloaded = false);
     enable();
@@ -285,4 +289,80 @@ fn accept(
         },
         || fallback(count, key),
     )
+}
+
+/// Runs a pairing command: `edit` gets the line and cursor and returns whether
+/// it handled the key. Otherwise, and after `enable -d` or a panic, `fallback`
+/// runs, the readline command the key normally runs.
+fn pairing(
+    count: c_int,
+    key: c_int,
+    fallback: fn(c_int, c_int) -> c_int,
+    edit: impl FnOnce(&str, usize) -> bool,
+) -> c_int {
+    guard(
+        || {
+            let unloaded = STATE.with_borrow(|s| s.unloaded);
+            if let Some(line) = ffi::line().filter(|_| !unloaded)
+                && edit(&line, ffi::point())
+            {
+                0
+            } else {
+                fallback(count, key)
+            }
+        },
+        || fallback(count, key),
+    )
+}
+
+fn typed_char(key: c_int) -> Option<char> {
+    u32::try_from(key).ok().and_then(char::from_u32)
+}
+
+extern "C" fn insert_pair(count: c_int, key: c_int) -> c_int {
+    pairing(count, key, ffi::self_insert, |line, point| {
+        let Some(typed) = typed_char(key) else {
+            return false;
+        };
+        let context = STATE.with_borrow_mut(|s| s.lexer.context_at(line, point));
+        match pairs::open(line, point, typed, ffi::explicit_count(), context) {
+            Action::InsertPair(open, close) => {
+                ffi::begin_undo_group();
+                ffi::insert_text(&format!("{open}{close}"));
+                ffi::set_point(point + open.len_utf8());
+                ffi::end_undo_group();
+                true
+            }
+            Action::Skip => {
+                ffi::set_point(point + typed.len_utf8());
+                true
+            }
+            Action::Fallback | Action::DeletePair => false,
+        }
+    })
+}
+
+extern "C" fn insert_close(count: c_int, key: c_int) -> c_int {
+    pairing(count, key, ffi::self_insert, |line, point| {
+        let Some(typed) = typed_char(key) else {
+            return false;
+        };
+        let moves_over = pairs::close(line, point, typed, ffi::explicit_count()) == Action::Skip;
+        if moves_over {
+            ffi::set_point(point + typed.len_utf8());
+        }
+        moves_over
+    })
+}
+
+extern "C" fn delete_pair(count: c_int, key: c_int) -> c_int {
+    pairing(count, key, ffi::rubout, |line, point| {
+        let deletes = pairs::backspace(line, point, ffi::explicit_count()) == Action::DeletePair;
+        if deletes {
+            // Pairs are ASCII: one byte on each side of the cursor.
+            ffi::delete_text(point - 1, point + 1);
+            ffi::set_point(point - 1);
+        }
+        deletes
+    })
 }

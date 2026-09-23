@@ -377,3 +377,46 @@ pub fn forward_word(count: c_int, key: c_int) -> c_int {
 pub fn end_of_line(count: c_int, key: c_int) -> c_int {
     unsafe { rl_end_of_line(count, key) }
 }
+
+// ---- Pairing ----
+
+unsafe extern "C" {
+    static mut rl_explicit_arg: c_int;
+    fn rl_insert(count: c_int, key: c_int) -> c_int;
+    fn rl_rubout(count: c_int, key: c_int) -> c_int;
+    fn rl_delete_text(start: c_int, end: c_int) -> c_int;
+    fn rl_begin_undo_group() -> c_int;
+    fn rl_end_undo_group() -> c_int;
+}
+
+/// readline's `self-insert`.
+pub fn self_insert(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_insert(count, key) }
+}
+
+/// readline's `backward-delete-char`.
+pub fn rubout(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_rubout(count, key) }
+}
+
+/// Deletes bytes `start..end` of the line.
+pub fn delete_text(start: usize, end: usize) {
+    unsafe { rl_delete_text(start as c_int, end as c_int) };
+}
+
+pub fn begin_undo_group() {
+    unsafe { rl_begin_undo_group() };
+}
+
+pub fn end_undo_group() {
+    unsafe { rl_end_undo_group() };
+}
+
+pub fn set_point(point: usize) {
+    unsafe { rl_point = point as c_int }
+}
+
+/// Whether the user typed a count prefix for this command.
+pub fn explicit_count() -> bool {
+    unsafe { rl_explicit_arg != 0 }
+}

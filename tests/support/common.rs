@@ -43,6 +43,17 @@ bind '"\e[C": accept-suggestion-char'
 bind '"\ef": accept-suggestion-word'
 bind '"\C-e": accept-suggestion'
 bind '"\e[F": accept-suggestion'
+bind '"(": insert-pair'
+bind '"[": insert-pair'
+bind '"{": insert-pair'
+bind '"\"": insert-pair'
+bind "\"'\": insert-pair"
+bind '"`": insert-pair'
+bind '")": insert-close'
+bind '"]": insert-close'
+bind '"}": insert-close'
+bind 'set bind-tty-special-chars off'
+bind '"\C-?": delete-pair'
 "#;
 
 pub struct Options {
