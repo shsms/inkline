@@ -28,6 +28,9 @@ struct State {
     suggestion: Option<(String, String)>,
     /// The column where the suggestion on screen starts, if one is showing.
     shown_at: Option<usize>,
+    /// Set by `enable -d`: the readline commands stay registered but only run
+    /// readline's own.
+    unloaded: bool,
 }
 
 static REGISTER: Once = Once::new();
@@ -44,6 +47,7 @@ thread_local! {
         paths: PathCache::default(),
         suggestion: None,
         shown_at: None,
+        unloaded: false,
     });
 }
 
@@ -55,11 +59,13 @@ pub fn load() {
         ffi::add_command(c"accept-suggestion-word", accept_suggestion_word);
         ffi::add_command(c"accept-suggestion", accept_suggestion);
     });
+    STATE.with_borrow_mut(|s| s.unloaded = false);
     enable();
 }
 
 pub fn unload() {
     disable();
+    STATE.with_borrow_mut(|s| s.unloaded = true);
 }
 
 pub fn builtin(args: &[String]) -> c_int {
