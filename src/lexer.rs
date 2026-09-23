@@ -26,6 +26,15 @@ pub struct Span {
     pub kind: Kind,
 }
 
+/// Where a position in the line is, for the pairing rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Context {
+    Code,
+    Comment,
+    /// Inside a string opened with this quote.
+    Quoted(char),
+}
+
 const KEYWORDS: &[&str] = &[
     "if", "then", "else", "elif", "fi", "for", "in", "while", "until", "do", "done", "case",
     "esac", "function", "select", "[[", "]]", "!",
@@ -70,6 +79,37 @@ impl Lexer {
         };
         painter.paint(tree.root_node(), None);
         merge(&labels)
+    }
+
+    /// Whether the cursor at byte `pos` is in code, a comment or a string.
+    pub fn context_at(&mut self, line: &str, pos: usize) -> Context {
+        let Some(tree) = self.parser.parse(line, None) else {
+            return Context::Code;
+        };
+        // The byte before the cursor finds the string or comment the cursor
+        // sits at the end of.
+        let mut node = tree
+            .root_node()
+            .descendant_for_byte_range(pos.saturating_sub(1), pos);
+        while let Some(n) = node {
+            // An unfinished string or substitution also contains the position
+            // just past its last byte.
+            let inside =
+                n.start_byte() < pos && (pos < n.end_byte() || n.has_error() || n.is_error());
+            let text = &line[n.byte_range()];
+            match n.kind() {
+                "command_substitution" | "process_substitution" if inside => return Context::Code,
+                "comment" if n.start_byte() < pos => return Context::Comment,
+                "string" | "translated_string" if inside => return Context::Quoted('"'),
+                "raw_string" | "ansi_c_string" if inside => return Context::Quoted('\''),
+                "ERROR" if inside && text.starts_with(['\'', '"']) => {
+                    return Context::Quoted(text.chars().next().unwrap_or('"'));
+                }
+                _ => {}
+            }
+            node = n.parent();
+        }
+        Context::Code
     }
 }
 
@@ -278,5 +318,41 @@ mod tests {
             labels("echo 日本 \"x\""),
             [(Command, "echo"), (String, "\"x\"")]
         );
+    }
+
+    #[test]
+    fn context_inside_and_after_strings() {
+        let mut lexer = Lexer::new();
+        let cases = [
+            ("echo \"abc", 9, Context::Quoted('"')),
+            ("echo \"abc\"", 9, Context::Quoted('"')),
+            ("echo \"abc\"", 10, Context::Code),
+            ("echo 'raw", 9, Context::Quoted('\'')),
+            ("echo 'ab'", 8, Context::Quoted('\'')),
+            ("echo 'ab'", 9, Context::Code),
+            ("echo \"\"", 6, Context::Quoted('"')),
+            ("echo ''", 6, Context::Quoted('\'')),
+            ("echo \"$x", 8, Context::Quoted('"')),
+        ];
+        for (line, pos, want) in cases {
+            assert_eq!(lexer.context_at(line, pos), want, "{line:?} at {pos}");
+        }
+    }
+
+    #[test]
+    fn context_in_comments_and_substitutions() {
+        let mut lexer = Lexer::new();
+        let cases = [
+            ("ls # note", 9, Context::Comment),
+            ("ls # note", 3, Context::Code),
+            ("echo $(ls", 9, Context::Code),
+            ("echo `ls", 8, Context::Code),
+            ("echo (", 6, Context::Code),
+            ("ls", 2, Context::Code),
+            ("", 0, Context::Code),
+        ];
+        for (line, pos, want) in cases {
+            assert_eq!(lexer.context_at(line, pos), want, "{line:?} at {pos}");
+        }
     }
 }

@@ -1,14 +1,15 @@
-//! inkline: syntax highlighting, history suggestions and bracket pairing
-//! for bash's readline, loaded into bash with `enable -f`.
+//! inkline: syntax highlighting, history suggestions and bracket pairing for
+//! bash's readline, loaded into bash with `enable -f`.
 
 pub mod colors;
 pub mod commands;
 pub mod lexer;
+pub mod pairs;
 pub mod render;
 pub mod suggest;
 
-// These reference symbols that only exist inside bash, so they are left out
-// of the unit-test binary, which runs without bash.
+// These reference symbols that only exist inside bash, so they are left out of
+// the unit-test binary, which runs without bash.
 #[cfg(not(test))]
 mod ffi;
 #[cfg(not(test))]
