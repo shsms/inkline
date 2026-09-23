@@ -349,11 +349,22 @@ pub fn history_find_map<T>(mut f: impl FnMut(&str) -> Option<T>) -> Option<T> {
 unsafe extern "C" {
     static mut rl_signal_event_hook: Option<unsafe extern "C" fn() -> c_int>;
     fn rl_check_signals();
+    fn rl_pending_signal() -> c_int;
 }
 
-/// Blocks until `stream` has input or a signal arrives. Returns false when
-/// a signal interrupted the wait.
-pub fn wait_for_input(stream: *mut libc::FILE) -> bool {
+pub enum Wait {
+    /// Input is ready to read.
+    Ready,
+    /// A signal interrupted the wait. The value is the signal readline caught
+    /// and has not handled yet, or 0 for one readline does not catch, such as
+    /// the `SIGCHLD` of a background job ending.
+    Signal(c_int),
+    /// Waiting failed; readline's own reader will report it.
+    Error,
+}
+
+/// Blocks until `stream` has input or a signal arrives.
+pub fn wait_for_input(stream: *mut libc::FILE) -> Wait {
     let fd = if stream.is_null() {
         0
     } else {
@@ -364,7 +375,13 @@ pub fn wait_for_input(stream: *mut libc::FILE) -> bool {
         events: libc::POLLIN,
         revents: 0,
     };
-    unsafe { libc::poll(&mut poll, 1, -1) >= 0 }
+    if unsafe { libc::poll(&mut poll, 1, -1) } >= 0 {
+        Wait::Ready
+    } else if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+        Wait::Signal(unsafe { rl_pending_signal() })
+    } else {
+        Wait::Error
+    }
 }
 
 /// Does what `rl_getc` does after a signal interrupts its read: readline

@@ -193,6 +193,17 @@ impl Shell {
         std::mem::take(&mut *self.output.lock().unwrap())
     }
 
+    /// Polls the raw output since the last `take_output` until it contains
+    /// `needle`, for up to 5 seconds.
+    pub fn wait_for_output(&self, what: &str, needle: &[u8]) {
+        poll(|| find_bytes(&self.output.lock().unwrap(), needle).map(|_| ())).unwrap_or_else(|| {
+            panic!(
+                "timed out waiting for {what}; screen:\n{}",
+                dump(&self.screen())
+            )
+        })
+    }
+
     pub fn screen(&self) -> vt100::Screen {
         self.parser.lock().unwrap().screen().clone()
     }

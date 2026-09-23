@@ -115,19 +115,31 @@ fn wrapped_line_matches_plain_bash() {
     wait_same(&with, &plain, "typing a wrapped line");
 }
 
-/// Readline redraws the line itself after a resize; the colours return with
-/// the next key.
+/// Readline redraws the line itself after a resize; inkline repaints the
+/// colours and the suggestion straight after, without waiting for a key.
 #[test]
-fn colours_return_after_a_resize() {
-    let mut sh = typed(Options::default(), "ls \"abc\"");
-    sh.wait_for("colours", |s| fg_is(s, "\"abc\"", Color::Idx(3)));
+fn colours_survive_a_resize() {
+    let mut sh = typed(
+        Options {
+            history: vec!["ls \"abc\" -l"],
+            ..Options::default()
+        },
+        "ls \"abc\"",
+    );
+    sh.wait_for("colours", |s| {
+        cursor_row(s) == "$ ls \"abc\" -l" && fg_is(s, "\"abc\"", Color::Idx(3))
+    });
+    sh.settle();
+    sh.take_output();
     sh.resize(24, 40);
-    let s = sh.settle();
-    assert_eq!(cursor_row(&s), "$ ls \"abc\"");
-    sh.send("\x05");
-    let s = sh.wait_for("colours", |s| fg_is(s, "\"abc\"", Color::Idx(3)));
-    assert_eq!(cursor_row(&s), "$ ls \"abc\"");
-    assert_eq!(fg(&s, "ls"), Color::Idx(2));
+    sh.wait_for_output("readline's redraw", b"$ ls \"abc\"");
+    let s = sh.wait_for("colours after the resize", |s| {
+        cursor_row(s) == "$ ls \"abc\" -l"
+            && fg_is(s, "ls", Color::Idx(2))
+            && fg_is(s, "\"abc\"", Color::Idx(3))
+            && fg_is(s, " -l", Color::Idx(8))
+    });
+    assert_eq!(s.cursor_position(), (0, 10));
 }
 
 #[test]

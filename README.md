@@ -110,11 +110,11 @@ INKLINE_COLORS='command=32:unknown=31:keyword=35:option=36:string=33:variable=34
   cursor-up capability for (such as an unknown `TERM` over ssh), a locale that
   is not UTF-8, and, on bash 5.1+, while readline highlights a search match or
   pasted text.
-- After the terminal is resized, and on a line that readline fills in before you
-  type (such as the next history line after `C-o`), readline draws the line
-  itself; the colours come back with the next key. readline treats a replaced
-  drawing function as a sign the application draws everything itself, so inkline
-  only replaces it while a key is being handled.
+- A line that readline fills in before you type (such as the next history line
+  after `C-o`) is drawn by readline itself; the colours come in with the first
+  key. readline treats a replaced drawing function as a sign the application
+  draws everything itself, so inkline only replaces it while a key is being
+  handled, and repaints after a window resize.
 - A completion listing triggered in the same burst of typed-ahead keys as the
   text before it can leave grey suggestion text above the list.
 - A `bind -x` key pressed while a suggestion shows runs its command inside the

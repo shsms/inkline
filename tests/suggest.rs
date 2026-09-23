@@ -112,6 +112,20 @@ fn erased_before_completion_listing() {
     assert_eq!(row_text(&s, 0), "$ ls zz");
 }
 
+/// A background job ending interrupts the wait for a key; the suggestion stays.
+#[test]
+fn kept_when_a_background_job_ends() {
+    let mut sh = Shell::start(with_history(vec!["echo hello-world"]));
+    sh.send("sleep 0.5 &\r");
+    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 2);
+    sh.send("echo hel");
+    sh.wait_for("the suggestion", |s| cursor_row(s) == "$ echo hello-world");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(cursor_row(&sh.screen()), "$ echo hello-world");
+    sh.send("\x05\r");
+    sh.wait_for("the output", |s| has_row(s, "hello-world"));
+}
+
 #[test]
 fn none_while_searching() {
     let mut sh = Shell::start(with_history(vec!["echo hello-world"]));

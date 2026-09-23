@@ -193,40 +193,71 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
     }
 }
 
-/// Readline's key reader. Once the next key arrives, erases the suggestion
-/// before readline runs the key's command, so Enter, `C-o`, a completion
-/// listing or `C-c` never leave grey text behind. Readline's own drawing
-/// function is in place while it waits for the key, so a resize is redrawn
-/// the way readline expects; inkline's is installed once the key arrives.
+/// Readline's key reader. inkline waits for the key itself, so that:
+///
+/// - once the key arrives, the suggestion is erased before readline runs the
+///   key's command, so Enter, `C-o`, a completion listing or `C-c` never leave
+///   grey text behind;
+/// - after a signal interrupts the wait and bash returns to it (a window
+///   resize, a background job ending), inkline repaints the line straight away;
+///   for a resize, readline has redrawn it first.
+///
+/// Readline's own drawing function is in place while waiting, so a resize is
+/// redrawn the way readline expects; inkline's is installed once the key
+/// arrives.
 extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
-    let interrupted = guard(
+    guard(
         || {
             ffi::set_redisplay_function(originals().redisplay);
             // Nothing may be held back while waiting for a key.
             end_update();
             ffi::flush_out();
-            let shown = STATE.with_borrow(|s| s.shown_at.is_some());
-            if !shown {
-                return false;
+        },
+        || (),
+    );
+    loop {
+        match ffi::wait_for_input(stream) {
+            ffi::Wait::Ready | ffi::Wait::Error => break,
+            ffi::Wait::Signal(signal) => {
+                // Readline's redraw after a resize and inkline's repaint go out
+                // as one update. Other signals are not held back: bash may jump
+                // from them to a new prompt and run commands there.
+                guard(
+                    || {
+                        if signal == libc::SIGWINCH {
+                            begin_update();
+                        }
+                        erase_suggestion();
+                    },
+                    || (),
+                );
+                // Bash may jump out of here back to a new prompt; nothing in
+                // this frame needs dropping.
+                ffi::handle_interrupted_wait();
+                guard(
+                    || {
+                        draw();
+                        end_update();
+                        ffi::flush_out();
+                    },
+                    || (),
+                );
             }
-            let interrupted = !ffi::wait_for_input(stream);
+        }
+    }
+    guard(
+        || {
             // The update opens here only to hide the erase; otherwise it opens
             // when readline redraws. The key's command may run a `bind -x`
             // command, whose output a terminal would hold back while the
             // update is open.
-            if !interrupted {
+            if STATE.with_borrow(|s| s.shown_at.is_some()) {
                 begin_update();
             }
             erase_suggestion();
-            interrupted
         },
-        || false,
+        || (),
     );
-    if interrupted {
-        // Bash may jump out of here back to a new prompt; nothing in this
-        // frame needs dropping.
-        ffi::handle_interrupted_wait();
-    }
     let key = ffi::call_getc(originals().getc, stream);
     guard(
         || {
