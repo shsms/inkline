@@ -141,3 +141,18 @@ fn multi_line_history_entry() {
         "$ for i in 1",
     );
 }
+
+/// When the line exactly fills a row, the suggestion starts at column 0 of the
+/// next row, which is where readline leaves the cursor after Enter.
+#[test]
+fn erased_after_enter_in_same_burst_at_row_end() {
+    let mut sh = Shell::start(Options {
+        cols: 20,
+        // Longer than the output, so an unerased suggestion shows after it.
+        history: vec!["echo aaaaaaaaaaaaa-and-much-more-text"],
+        ..Options::default()
+    });
+    sh.send("echo aaaaaaaaaaaaa\r");
+    let s = sh.wait_for("the output", |s| has_row(s, "aaaaaaaaaaaaa"));
+    assert_eq!(row_text(&s, 0), "$ echo aaaaaaaaaaaaa");
+}

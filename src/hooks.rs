@@ -219,10 +219,12 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
 }
 
 /// Readline calls this when it returns a line. Enter can reach readline
-/// without `getc` (typed ahead in one burst); readline has then moved to the
-/// row below, so the suggestion is erased one row up. Readline's own drawing
-/// function goes back in place, so a later terminal setup (such as after
-/// `TERM` changes) sees it.
+/// without `getc` (typed ahead in one burst); readline's final update has
+/// then left the cursor at the start of the row below the line, so the
+/// suggestion is erased there: one row up, or on the cursor's own row when
+/// the line exactly filled its last row and the suggestion started at column
+/// 0 of the next. Readline's own drawing function goes back in place, so a
+/// later terminal setup (such as after `TERM` changes) sees it.
 extern "C" fn deprep_terminal() {
     guard(
         || {
@@ -230,7 +232,12 @@ extern "C" fn deprep_terminal() {
             if let Some(col) = shown_at
                 && ffi::line_done()
             {
-                ffi::write_out(format!("\x1b[A\x1b[{}G\x1b[K\x1b[B\r", col + 1).as_bytes());
+                let erase = if col == 0 {
+                    "\r\x1b[K".to_string()
+                } else {
+                    format!("\x1b[A\x1b[{}G\x1b[K\x1b[B\r", col + 1)
+                };
+                ffi::write_out(erase.as_bytes());
             }
             ffi::set_redisplay_function(originals().redisplay);
         },
