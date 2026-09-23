@@ -35,9 +35,12 @@ pub struct Output {
     pub suggestion_col: Option<usize>,
 }
 
-/// Columns used by the last line of `prompt`, skipping the parts between
-/// `\001` and `\002`, which readline treats as invisible.
-pub fn prompt_width(prompt: &[u8]) -> usize {
+/// Columns used by the last line of `prompt`, skipping the parts between `\001`
+/// and `\002`, which readline treats as invisible. None when a visible part has
+/// control characters: readline counts each byte of an escape sequence left
+/// outside `\[ \]` as a column, the terminal does not, so where the line starts
+/// is unknown.
+pub fn prompt_width(prompt: &[u8]) -> Option<usize> {
     let last = prompt.rsplit(|&b| b == b'\n').next().unwrap_or(&[]);
     let mut visible = Vec::new();
     let mut hidden = false;
@@ -49,18 +52,23 @@ pub fn prompt_width(prompt: &[u8]) -> usize {
             _ => {}
         }
     }
-    String::from_utf8_lossy(&visible)
-        .chars()
-        .map(|c| c.width().unwrap_or(0))
-        .sum()
+    let visible = String::from_utf8_lossy(&visible);
+    if visible.chars().any(char::is_control) {
+        return None;
+    }
+    Some(visible.chars().map(|c| c.width().unwrap_or(0)).sum())
 }
 
 /// The bytes to write, or None when readline's own drawing should be left
-/// alone: control characters (drawn as `^X`), or a line taller than the
+/// alone: control characters (drawn as `^X`), a cursor inside a character
+/// (readline works in bytes outside UTF-8 locales), or a line taller than the
 /// screen.
 pub fn build(repaint: &Repaint) -> Option<Output> {
     let cols = repaint.cols;
-    if cols == 0 || repaint.line.chars().any(char::is_control) {
+    if cols == 0
+        || !repaint.line.is_char_boundary(repaint.point)
+        || repaint.line.chars().any(char::is_control)
+    {
         return None;
     }
     let start = position(repaint.prompt_width, "", cols);
@@ -182,10 +190,26 @@ mod tests {
 
     #[test]
     fn prompt_width_skips_invisible_parts() {
-        assert_eq!(prompt_width(b"$ "), 2);
-        assert_eq!(prompt_width(b"\x01\x1b[32m\x02user\x01\x1b[0m\x02$ "), 6);
-        assert_eq!(prompt_width(b"top line\n> "), 2);
-        assert_eq!(prompt_width("日本$ ".as_bytes()), 6);
+        assert_eq!(prompt_width(b"$ "), Some(2));
+        assert_eq!(
+            prompt_width(b"\x01\x1b[32m\x02user\x01\x1b[0m\x02$ "),
+            Some(6)
+        );
+        assert_eq!(prompt_width(b"top line\n> "), Some(2));
+        assert_eq!(prompt_width("日本$ ".as_bytes()), Some(6));
+    }
+
+    /// Readline counts escape sequences outside `\\[ \\]` as visible, so
+    /// inkline cannot tell where the line starts.
+    #[test]
+    fn prompt_width_unknown_with_visible_control_characters() {
+        assert_eq!(prompt_width(b"\x1b[32m$ \x1b[0m"), None);
+    }
+
+    #[test]
+    fn cursor_inside_a_character_is_left_to_readline() {
+        let colors = Colors::default();
+        assert!(build(&repaint("echo \u{e9}", 6, &[], &colors)).is_none());
     }
 
     #[test]

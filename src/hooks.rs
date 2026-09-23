@@ -199,6 +199,22 @@ extern "C" fn redisplay() {
     guard(draw, || ());
 }
 
+/// Setups where inkline cannot tell where readline put each character, so
+/// readline's own drawing is left alone.
+fn left_to_readline() -> bool {
+    ffi::variable_on(c"horizontal-scroll-mode")
+        // The mode string and the modified-line mark are drawn before the
+        // prompt but are not part of `rl_display_prompt`.
+        || ffi::variable_on(c"show-mode-in-prompt")
+        || ffi::variable_on(c"mark-modified-lines")
+        // Without cursor-up, readline scrolls long lines sideways.
+        || !ffi::terminal_can_move_up()
+        // Outside UTF-8, readline counts bytes and draws them as `\303`.
+        || !ffi::utf8_locale()
+        // Readline 8.1+ highlights a search match or pasted text itself.
+        || ffi::region_active()
+}
+
 /// Repaints the line readline just drew, in colour, with a suggestion after
 /// it when the cursor is at the end. Outside plain editing (a count prefix,
 /// a search) the stored suggestion is kept, so `M-3 C-f` can still take
@@ -209,12 +225,14 @@ fn draw() {
         STATE.with_borrow_mut(|s| s.suggestion = None);
     }
     let Some(line) = ffi::line() else { return };
-    if line.is_empty() || ffi::horizontal_scroll_mode() {
+    if line.is_empty() || left_to_readline() {
         return;
     }
+    let Some(prompt_width) = render::prompt_width(&ffi::display_prompt()) else {
+        return;
+    };
     let point = ffi::point();
     let (rows, cols) = ffi::screen_size();
-    let prompt_width = render::prompt_width(&ffi::display_prompt());
     let colors_spec = ffi::shell_variable("INKLINE_COLORS");
     let path = ffi::shell_variable("PATH").unwrap_or_default();
     let suggestion = if editing && point == line.len() {

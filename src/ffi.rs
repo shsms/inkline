@@ -163,11 +163,42 @@ pub fn screen_size() -> (usize, usize) {
     (rows.max(0) as usize, cols.max(0) as usize)
 }
 
-pub fn horizontal_scroll_mode() -> bool {
+/// Whether the readline boolean variable `name` is on.
+pub fn variable_on(name: &CStr) -> bool {
+    unsafe { c_str(rl_variable_value(name.as_ptr())) }.is_some_and(|v| v.to_bytes() == b"on")
+}
+
+unsafe extern "C" {
+    fn rl_get_termcap(cap: *const c_char) -> *mut c_char;
+}
+
+/// Whether readline knows how to move the cursor up. Without it, readline
+/// scrolls long lines sideways instead of wrapping them.
+pub fn terminal_can_move_up() -> bool {
     unsafe {
-        let value = rl_variable_value(c"horizontal-scroll-mode".as_ptr());
-        !value.is_null() && CStr::from_ptr(value).to_bytes() == b"on"
+        let up = rl_get_termcap(c"up".as_ptr());
+        !up.is_null() && *up != 0
     }
+}
+
+/// Whether the locale's character set is UTF-8, as bash set it.
+pub fn utf8_locale() -> bool {
+    unsafe { c_str(libc::nl_langinfo(libc::CODESET)) }.is_some_and(|c| c.to_bytes() == b"UTF-8")
+}
+
+/// Whether readline is highlighting an active region (a search match or pasted
+/// text). `rl_mark_active_p` only exists from readline 8.1, so it is looked up
+/// at run time.
+pub fn region_active() -> bool {
+    type MarkActiveFn = unsafe extern "C" fn() -> c_int;
+    static MARK_ACTIVE: std::sync::OnceLock<Option<MarkActiveFn>> = std::sync::OnceLock::new();
+    let mark_active = *MARK_ACTIVE.get_or_init(|| {
+        let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"rl_mark_active_p".as_ptr()) };
+        // SAFETY: readline defines rl_mark_active_p as `int (void)`.
+        (!symbol.is_null())
+            .then(|| unsafe { std::mem::transmute::<*mut c_void, MarkActiveFn>(symbol) })
+    });
+    mark_active.is_some_and(|f| unsafe { f() != 0 })
 }
 
 /// The value of a shell variable, exported or not.

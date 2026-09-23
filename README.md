@@ -96,8 +96,14 @@ INKLINE_COLORS='command=32:unknown=31:keyword=35:option=36:string=33:variable=34
 
 - Each line is highlighted on its own; continuation lines (after `PS2`) do not
   know about the lines before them.
-- Lines with control characters (typed with `C-v`), lines taller than the
-  terminal and `horizontal-scroll-mode` are drawn by readline without colours.
+- Where inkline cannot tell exactly where readline put each character, it leaves
+  the line uncoloured and without suggestions, drawn by readline as usual: lines
+  with control characters (typed with `C-v`), lines taller than the terminal,
+  `horizontal-scroll-mode`, `show-mode-in-prompt`, `mark-modified-lines`, a
+  `PS1` with escape sequences outside `\[ \]`, a terminal readline has no
+  cursor-up capability for (such as an unknown `TERM` over ssh), a locale that
+  is not UTF-8, and, on bash 5.1+, while readline highlights a search match or
+  pasted text.
 - After the terminal is resized, and on a line that readline fills in before you
   type (such as the next history line after `C-o`), readline draws the line
   itself; the colours come back with the next key. readline treats a replaced

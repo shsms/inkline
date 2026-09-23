@@ -71,6 +71,8 @@ pub struct Options {
     pub cwd: Option<PathBuf>,
     /// How the cursor row starts once the first prompt is up.
     pub prompt: &'static str,
+    pub term: &'static str,
+    pub lang: &'static str,
 }
 
 impl Default for Options {
@@ -84,6 +86,8 @@ impl Default for Options {
             inputrc: None,
             cwd: None,
             prompt: "$",
+            term: "xterm-256color",
+            lang: "C.UTF-8",
         }
     }
 }
@@ -135,10 +139,10 @@ impl Shell {
         cmd.arg("-i");
         cmd.env_clear();
         cmd.env("PATH", std::env::var_os("PATH").unwrap());
-        cmd.env("TERM", "xterm-256color");
+        cmd.env("TERM", opts.term);
         cmd.env("HOME", home.path());
         cmd.env("INPUTRC", &inputrc);
-        cmd.env("LANG", "C.UTF-8");
+        cmd.env("LANG", opts.lang);
         cmd.cwd(
             opts.cwd
                 .clone()
