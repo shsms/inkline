@@ -5,6 +5,7 @@ pub mod colors;
 pub mod commands;
 pub mod lexer;
 pub mod render;
+pub mod suggest;
 
 // These reference symbols that only exist inside bash, so they are left out
 // of the unit-test binary, which runs without bash.
