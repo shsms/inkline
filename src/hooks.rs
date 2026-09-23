@@ -1,8 +1,9 @@
 //! Connects inkline to bash and readline: the `inkline` builtin, the hooks
 //! readline calls, and the readline commands inkline adds.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_int;
+use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
 
@@ -14,11 +15,17 @@ use crate::pairs::{self, Action};
 use crate::render::{self, Repaint};
 use crate::suggest;
 
+/// The readline functions inkline replaced. Kept apart from `State` in a
+/// `Cell`, so the fallback after a panic can always read them.
+#[derive(Clone, Copy, Default)]
+struct Originals {
+    redisplay: Option<ffi::VoidFn>,
+    getc: Option<ffi::GetcFn>,
+    deprep: Option<ffi::VoidFn>,
+}
+
 struct State {
     enabled: bool,
-    orig_redisplay: Option<ffi::VoidFn>,
-    orig_getc: Option<ffi::GetcFn>,
-    orig_deprep: Option<ffi::VoidFn>,
     lexer: Lexer,
     colors: Colors,
     /// The `INKLINE_COLORS` value `colors` was parsed from.
@@ -37,11 +44,9 @@ struct State {
 static REGISTER: Once = Once::new();
 
 thread_local! {
+    static ORIGINALS: Cell<Originals> = Cell::default();
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
-        orig_redisplay: None,
-        orig_getc: None,
-        orig_deprep: None,
         lexer: Lexer::new(),
         colors: Colors::default(),
         colors_spec: None,
@@ -52,33 +57,62 @@ thread_local! {
     });
 }
 
+fn originals() -> Originals {
+    ORIGINALS.get()
+}
+
 pub fn load() {
-    // Readline has no way to remove a command, and the library stays loaded
-    // (see build.rs), so the commands are registered once per process.
-    REGISTER.call_once(|| {
-        ffi::add_command(c"accept-suggestion-char", accept_suggestion_char);
-        ffi::add_command(c"accept-suggestion-word", accept_suggestion_word);
-        ffi::add_command(c"accept-suggestion", accept_suggestion);
-        ffi::add_command(c"insert-pair", insert_pair);
-        ffi::add_command(c"insert-close", insert_close);
-        ffi::add_command(c"delete-pair", delete_pair);
-    });
-    STATE.with_borrow_mut(|s| s.unloaded = false);
-    enable();
+    guard(
+        || {
+            // Readline has no way to remove a command, and the library stays
+            // loaded (see build.rs), so the commands are registered once per
+            // process.
+            REGISTER.call_once(|| {
+                // One short line instead of Rust's panic report in the prompt.
+                std::panic::set_hook(Box::new(|_| {
+                    let _ = writeln!(std::io::stderr(), "\ninkline: internal error, turned off");
+                }));
+                ffi::add_command(c"accept-suggestion-char", accept_suggestion_char);
+                ffi::add_command(c"accept-suggestion-word", accept_suggestion_word);
+                ffi::add_command(c"accept-suggestion", accept_suggestion);
+                ffi::add_command(c"insert-pair", insert_pair);
+                ffi::add_command(c"insert-close", insert_close);
+                ffi::add_command(c"delete-pair", delete_pair);
+            });
+            STATE.with_borrow_mut(|s| s.unloaded = false);
+            enable();
+        },
+        || (),
+    );
 }
 
 pub fn unload() {
-    disable();
-    STATE.with_borrow_mut(|s| s.unloaded = true);
+    guard(
+        || {
+            disable();
+            STATE.with_borrow_mut(|s| s.unloaded = true);
+        },
+        || (),
+    );
 }
 
 pub fn builtin(args: &[String]) -> c_int {
+    guard(|| run_builtin(args), || ffi::EXECUTION_FAILURE)
+}
+
+fn run_builtin(args: &[String]) -> c_int {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         [] | ["status"] => {
             let on = STATE.with_borrow(|s| s.enabled);
-            println!("inkline: {}", if on { "on" } else { "off" });
-            ffi::EXECUTION_SUCCESS
+            match writeln!(
+                std::io::stdout(),
+                "inkline: {}",
+                if on { "on" } else { "off" }
+            ) {
+                Ok(()) => ffi::EXECUTION_SUCCESS,
+                Err(_) => ffi::EXECUTION_FAILURE,
+            }
         }
         ["on"] => {
             enable();
@@ -89,7 +123,7 @@ pub fn builtin(args: &[String]) -> c_int {
             ffi::EXECUTION_SUCCESS
         }
         _ => {
-            eprintln!("inkline: usage: inkline [on|off|status]");
+            let _ = writeln!(std::io::stderr(), "inkline: usage: inkline [on|off|status]");
             ffi::EX_USAGE
         }
     }
@@ -106,27 +140,34 @@ fn enable() {
         if s.enabled {
             return;
         }
-        s.orig_redisplay = ffi::redisplay_function();
-        s.orig_getc = ffi::getc_function();
-        s.orig_deprep = ffi::deprep_function();
+        ORIGINALS.set(Originals {
+            redisplay: ffi::redisplay_function(),
+            getc: ffi::getc_function(),
+            deprep: ffi::deprep_function(),
+        });
         ffi::set_getc_function(Some(getc as ffi::GetcFn));
         ffi::set_deprep_function(Some(deprep_terminal as ffi::VoidFn));
         s.enabled = true;
     });
 }
 
+/// Puts readline's functions back. Also the recovery after a panic, so it must
+/// not depend on `STATE` being borrowable.
 fn disable() {
-    erase_suggestion();
-    STATE.with_borrow_mut(|s| {
-        if !s.enabled {
-            return;
-        }
-        ffi::set_redisplay_function(s.orig_redisplay);
-        ffi::set_getc_function(s.orig_getc);
-        ffi::set_deprep_function(s.orig_deprep);
-        s.suggestion = None;
-        s.enabled = false;
+    let _ = catch_unwind(erase_suggestion);
+    let enabled = STATE.try_with(|s| {
+        s.try_borrow_mut().map(|mut s| {
+            s.suggestion = None;
+            std::mem::replace(&mut s.enabled, false)
+        })
     });
+    // Restore unless the state says inkline was already off.
+    if !matches!(enabled, Ok(Ok(false))) {
+        let orig = originals();
+        ffi::set_redisplay_function(orig.redisplay);
+        ffi::set_getc_function(orig.getc);
+        ffi::set_deprep_function(orig.deprep);
+    }
 }
 
 /// Runs `f`. If it panics, turns inkline off and runs `on_panic` instead, so a
@@ -147,22 +188,33 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
 /// function is in place while it waits for the key, so a resize is redrawn
 /// the way readline expects; inkline's is installed once the key arrives.
 extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
-    let (orig_getc, orig_redisplay, shown) =
-        STATE.with_borrow(|s| (s.orig_getc, s.orig_redisplay, s.shown_at.is_some()));
-    ffi::set_redisplay_function(orig_redisplay);
-    if shown {
-        let interrupted = !ffi::wait_for_input(stream);
-        guard(erase_suggestion, || ());
-        if interrupted {
-            // Bash may jump out of here back to a new prompt; nothing in
-            // this frame needs dropping.
-            ffi::handle_interrupted_wait();
-        }
+    let interrupted = guard(
+        || {
+            ffi::set_redisplay_function(originals().redisplay);
+            let shown = STATE.with_borrow(|s| s.shown_at.is_some());
+            if !shown {
+                return false;
+            }
+            let interrupted = !ffi::wait_for_input(stream);
+            erase_suggestion();
+            interrupted
+        },
+        || false,
+    );
+    if interrupted {
+        // Bash may jump out of here back to a new prompt; nothing in this
+        // frame needs dropping.
+        ffi::handle_interrupted_wait();
     }
-    let key = ffi::call_getc(orig_getc, stream);
-    if STATE.with_borrow(|s| s.enabled) {
-        ffi::set_redisplay_function(Some(redisplay as ffi::VoidFn));
-    }
+    let key = ffi::call_getc(originals().getc, stream);
+    guard(
+        || {
+            if STATE.with_borrow(|s| s.enabled) {
+                ffi::set_redisplay_function(Some(redisplay as ffi::VoidFn));
+            }
+        },
+        || (),
+    );
     key
 }
 
@@ -172,15 +224,19 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
 /// function goes back in place, so a later terminal setup (such as after
 /// `TERM` changes) sees it.
 extern "C" fn deprep_terminal() {
-    let (orig_deprep, orig_redisplay, shown_at) =
-        STATE.with_borrow_mut(|s| (s.orig_deprep, s.orig_redisplay, s.shown_at.take()));
-    if let Some(col) = shown_at
-        && ffi::line_done()
-    {
-        ffi::write_out(format!("\x1b[A\x1b[{}G\x1b[K\x1b[B\r", col + 1).as_bytes());
-    }
-    ffi::set_redisplay_function(orig_redisplay);
-    ffi::call_deprep(orig_deprep);
+    guard(
+        || {
+            let shown_at = STATE.with_borrow_mut(|s| s.shown_at.take());
+            if let Some(col) = shown_at
+                && ffi::line_done()
+            {
+                ffi::write_out(format!("\x1b[A\x1b[{}G\x1b[K\x1b[B\r", col + 1).as_bytes());
+            }
+            ffi::set_redisplay_function(originals().redisplay);
+        },
+        || (),
+    );
+    ffi::call_deprep(originals().deprep);
 }
 
 /// Clears from the cursor to the end of its row. The cursor is where the last
@@ -194,8 +250,7 @@ fn erase_suggestion() {
 
 extern "C" fn redisplay() {
     guard(erase_suggestion, || ());
-    let orig = STATE.with_borrow(|s| s.orig_redisplay);
-    ffi::call_redisplay(orig);
+    ffi::call_redisplay(originals().redisplay);
     guard(draw, || ());
 }
 

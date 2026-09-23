@@ -7,6 +7,7 @@
 use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
 
 pub const EXECUTION_SUCCESS: c_int = 0;
+pub const EXECUTION_FAILURE: c_int = 1;
 /// bash reports this as exit status 2, a usage error.
 pub const EX_USAGE: c_int = 258;
 
