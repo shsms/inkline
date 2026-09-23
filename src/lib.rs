@@ -2,6 +2,7 @@
 //! for bash's readline, loaded into bash with `enable -f`.
 
 pub mod colors;
+pub mod commands;
 pub mod lexer;
 
 // These reference symbols that only exist inside bash, so they are left out
