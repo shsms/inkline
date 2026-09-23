@@ -4,7 +4,7 @@
 //! The symbols are left undefined in the library and resolved against the bash
 //! binary when `enable -f` loads it.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_ulong, c_void};
 
 pub const EXECUTION_SUCCESS: c_int = 0;
 pub const EXECUTION_FAILURE: c_int = 1;
@@ -283,6 +283,7 @@ pub fn call_deprep(f: Option<VoidFn>) {
 // ---- Suggestions ----
 
 // rl_readline_state flags; the same values in readline 8.0 and 8.2.
+const RL_STATE_READCMD: c_ulong = 0x8;
 const RL_STATE_MOREINPUT: c_ulong = 0x40;
 const RL_STATE_ISEARCH: c_ulong = 0x80;
 const RL_STATE_NSEARCH: c_ulong = 0x100;
@@ -353,7 +354,7 @@ unsafe extern "C" {
 }
 
 pub enum Wait {
-    /// Input is ready to read.
+    /// Input is ready to read, or readline's timeout (`read -t`) is up.
     Ready,
     /// A signal interrupted the wait. The value is the signal readline caught
     /// and has not handled yet, or 0 for one readline does not catch, such as
@@ -363,7 +364,35 @@ pub enum Wait {
     Error,
 }
 
-/// Blocks until `stream` has input or a signal arrives.
+/// Milliseconds left until readline's timeout (`read -t`), rounded up, or -1
+/// when there is none. Readline 8.2 keeps the timeout itself and checks it in
+/// its own reader; older versions leave it to bash's `SIGALRM`, and have no
+/// `rl_timeout_remaining`, so it is looked up at run time.
+fn timeout_remaining() -> c_int {
+    type TimeoutFn = unsafe extern "C" fn(*mut c_uint, *mut c_uint) -> c_int;
+    static TIMEOUT: std::sync::OnceLock<Option<TimeoutFn>> = std::sync::OnceLock::new();
+    let timeout = *TIMEOUT.get_or_init(|| {
+        let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"rl_timeout_remaining".as_ptr()) };
+        // SAFETY: readline defines rl_timeout_remaining as
+        // `int (unsigned int *, unsigned int *)`.
+        (!symbol.is_null())
+            .then(|| unsafe { std::mem::transmute::<*mut c_void, TimeoutFn>(symbol) })
+    });
+    let Some(timeout) = timeout else { return -1 };
+    let (mut secs, mut usecs) = (0, 0);
+    match unsafe { timeout(&mut secs, &mut usecs) } {
+        1 => c_int::try_from(u64::from(secs) * 1000 + u64::from(usecs).div_ceil(1000))
+            .unwrap_or(c_int::MAX),
+        // No timeout, or reading the clock failed.
+        -1 => -1,
+        // Expired, or a value this code does not know: readline's reader
+        // decides.
+        _ => 0,
+    }
+}
+
+/// Blocks until `stream` has input, readline's timeout is up, or a signal
+/// arrives.
 pub fn wait_for_input(stream: *mut libc::FILE) -> Wait {
     let fd = if stream.is_null() {
         0
@@ -375,12 +404,23 @@ pub fn wait_for_input(stream: *mut libc::FILE) -> Wait {
         events: libc::POLLIN,
         revents: 0,
     };
-    if unsafe { libc::poll(&mut poll, 1, -1) } >= 0 {
+    if unsafe { libc::poll(&mut poll, 1, timeout_remaining()) } >= 0 {
         Wait::Ready
     } else if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
         Wait::Signal(unsafe { rl_pending_signal() })
     } else {
         Wait::Error
+    }
+}
+
+/// What readline's reader returns when it cannot read a key.
+pub fn read_error() -> c_int {
+    // READERR in readline.h.
+    const READ_ERROR: c_int = -2;
+    if unsafe { rl_readline_state } & RL_STATE_READCMD != 0 {
+        READ_ERROR
+    } else {
+        libc::EOF
     }
 }
 

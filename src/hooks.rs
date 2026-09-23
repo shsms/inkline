@@ -218,6 +218,18 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
     loop {
         match ffi::wait_for_input(stream) {
             ffi::Wait::Ready | ffi::Wait::Error => break,
+            // Readline's reader stops on these and leaves the signal to be
+            // handled after the read.
+            ffi::Wait::Signal(libc::SIGHUP | libc::SIGTERM) => {
+                guard(
+                    || {
+                        erase_suggestion();
+                        ffi::flush_out();
+                    },
+                    || (),
+                );
+                return ffi::read_error();
+            }
             ffi::Wait::Signal(signal) => {
                 // Readline's redraw after a resize and inkline's repaint go out
                 // as one update. Other signals are not held back: bash may jump

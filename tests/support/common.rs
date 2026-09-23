@@ -251,6 +251,19 @@ impl Shell {
             })
             .unwrap();
     }
+
+    pub fn signal(&self, signal: libc::c_int) {
+        let pid = self.child.process_id().expect("bash is running");
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, signal) }, 0);
+    }
+
+    /// Whether bash exits within a second.
+    pub fn exits(&mut self) -> bool {
+        poll_for(Duration::from_secs(1), || {
+            self.child.try_wait().ok().flatten()
+        })
+        .is_some()
+    }
 }
 
 impl Drop for Shell {
@@ -359,9 +372,14 @@ pub fn wait_same(a: &Shell, b: &Shell, what: &str) {
     }
 }
 
-/// Calls `attempt` every 20ms until it returns Some, for up to 5 seconds.
-fn poll<T>(mut attempt: impl FnMut() -> Option<T>) -> Option<T> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+/// Calls `poll_for` with a 5-second limit.
+fn poll<T>(attempt: impl FnMut() -> Option<T>) -> Option<T> {
+    poll_for(Duration::from_secs(5), attempt)
+}
+
+/// Calls `attempt` every 20ms until it returns Some, for up to `time`.
+fn poll_for<T>(time: Duration, mut attempt: impl FnMut() -> Option<T>) -> Option<T> {
+    let deadline = Instant::now() + time;
     loop {
         if let Some(value) = attempt() {
             return Some(value);
