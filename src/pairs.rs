@@ -51,10 +51,10 @@ pub fn open(
     if explicit_count {
         return Action::Fallback;
     }
-    if is_quote(typed) && next == Some(typed) {
+    if next == Some(typed) && closes_here(line, point, typed, context) {
         return Action::Skip;
     }
-    if next.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+    if next.is_some_and(|c| c.is_alphanumeric() || c == '_' || is_quote(c)) {
         return Action::Fallback;
     }
     if is_quote(typed) && prev.is_some_and(char::is_alphanumeric) {
@@ -66,6 +66,16 @@ pub fn open(
     match context {
         Context::Code => Action::InsertPair(typed, close),
         Context::Comment | Context::Quoted(_) => Action::Fallback,
+    }
+}
+
+/// Whether the quote at `point` closes the string or substitution the cursor is
+/// in, rather than opening a new one after it.
+fn closes_here(line: &str, point: usize, typed: char, context: Context) -> bool {
+    match typed {
+        '`' => line[..point].matches('`').count() % 2 == 1,
+        '"' | '\'' => context == Context::Quoted(typed),
+        _ => false,
     }
 }
 
@@ -173,6 +183,18 @@ mod tests {
             Action::Fallback,
             "not an opener"
         );
+    }
+
+    #[test]
+    fn quote_before_an_existing_string_is_plain() {
+        assert_eq!(open("echo \"foo\"", 5, '"', false, Code), Action::Fallback);
+        assert_eq!(open("echo 'x'", 5, '\'', false, Code), Action::Fallback);
+        assert_eq!(open("echo `ls`", 5, '`', false, Code), Action::Fallback);
+    }
+
+    #[test]
+    fn backtick_types_over_the_closing_backtick() {
+        assert_eq!(open("echo `ls`", 8, '`', false, Code), Action::Skip);
     }
 
     #[test]
