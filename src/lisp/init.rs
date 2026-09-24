@@ -150,6 +150,41 @@ pub fn read_at_start() {
     read(&path);
 }
 
+/// The directory for the markers, from bash's `HOME` and `XDG_STATE_HOME`,
+/// made if it is missing; None when there is none or it cannot be made. When
+/// it fails the checks `init.el`'s directory gets, markers are off and the
+/// error is the line that says so.
+#[cfg(not(test))]
+fn marker_dir() -> Result<Option<PathBuf>, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let home = crate::ffi::shell_variable("HOME");
+    let xdg = crate::ffi::shell_variable("XDG_STATE_HOME");
+    let Some(dir) = super::lockout::state_dir(xdg.as_deref(), home.as_deref()) else {
+        return Ok(None);
+    };
+    let made = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir);
+    let Ok(m) = made.and_then(|()| meta(&dir)) else {
+        return Ok(None);
+    };
+    match check_owner(&m, unsafe { libc::geteuid() }) {
+        Ok(()) => Ok(Some(dir)),
+        Err(why) => Err(format!("{}: markers off: {why}", dir.display())),
+    }
+}
+
+/// The stuck markers in `state`.
+#[cfg(not(test))]
+fn stuck_markers(state: &Path) -> Vec<super::lockout::Marker> {
+    super::lockout::stuck_markers(
+        state,
+        std::time::SystemTime::now(),
+        super::lockout::process_alive,
+    )
+}
+
 #[cfg(not(test))]
 fn read(path: &Path) {
     use std::io::Write;
@@ -179,6 +214,28 @@ fn read(path: &Path) {
         Err(why) => return skip(why),
     };
     let name = path.to_string_lossy().into_owned();
+    let state = marker_dir().unwrap_or_else(|line| {
+        say(line);
+        None
+    });
+    let changed = std::fs::metadata(&real).and_then(|m| m.modified()).ok();
+    if let Some(state) = &state {
+        let stuck = stuck_markers(state);
+        if changed.is_some_and(|c| super::lockout::skip_init(c, &stuck)) {
+            say("init.el did not finish in an earlier shell; not read. Fix it, then run inkline reload".into());
+            set_outcome(Outcome::Skipped(
+                path.to_owned(),
+                "did not finish in an earlier shell".into(),
+            ));
+            return;
+        }
+        for m in stuck {
+            let _ = std::fs::remove_file(m.path);
+        }
+    }
+    let marker = state
+        .as_deref()
+        .and_then(|s| super::lockout::make_marker(s, "loading"));
     // Stays if a panic ends the reading; a normal finish replaces it.
     set_outcome(Outcome::Failed(path.to_owned(), "internal error".into()));
     let result = super::with_lisp(|ctx| {
@@ -187,6 +244,7 @@ fn read(path: &Path) {
             .map(drop)
             .map_err(|e| super::errors::describe(&e, ctx, Some(&name)))
     });
+    drop(marker);
     match result {
         Ok(Ok(())) => set_outcome(Outcome::Loaded(path.to_owned())),
         Ok(Err(e)) => {

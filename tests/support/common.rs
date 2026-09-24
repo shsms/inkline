@@ -144,7 +144,16 @@ pub struct Shell {
 }
 
 impl Shell {
+    /// Starts bash and waits for its first prompt.
     pub fn start(opts: Options) -> Shell {
+        let prompt = opts.prompt;
+        let sh = Shell::spawn(opts);
+        sh.wait_for("the first prompt", |s| cursor_row(s).starts_with(prompt));
+        sh
+    }
+
+    /// Starts bash without waiting for its first prompt.
+    pub fn spawn(opts: Options) -> Shell {
         let (home_path, keep_home) = match &opts.home {
             Some(dir) => (dir.clone(), None),
             None => {
@@ -222,17 +231,14 @@ impl Shell {
             }
         });
         let writer = pty.master.take_writer().unwrap();
-        let sh = Shell {
+        Shell {
             parser,
             output,
             writer,
             master: pty.master,
             child,
             _home: keep_home,
-        };
-        let prompt = opts.prompt;
-        sh.wait_for("the first prompt", |s| cursor_row(s).starts_with(prompt));
-        sh
+        }
     }
 
     /// Types `keys` as one write.
@@ -317,11 +323,20 @@ impl Shell {
         })
         .is_some()
     }
+
+    /// Waits up to `time` for bash to exit, returning its exit status.
+    pub fn wait_exit(&mut self, time: Duration) -> Option<portable_pty::ExitStatus> {
+        poll_for(time, || self.child.try_wait().ok().flatten())
+    }
 }
 
 impl Drop for Shell {
     fn drop(&mut self) {
         let _ = self.child.kill();
+        // Reaps bash, so a test that checks whether its process is still
+        // running never sees it as a zombie kept alive by an unclaimed exit
+        // status.
+        let _ = self.wait_exit(Duration::from_secs(2));
     }
 }
 

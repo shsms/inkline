@@ -1,6 +1,8 @@
 #[path = "support/common.rs"]
 mod common;
 
+use std::time::Duration;
+
 use common::*;
 
 #[test]
@@ -355,4 +357,198 @@ fn status_shows_an_init_el_error_without_the_path_again() {
         home.path().join(".config/inkline/init.el").display()
     );
     sh.wait_for("the status", |s| has_row(s, &status));
+}
+
+#[test]
+fn a_group_writable_marker_directory_turns_markers_off() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let state = home.path().join(".local/state/inkline");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o770)).unwrap();
+    let mut sh = Shell::start(Options {
+        cols: 200,
+        home: Some(home.path().to_owned()),
+        init_el: Some("(setq inkline-indent 2)\n".into()),
+        ..Options::default()
+    });
+    let off = format!(
+        "inkline: {}: markers off: writable by group or others",
+        state.display()
+    );
+    sh.send("inkline status\r");
+    sh.wait_for("markers off, init.el read", |s| {
+        has_row(s, &off) && (0..s.size().0).any(|r| row_text(s, r).ends_with("(loaded)"))
+    });
+}
+
+#[test]
+fn a_looping_init_el_is_skipped_by_the_next_shell() {
+    let home = tempfile::tempdir().unwrap();
+    let opts = |init_el: Option<&str>| Options {
+        home: Some(home.path().to_owned()),
+        init_el: init_el.map(str::to_owned),
+        ..Options::default()
+    };
+    let stuck = Shell::spawn(opts(Some("(while t)\n")));
+    let state = home.path().join(".local/state/inkline");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !std::fs::read_dir(&state)
+        .into_iter()
+        .flatten()
+        .any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with("loading.")))
+    {
+        assert!(std::time::Instant::now() < deadline, "no marker");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(stuck); // kills bash, leaving its marker
+    // The same init.el, unchanged: skipped.
+    let sh = Shell::start(opts(None));
+    let s = sh.settle();
+    assert!(
+        (0..s.size().0)
+            .any(|r| row_text(&s, r).contains("init.el did not finish in an earlier shell")),
+        "{}",
+        dump(&s)
+    );
+    drop(sh);
+    // A changed init.el is read again.
+    let file = home.path().join(".config/inkline/init.el");
+    std::fs::write(&file, "(setq inkline-indent 2)\n").unwrap();
+    let later = std::time::SystemTime::now() + Duration::from_secs(2);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let mut sh = Shell::start(opts(None));
+    sh.send("inkline status\r");
+    sh.wait_for("loaded", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).ends_with("(loaded)"))
+    });
+}
+
+#[test]
+fn closing_the_terminal_ends_a_shell_stuck_in_lisp() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::process::Stdio;
+    let (mut master, mut slave) = (0, 0);
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(rc, 0);
+    // Without this, bash inherits the master too, and closing it in the test
+    // leaves bash's own copy open, so it never sees the terminal hang up.
+    assert_eq!(
+        unsafe { libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC) },
+        0
+    );
+    let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+    let home = tempfile::tempdir().unwrap();
+    let rcfile = home.path().join("rc");
+    std::fs::write(
+        &rcfile,
+        format!(
+            "enable -f {} inkline\ninkline eval '(while t)'\n",
+            so_path().display()
+        ),
+    )
+    .unwrap();
+    let mut child = std::process::Command::new(bash_path())
+        .args(["--noprofile", "--rcfile"])
+        .arg(&rcfile)
+        .arg("-i")
+        .env_clear()
+        .env("HOME", home.path())
+        .env("TERM", "xterm")
+        .env("INPUTRC", "/dev/null")
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave))
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "bash ended before the terminal closed"
+    );
+    unsafe { libc::close(master) };
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    while child.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "bash kept running");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(child.wait().unwrap().code(), Some(129));
+}
+
+/// A `while` loop that takes a bit under two seconds to run in tulisp, so it
+/// spans at least one of the watcher's one-second polls.
+const SLOW_LOOP: &str = "(let ((i 0)) (while (< i 16000000) (setq i (1+ i))))";
+
+#[test]
+fn a_redirected_eval_does_not_end_a_healthy_shell() {
+    let mut sh = Shell::start(Options::default());
+    sh.send(&format!("inkline eval '{SLOW_LOOP}' <<<x; echo survived\r"));
+    sh.wait_for("survived", |s| has_row(s, "survived"));
+}
+
+#[test]
+fn an_eval_with_stdin_closed_does_not_end_a_healthy_shell() {
+    let mut sh = Shell::start(Options::default());
+    sh.send(&format!("inkline eval '{SLOW_LOOP}' 0<&-; echo survived\r"));
+    sh.wait_for("survived", |s| has_row(s, "survived"));
+}
+
+/// Runs `setup`, then a slow Lisp loop, in a healthy shell, which must
+/// survive.
+fn survives_slow_lisp_after(setup: &str) {
+    let mut sh = Shell::start(Options::default());
+    sh.send(&format!(
+        "{setup}; inkline eval '{SLOW_LOOP}'; echo survived\r"
+    ));
+    sh.wait_for("survived", |s| has_row(s, "survived"));
+}
+
+#[test]
+fn closing_fd_10_does_not_end_a_healthy_shell() {
+    survives_slow_lisp_after("exec 10<&-");
+}
+
+/// The watcher's copy of the terminal is somewhere in 10 to 199.
+#[test]
+fn closing_the_watched_fd_does_not_end_a_healthy_shell() {
+    survives_slow_lisp_after(r#"for fd in {10..199}; do eval "exec $fd<&-"; done"#);
+}
+
+/// The watcher's copy of the terminal is somewhere in 10 to 199; each of
+/// those is closed, then opened again on a pipe whose writer has ended,
+/// which reads as a hang-up.
+#[test]
+fn a_finished_pipe_on_the_watched_fd_does_not_end_a_healthy_shell() {
+    survives_slow_lisp_after(concat!(
+        r#"exec 3< <(:); sleep 0.2; for fd in {10..199}; do eval "exec $fd<&-"; done; "#,
+        r#"for fd in {10..199}; do eval "exec $fd<&3"; done; exec 3<&-"#,
+    ));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn a_panic_in_init_el_leaves_no_marker() {
+    let home = tempfile::tempdir().unwrap();
+    let _sh = start_with_a_panicking_init_el(home.path());
+    let state = home.path().join(".local/state/inkline");
+    let markers: Vec<_> = std::fs::read_dir(&state)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name())
+        .collect();
+    assert!(markers.is_empty(), "{markers:?}");
 }
