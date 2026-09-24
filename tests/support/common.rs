@@ -30,10 +30,22 @@ pub fn so_path() -> PathBuf {
     exe.parent().unwrap().join("libinkline.so")
 }
 
+/// An empty home for non-interactive shells, so the developer's own
+/// `init.el` is never read.
+fn empty_home() -> PathBuf {
+    let dir = std::env::temp_dir().join("inkline-test-empty-home");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 /// A non-interactive bash, for tests that need no terminal.
 pub fn bash_command() -> Command {
     let mut cmd = Command::new(bash_path());
-    cmd.env("INPUTRC", "/dev/null");
+    let home = empty_home();
+    cmd.env("INPUTRC", "/dev/null")
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &home)
+        .env("XDG_STATE_HOME", &home);
     cmd
 }
 
@@ -81,10 +93,16 @@ pub struct Options {
     pub history: Vec<&'static str>,
     /// Extra lines for the end of the rc file.
     pub rc: String,
+    /// Lines written to the rc file before the `enable -f` line, for tests
+    /// that set variables inkline reads while it loads.
+    pub before_inkline: String,
     /// Contents for the `INPUTRC` file; `/dev/null` when None.
     pub inputrc: Option<String>,
     /// Directory bash starts in; its temporary home when None.
     pub cwd: Option<PathBuf>,
+    /// Use this directory as `HOME` instead of a new temporary one; the
+    /// caller keeps it alive.
+    pub home: Option<PathBuf>,
     /// Contents for `~/.config/inkline/init.el`; none when None.
     pub init_el: Option<String>,
     /// How the cursor row starts once the first prompt is up.
@@ -101,8 +119,10 @@ impl Default for Options {
             inkline: true,
             history: Vec::new(),
             rc: String::new(),
+            before_inkline: String::new(),
             inputrc: None,
             cwd: None,
+            home: None,
             init_el: None,
             prompt: "$",
             term: "xterm-256color",
@@ -120,17 +140,23 @@ pub struct Shell {
     writer: Box<dyn Write + Send>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn Child + Send + Sync>,
-    _home: tempfile::TempDir,
+    _home: Option<tempfile::TempDir>,
 }
 
 impl Shell {
     pub fn start(opts: Options) -> Shell {
-        let home = tempfile::tempdir().unwrap();
+        let (home_path, keep_home) = match &opts.home {
+            Some(dir) => (dir.clone(), None),
+            None => {
+                let tmp = tempfile::tempdir().unwrap();
+                (tmp.path().to_owned(), Some(tmp))
+            }
+        };
         if let Some(text) = &opts.init_el {
             use std::os::unix::fs::PermissionsExt;
-            let dir = home.path().join(".config/inkline");
+            let dir = home_path.join(".config/inkline");
             std::fs::create_dir_all(&dir).unwrap();
-            for d in [home.path().join(".config"), dir.clone()] {
+            for d in [home_path.join(".config"), dir.clone()] {
                 std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
             }
             let file = dir.join("init.el");
@@ -138,6 +164,7 @@ impl Shell {
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         let mut rc = String::new();
+        rc += &opts.before_inkline;
         if opts.inkline {
             rc += &format!("enable -f {} inkline\n{BINDINGS}", so_path().display());
         }
@@ -147,11 +174,11 @@ impl Shell {
             rc += &format!("history -s {}\n", quote(entry));
         }
         rc += &opts.rc;
-        let rcfile = home.path().join("rc");
+        let rcfile = home_path.join("rc");
         std::fs::write(&rcfile, rc).unwrap();
         let inputrc = match &opts.inputrc {
             Some(text) => {
-                let path = home.path().join("inputrc");
+                let path = home_path.join("inputrc");
                 std::fs::write(&path, text).unwrap();
                 path
             }
@@ -172,14 +199,10 @@ impl Shell {
         cmd.env_clear();
         cmd.env("PATH", std::env::var_os("PATH").unwrap());
         cmd.env("TERM", opts.term);
-        cmd.env("HOME", home.path());
+        cmd.env("HOME", &home_path);
         cmd.env("INPUTRC", &inputrc);
         cmd.env("LANG", opts.lang);
-        cmd.cwd(
-            opts.cwd
-                .clone()
-                .unwrap_or_else(|| home.path().to_path_buf()),
-        );
+        cmd.cwd(opts.cwd.clone().unwrap_or_else(|| home_path.clone()));
         let child = pty.slave.spawn_command(cmd).unwrap();
         drop(pty.slave);
 
@@ -205,7 +228,7 @@ impl Shell {
             writer,
             master: pty.master,
             child,
-            _home: home,
+            _home: keep_home,
         };
         let prompt = opts.prompt;
         sh.wait_for("the first prompt", |s| cursor_row(s).starts_with(prompt));

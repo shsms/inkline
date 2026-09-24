@@ -134,8 +134,8 @@ pub fn load() {
                 ffi::add_command(c"kill-to-line-end", multiline::kill_to_line_end);
                 ffi::add_command(c"kill-to-line-start", multiline::kill_to_line_start);
                 ffi::add_command(c"comment-lines", multiline::comment_lines);
-                crate::lisp::start();
             });
+            crate::lisp::start_for_shell();
             STATE.with_borrow_mut(|s| s.unloaded = false);
             enable();
         },
@@ -164,8 +164,9 @@ fn run_builtin(args: &[String]) -> c_int {
             let on = STATE.with_borrow(|s| s.enabled);
             match writeln!(
                 std::io::stdout(),
-                "inkline: {}",
-                if on { "on" } else { "off" }
+                "inkline: {}\n{}",
+                if on { "on" } else { "off" },
+                crate::lisp::init::status_line()
             ) {
                 Ok(()) => ffi::EXECUTION_SUCCESS,
                 Err(_) => ffi::EXECUTION_FAILURE,

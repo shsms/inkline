@@ -4,14 +4,16 @@
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tulisp::TulispContext;
+use tulisp::{TulispContext, TulispObject};
 
 pub mod emacs;
 pub mod errors;
+pub mod init;
 pub mod settings;
 
 thread_local! {
     static SLOT: RefCell<Option<TulispContext>> = const { RefCell::new(None) };
+    /// Set once `start` has begun, even if it did not finish.
     static STARTED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -24,9 +26,25 @@ pub struct Busy;
 
 /// Makes a fresh interpreter with inkline's functions, replacing any old one.
 pub fn start() {
+    STARTED.set(true);
     let ctx = new_context();
     SLOT.with_borrow_mut(|slot| *slot = Some(ctx));
-    STARTED.set(true);
+}
+
+/// Starts Lisp for the shell on the first `enable -f`: a fresh interpreter
+/// and, where line editing is on, `init.el`. Once an interpreter exists it
+/// does nothing, even when a panic ended the last start part way, so a later
+/// `enable -f` only switches inkline on.
+#[cfg(not(test))]
+pub fn start_for_shell() {
+    if STARTED.get() {
+        return;
+    }
+    start();
+    if crate::ffi::line_editing_shell() {
+        init::warn_old_variables();
+        init::read_at_start();
+    }
 }
 
 fn new_context() -> TulispContext {
@@ -34,6 +52,13 @@ fn new_context() -> TulispContext {
     errors::register(&mut ctx);
     emacs::register(&mut ctx);
     settings::register(&mut ctx);
+    #[cfg(not(test))]
+    ctx.defun("getenv", |name: String| crate::ffi::shell_variable(&name));
+    // Lets the end-to-end tests check what a panic in Lisp does.
+    #[cfg(debug_assertions)]
+    ctx.defun("inkline--panic", || -> TulispObject {
+        panic!("inkline--panic")
+    });
     ctx
 }
 

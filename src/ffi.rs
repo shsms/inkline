@@ -748,3 +748,17 @@ unsafe extern "C" {
 pub fn insert_comment(count: c_int, key: c_int) -> c_int {
     unsafe { rl_insert_comment(count, key) }
 }
+
+// ---- The shell ----
+
+unsafe extern "C" {
+    static mut interactive_shell: c_int;
+    /// Changed by `set -o emacs`/`vi` and `set +o emacs`/`vi`.
+    static mut no_line_editing: c_int;
+}
+
+/// Whether bash is interactive with line editing on: the shells inkline sets
+/// up readline and reads `init.el` for.
+pub fn line_editing_shell() -> bool {
+    unsafe { interactive_shell != 0 && no_line_editing == 0 }
+}

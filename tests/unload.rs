@@ -52,6 +52,22 @@ fn library_stays_loaded_after_enable_d() {
 }
 
 #[test]
+fn a_second_enable_f_only_switches_on() {
+    let mut sh = Shell::start(Options {
+        init_el: Some("(message-not-defined-yet)\n".into()),
+        ..Options::default()
+    });
+    sh.take_output();
+    sh.send(&format!(
+        "enable -d inkline; enable -f {} inkline; echo done\r",
+        so_path().display()
+    ));
+    sh.wait_for("done", |s| has_row(s, "done"));
+    let out = String::from_utf8_lossy(&sh.take_output()).into_owned();
+    assert!(!out.contains("init.el:1"), "init.el was read again: {out}");
+}
+
+#[test]
 fn enter_is_accept_line_after_enable_d() {
     let mut sh = Shell::start(Options::default());
     sh.send("enable -d inkline\r");
