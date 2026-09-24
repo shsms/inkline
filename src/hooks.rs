@@ -7,6 +7,7 @@ use std::io::Write;
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
+use std::sync::atomic::Ordering;
 
 use crate::commands::{self, PathCache};
 use crate::ffi;
@@ -78,6 +79,10 @@ thread_local! {
     static UPDATING: Cell<bool> = const { Cell::new(false) };
     /// bash's completion function, which `complete` calls.
     static COMPLETION: Cell<Option<ffi::CompletionFn>> = const { Cell::new(None) };
+    /// Set when shell code that a readline command run from Lisp ran jumped
+    /// to bash's top level: the value it jumped with. `run_lisp_command`
+    /// makes the jump once Lisp has stopped.
+    static SHELL_JUMP: Cell<Option<c_int>> = const { Cell::new(None) };
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
         lexer: Lexer::new(),
@@ -290,9 +295,32 @@ extern "C" fn accept_as_is(count: c_int, key: c_int) -> c_int {
 }
 
 /// The readline function of a Lisp command's key, `slot` telling which
-/// command. Holds no borrow of `STATE` while Lisp runs.
+/// command. Holds no borrow of `STATE` while Lisp runs. A jump to bash's
+/// top level that shell code run from Lisp made is made last, once Lisp
+/// has stopped running.
 pub fn run_lisp_command(slot: usize, count: c_int, key: c_int) -> c_int {
-    guard(|| crate::lisp::commands::run(slot, count, key), || 0)
+    let result = guard(|| crate::lisp::commands::run(slot, count, key), || 0);
+    if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
+        // Bash jumps from here back to a new prompt; nothing in this frame
+        // needs dropping.
+        if let Some(value) = SHELL_JUMP.take() {
+            ffi::jump_to_shell_top_level(value);
+        }
+    }
+    result
+}
+
+/// Notes a jump to bash's top level with `value` that shell code run from
+/// Lisp made, for `run_lisp_command` to make once Lisp has stopped.
+pub fn note_shell_jump(value: c_int) {
+    SHELL_JUMP.set(Some(value));
+}
+
+/// Whether a jump to bash's top level is waiting for Lisp to stop: the
+/// running Lisp command then quits, and no more readline commands run
+/// from it.
+pub fn lisp_must_stop() -> bool {
+    SHELL_JUMP.get().is_some()
 }
 
 /// Shows `text` on a row of its own above the line, which readline draws

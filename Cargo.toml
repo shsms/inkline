@@ -19,6 +19,9 @@ tree-sitter-bash = "=0.25.1"
 tulisp = { path = "../tulisp" }
 unicode-width = "0.2"
 
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 portable-pty = "0.9"
 tempfile = "3"

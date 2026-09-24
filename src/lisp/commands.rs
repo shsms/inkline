@@ -3,18 +3,16 @@
 //! buffer, as one undo step.
 
 use std::cell::{Cell, RefCell};
-use std::ffi::c_int;
+use std::ffi::{c_int, c_void};
 use std::io::Write;
 
-use tulisp::{ErrorKind, Form, Rest, TulispContext, TulispObject};
+use tulisp::{Error, ErrorKind, Form, Rest, TulispContext, TulispObject};
 
 use super::buffer::{self, Buffer};
 use super::errors;
 use crate::ffi;
 
-/// The `catch` tag `quit` throws to. A command that ends with it shows
-/// nothing.
-pub const QUIT: &str = "inkline--quit";
+use super::errors::QUIT;
 
 /// How many Lisp commands can have keys at once.
 const SLOT_COUNT: usize = 256;
@@ -123,8 +121,10 @@ thread_local! {
     /// The function objects inkline gave `READLINE_NAMES` in the current
     /// interpreter.
     static OWN: RefCell<Vec<(&'static str, TulispObject)>> = const { RefCell::new(Vec::new()) };
-    /// While a Lisp command runs from a key: whether its undo group is open.
-    static UNDO_GROUP: Cell<Option<bool>> = const { Cell::new(None) };
+    /// While a Lisp command runs from a key: its undo group.
+    static UNDO_GROUP: Cell<Option<Group>> = const { Cell::new(None) };
+    /// While a Lisp command runs from a key: that key, as readline gave it.
+    static KEY: Cell<c_int> = const { Cell::new(0) };
 }
 
 /// What `object`, given to `keymap-global-set`, binds a key to.
@@ -215,12 +215,51 @@ pub fn notice(text: &str) {
     }
 }
 
-/// Opens the running command's undo group before its first change. Does
-/// nothing outside a command, or once the group is open.
+/// The running command's undo group.
+#[derive(Clone, Copy)]
+enum Group {
+    Closed,
+    /// Open on history line `history`, with `before` the newest undo entry
+    /// from before it opened.
+    Open {
+        before: *const c_void,
+        history: c_int,
+    },
+}
+
+/// Opens the running command's undo group before a change, unless one is
+/// already open on the current history line. After the command moved to
+/// another history line, the old group stays open on the line left
+/// behind. Does nothing outside a command.
 fn before_change() {
-    if UNDO_GROUP.get() == Some(false) {
+    if let Some(Group::Open { history, .. }) = UNDO_GROUP.get()
+        && history != ffi::history_position()
+    {
+        close_group();
+    }
+    if let Some(Group::Closed) = UNDO_GROUP.get() {
+        let before = ffi::undo_list_head();
         ffi::begin_undo_group();
-        UNDO_GROUP.set(Some(true));
+        UNDO_GROUP.set(Some(Group::Open {
+            before,
+            history: ffi::history_position(),
+        }));
+    }
+}
+
+/// Closes the running command's undo group if it is open, and drops it
+/// when nothing changed inside it. The next change opens a new one. A
+/// group opened on another history line stays open there: the current
+/// line gets no `UNDO_END`.
+fn close_group() {
+    if let Some(Group::Open { before, history }) = UNDO_GROUP.get() {
+        if ffi::history_position() == history {
+            ffi::end_undo_group();
+            ffi::drop_empty_undo_group(before);
+        } else {
+            ffi::forget_undo_group();
+        }
+        UNDO_GROUP.set(Some(Group::Closed));
     }
 }
 
@@ -230,32 +269,36 @@ enum Failure {
     Error(String),
 }
 
-/// Tells `before_change` a Lisp command runs. What it held before, for a
-/// command further up the stack, comes back afterwards. On drop, closes a
-/// group still open, so readline's groups stay balanced even after a
-/// panic.
+/// Tells `before_change` a Lisp command runs, and `call-interactively` its
+/// key. What they held before, for a command further up the stack, comes
+/// back afterwards. On drop, closes a group still open, so readline's
+/// groups stay balanced even after a panic.
 struct Running {
-    outer: Option<bool>,
+    outer: Option<Group>,
+    outer_key: c_int,
 }
 
 impl Running {
-    fn start() -> Running {
+    fn start(key: c_int) -> Running {
         Running {
-            outer: UNDO_GROUP.replace(Some(false)),
+            outer: UNDO_GROUP.replace(Some(Group::Closed)),
+            outer_key: KEY.replace(key),
         }
     }
 
-    /// Whether the command opened its undo group.
-    fn finish(self) -> bool {
-        let opened = UNDO_GROUP.replace(self.outer) == Some(true);
+    /// The command's undo group.
+    fn finish(self) -> Option<Group> {
+        let group = UNDO_GROUP.replace(self.outer);
+        KEY.set(self.outer_key);
         std::mem::forget(self);
-        opened
+        group
     }
 }
 
 impl Drop for Running {
     fn drop(&mut self) {
-        if UNDO_GROUP.replace(self.outer) == Some(true) {
+        KEY.set(self.outer_key);
+        if let Some(Group::Open { .. }) = UNDO_GROUP.replace(self.outer) {
             ffi::end_undo_group();
         }
     }
@@ -263,8 +306,9 @@ impl Drop for Running {
 
 /// Runs the Lisp command of `slot` for its key, as one undo step. On an
 /// error or `quit`, the line, point and mark go back to what they were,
-/// unless the command moved to another history line.
-pub fn run(slot: usize, count: c_int, _key: c_int) -> c_int {
+/// unless the command moved to another history line. A readline `undo` the
+/// command called stays done, since readline cannot redo.
+pub fn run(slot: usize, count: c_int, key: c_int) -> c_int {
     let Some(command) = SLOT_USE.with_borrow(|s| s.get(slot).cloned().flatten()) else {
         ffi::ding();
         return 0;
@@ -272,28 +316,33 @@ pub fn run(slot: usize, count: c_int, _key: c_int) -> c_int {
     let point = ffi::point();
     let mark = ffi::mark();
     let history = ffi::history_position();
-    let undo_head = ffi::undo_list_head();
     let prefix = ffi::explicit_count().then_some(count);
-    let running = Running::start();
+    let running = Running::start(key);
     let result = crate::lisp::with_lisp(|ctx| call(ctx, &command, prefix));
-    let opened = running.finish();
+    let group = running.finish();
     let Ok(result) = result else {
         ffi::ding();
         return 0;
     };
-    if ffi::history_position() == history {
-        if opened {
+    let here = ffi::history_position();
+    let undo = result.is_err() && here == history;
+    match group {
+        Some(Group::Open { before, history }) if history == here => {
             ffi::end_undo_group();
-            if result.is_err() {
+            if undo {
                 ffi::do_undo();
             } else {
-                ffi::drop_empty_undo_group(undo_head);
+                ffi::drop_empty_undo_group(before);
             }
         }
-        if result.is_err() {
-            ffi::set_point(point);
-            ffi::set_mark(mark);
-        }
+        // The group stays open on the line left behind; readline's count of
+        // open groups must not stay raised.
+        Some(Group::Open { .. }) => ffi::forget_undo_group(),
+        Some(Group::Closed) | None => {}
+    }
+    if undo {
+        ffi::set_point(point);
+        ffi::set_mark(mark);
     }
     let end = ffi::line_bytes().len();
     ffi::set_point(ffi::point().min(end));
@@ -340,6 +389,74 @@ fn call(
     })
 }
 
+/// The error `quit` raises: a throw to `QUIT`, which `condition-case`
+/// with `error` does not catch.
+fn quit_error(ctx: &mut TulispContext) -> Error {
+    Error::throw(ctx.intern(QUIT), TulispObject::nil())
+}
+
+/// `(call-interactively COMMAND)`: runs a readline, inkline or Lisp command
+/// with `current-prefix-arg` as its count. A Lisp command is called here,
+/// with the running interpreter; a readline command gets the key that ran
+/// the Lisp command, and gives `nil`.
+fn call_interactively(
+    ctx: &mut TulispContext,
+    command: &TulispObject,
+) -> Result<TulispObject, Error> {
+    if !buffer::editing() {
+        return Err(Error::lisp_error("no line is being edited"));
+    }
+    let prefix = ctx.intern("current-prefix-arg").get()?;
+    let count = if prefix.null() {
+        None
+    } else {
+        let n = buffer::position(&prefix)?;
+        Some(
+            c_int::try_from(n)
+                .map_err(|_| Error::out_of_range(format!("Args out of range: {n}")))?,
+        )
+    };
+    match resolve(ctx, command).map_err(Error::lisp_error)? {
+        Command::Lisp(LispCommand::Named(name)) => {
+            let function = ctx.intern(&name);
+            ctx.funcall(&function, ())
+        }
+        Command::Lisp(LispCommand::Lambda(function)) => ctx.funcall(&function, ()),
+        Command::Readline(f, _) => {
+            // After a jump to bash's top level, no more readline commands
+            // run.
+            if crate::hooks::lisp_must_stop() {
+                return Err(quit_error(ctx));
+            }
+            // Undo works on whole steps: the command's changes so far become
+            // one, and a later change opens a new one.
+            match ffi::undo_command(f) {
+                None => before_change(),
+                Some(ffi::Undo::All) => close_group(),
+                Some(ffi::Undo::Steps) if count.unwrap_or(1) > 0 => close_group(),
+                Some(ffi::Undo::Steps) => {}
+            }
+            let outer = ffi::replace_explicit_count(count.is_some());
+            let result = call_command(f, count.unwrap_or(1), KEY.get());
+            ffi::replace_explicit_count(outer);
+            match result {
+                Ok(_) => Ok(TulispObject::nil()),
+                Err(_) => Err(quit_error(ctx)),
+            }
+        }
+    }
+}
+
+/// Runs the readline command `f` with `ffi::call_command`. A jump to
+/// bash's top level that it stopped is noted for `run_lisp_command` to make.
+fn call_command(f: ffi::CommandFn, count: c_int, key: c_int) -> Result<c_int, ffi::Jumped> {
+    let result = ffi::call_command(f, count, key);
+    if let Err(ffi::Jumped::Shell(value)) = result {
+        crate::hooks::note_shell_jump(value);
+    }
+    result
+}
+
 /// Readline's line as a `Buffer`. Each change first opens the running
 /// command's undo group.
 struct ReadlineBuffer;
@@ -348,11 +465,12 @@ impl ReadlineBuffer {
     /// Runs `f`, keeping point and mark where they were: readline moves them
     /// back inside a line that got shorter, and `Buffer` leaves that to the
     /// caller.
-    fn keeping_point_and_mark(f: impl FnOnce()) {
+    fn keeping_point_and_mark<R>(f: impl FnOnce() -> R) -> R {
         let (point, mark) = (ffi::point(), ffi::mark());
-        f();
+        let result = f();
         ffi::set_point(point);
         ffi::set_mark(mark);
+        result
     }
 }
 
@@ -401,8 +519,15 @@ impl Buffer for ReadlineBuffer {
         Ok(())
     }
 
-    fn copy(&mut self, _start: usize, _end: usize, _backward: bool) -> Result<(), String> {
-        Err("copying to the kill ring is not supported".into())
+    fn copy(&mut self, start: usize, end: usize, backward: bool) -> Result<(), String> {
+        let (point, mark) = if backward { (end, start) } else { (start, end) };
+        Self::keeping_point_and_mark(|| {
+            ffi::set_point(point);
+            ffi::set_mark(mark);
+            call_command(ffi::copy_region_command(), 1, 0)
+        })
+        .map(drop)
+        .map_err(|_| "copying to the kill ring was stopped".to_owned())
     }
 
     fn region_active(&self) -> bool {
@@ -412,6 +537,10 @@ impl Buffer for ReadlineBuffer {
 
 pub fn register(ctx: &mut TulispContext) {
     ctx.defspecial("interactive", |_args: Rest<Form>| TulispObject::nil());
+    ctx.defun(
+        "call-interactively",
+        |ctx: &mut TulispContext, command: TulispObject| call_interactively(ctx, &command),
+    );
     ctx.defun("ding", |_arg: Option<TulispObject>| {
         ffi::ding();
         TulispObject::nil()

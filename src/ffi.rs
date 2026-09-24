@@ -901,6 +901,106 @@ pub fn add_named_command(name: &str, f: CommandFn) -> bool {
 }
 
 unsafe extern "C" {
+    static mut _rl_undo_group_level: c_int;
+    fn rl_copy_region_to_kill(count: c_int, key: c_int) -> c_int;
+    fn rl_undo_command(count: c_int, key: c_int) -> c_int;
+    fn rl_revert_line(count: c_int, key: c_int) -> c_int;
+    /// Named `vi-undo` from readline 8.1; exported, without a name, in 8.0.
+    fn rl_vi_undo(count: c_int, key: c_int) -> c_int;
+    /// In src/rlcall.c.
+    fn inkline_call_command(f: CommandFn, count: c_int, key: c_int, jumped: *mut c_int) -> c_int;
+    fn jump_to_top_level(value: c_int) -> !;
+}
+
+/// Tells readline one open undo group is no longer open, without adding an
+/// `UNDO_END` to the line's undo list. For a group left open on a line the
+/// command has moved away from, so readline's count of open groups (which
+/// vi mode reads) stays right.
+pub fn forget_undo_group() {
+    // SAFETY: _rl_undo_group_level is a plain int readline keeps.
+    unsafe {
+        if _rl_undo_group_level > 0 {
+            _rl_undo_group_level -= 1;
+        }
+    }
+}
+
+/// A jump back to a top level that stopped a readline command.
+#[derive(Clone, Copy, Debug)]
+pub enum Jumped {
+    /// To readline's: its abort, as for C-g or a yank with an empty kill
+    /// ring.
+    Readline,
+    /// To bash's, with this value: shell code the command ran failed, as
+    /// `${x:?}` does. `jump_to_shell_top_level` makes the jump later.
+    Shell(c_int),
+}
+
+/// Runs the readline command `f`. A jump back to readline's or bash's top
+/// level stops at this call and gives `Jumped`, so it never skips the Rust
+/// and Lisp frames above.
+pub fn call_command(f: CommandFn, count: c_int, key: c_int) -> Result<c_int, Jumped> {
+    let mut jumped: c_int = 0;
+    // SAFETY: inkline_call_command calls `f` between saving and putting
+    // back readline's and bash's jump points. A jump from inside `f` lands
+    // in its own C frame, so it never crosses this function or its callers.
+    let result = unsafe { inkline_call_command(f, count, key, &raw mut jumped) };
+    match jumped {
+        0 => Ok(result),
+        value if value > 0 => Err(Jumped::Shell(value)),
+        _ => Err(Jumped::Readline),
+    }
+}
+
+/// Jumps to bash's top level with `value`, from `Jumped::Shell`: the jump
+/// `call_command` stopped. The caller's frames must hold nothing to drop.
+pub fn jump_to_shell_top_level(value: c_int) -> ! {
+    // SAFETY: bash's jump_to_top_level longjmps to bash's command loop, as
+    // the shell code that jumped would have; the frames it skips hold
+    // nothing to drop.
+    unsafe { jump_to_top_level(value) }
+}
+
+/// readline's `copy-region-as-kill`, to run with `call_command`.
+pub fn copy_region_command() -> CommandFn {
+    rl_copy_region_to_kill
+}
+
+/// What one of readline's undo commands takes back. They work on whole
+/// undo groups.
+pub enum Undo {
+    /// As many steps as the count (`undo`, `vi-undo`); none when the count
+    /// is 0 or less.
+    Steps,
+    /// Every step of the line (`revert-line`), whatever the count.
+    All,
+}
+
+/// Which undo command `f` is, if it is one.
+pub fn undo_command(f: CommandFn) -> Option<Undo> {
+    if std::ptr::fn_addr_eq(f, rl_undo_command as CommandFn)
+        || std::ptr::fn_addr_eq(f, rl_vi_undo as CommandFn)
+    {
+        Some(Undo::Steps)
+    } else if std::ptr::fn_addr_eq(f, rl_revert_line as CommandFn) {
+        Some(Undo::All)
+    } else {
+        None
+    }
+}
+
+/// Sets whether the running command counts as given a count by the user,
+/// and returns the old setting.
+pub fn replace_explicit_count(explicit: bool) -> bool {
+    // SAFETY: rl_explicit_arg is a plain int readline keeps.
+    unsafe {
+        let old = rl_explicit_arg;
+        rl_explicit_arg = c_int::from(explicit);
+        old != 0
+    }
+}
+
+unsafe extern "C" {
     /// The row, counted from the prompt's first, of the line's last row on
     /// screen.
     static mut _rl_vis_botlin: c_int;

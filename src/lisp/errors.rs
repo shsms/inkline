@@ -7,6 +7,10 @@ use tulisp::{Error, ErrorKind, Rest, TulispContext, TulispObject};
 /// apart from other errors. Never shown.
 const USER_ERROR: &str = "\u{0}user-error\u{0}";
 
+/// The `catch` tag `quit` throws to. A command that ends with it shows
+/// nothing.
+pub const QUIT: &str = "inkline--quit";
+
 /// The most characters of a form shown after an error.
 const FORM_WIDTH: usize = 60;
 
@@ -51,6 +55,9 @@ pub fn describe(err: &Error, ctx: &TulispContext, file: Option<&str>) -> String 
         let tag = thrown
             .car()
             .map_or_else(|_| thrown.to_string(), |t| t.to_string());
+        if tag == QUIT {
+            return "Quit".to_owned();
+        }
         return format!("no catch for {tag}");
     }
     if let Some(text) = user_error_text(err) {
@@ -195,5 +202,14 @@ mod tests {
         let mut ctx = TulispContext::new();
         let e = ctx.eval_string("(throw 'done 1)").unwrap_err();
         assert_eq!(describe(&e, &ctx, None), "no catch for done");
+    }
+
+    #[test]
+    fn quit_reads_quit() {
+        let mut ctx = TulispContext::new();
+        let e = ctx
+            .eval_string(&format!("(throw '{QUIT} nil)"))
+            .unwrap_err();
+        assert_eq!(describe(&e, &ctx, None), "Quit");
     }
 }

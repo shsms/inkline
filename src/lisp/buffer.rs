@@ -238,7 +238,7 @@ fn byte_range(text: &str, a: i64, b: i64) -> Result<(usize, usize), Error> {
 }
 
 /// A position argument: an integer, else wrong-type-argument.
-fn position(v: &TulispObject) -> Result<i64, Error> {
+pub fn position(v: &TulispObject) -> Result<i64, Error> {
     i64::try_from(v)
         .map_err(|_| Error::type_mismatch(format!("Wrong type argument: integerp, {v}")))
 }
