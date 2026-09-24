@@ -424,20 +424,10 @@ fn timeout_remaining() -> c_int {
 /// Blocks until `stream` has input, readline's timeout is up, `pause`
 /// milliseconds pass, or a signal arrives.
 pub fn wait_for_input(stream: *mut libc::FILE, pause: Option<c_int>) -> Wait {
-    let fd = if stream.is_null() {
-        0
-    } else {
-        unsafe { libc::fileno(stream) }
-    };
-    let mut poll = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
     let remaining = timeout_remaining();
     // The pause only counts if it ends before readline's timeout.
     let pause = pause.filter(|&p| remaining < 0 || p < remaining);
-    match unsafe { libc::poll(&mut poll, 1, pause.unwrap_or(remaining)) } {
+    match poll_input(stream, pause.unwrap_or(remaining)) {
         0 if pause.is_some() => Wait::Paused,
         n if n >= 0 => Wait::Ready,
         _ if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {
@@ -501,6 +491,15 @@ unsafe extern "C" {
     static mut executing: c_int;
     static mut extended_glob: c_int;
     static mut rl_attempted_completion_function: Option<CompletionFn>;
+    static mut interrupt_state: c_int;
+}
+
+/// Whether bash has a `SIGINT` it has not acted on yet. Readline passes a
+/// `C-c` on to bash, but bash only jumps to a new prompt from a read the
+/// signal interrupted, so with more keys already waiting it acts on the
+/// signal once the line is accepted.
+pub fn interrupted() -> bool {
+    unsafe { interrupt_state != 0 }
 }
 
 /// Whether readline is reading the first line of a command for bash. Not so on
@@ -553,6 +552,46 @@ pub fn forward_word(count: c_int, key: c_int) -> c_int {
 
 pub fn end_of_line(count: c_int, key: c_int) -> c_int {
     unsafe { rl_end_of_line(count, key) }
+}
+
+unsafe extern "C" {
+    fn rl_newline(count: c_int, key: c_int) -> c_int;
+    static mut rl_pending_input: c_int;
+    static mut rl_instream: *mut libc::FILE;
+}
+
+/// readline's `accept-line`.
+pub fn accept_line(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_newline(count, key) }
+}
+
+/// Whether more input is already waiting: typed ahead, pasted without
+/// bracketed paste, or coming from a keyboard macro.
+pub fn input_waiting() -> bool {
+    const RL_STATE_MACROINPUT: c_ulong = 0x800;
+    unsafe {
+        if rl_pending_input != 0 || rl_readline_state & RL_STATE_MACROINPUT != 0 {
+            return true;
+        }
+        poll_input(rl_instream, 0) > 0
+    }
+}
+
+/// `poll` on `stream`, or on standard input when it is null, for up to
+/// `timeout` milliseconds (-1 waits for ever): above 0 when input is waiting,
+/// 0 when the time ran out, -1 on an error.
+fn poll_input(stream: *mut libc::FILE, timeout: c_int) -> c_int {
+    let fd = if stream.is_null() {
+        0
+    } else {
+        unsafe { libc::fileno(stream) }
+    };
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut poll, 1, timeout) }
 }
 
 // ---- Pairing ----

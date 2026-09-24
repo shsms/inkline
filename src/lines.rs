@@ -24,6 +24,11 @@ pub fn column(text: &str, point: usize, prompt_width: usize) -> usize {
     text[start..point].chars().fold(offset, advance)
 }
 
+/// How many columns `text` takes from the left edge.
+pub fn width(text: &str) -> usize {
+    text.chars().fold(0, advance)
+}
+
 fn advance(col: usize, c: char) -> usize {
     if c == '\t' {
         col + 8 - col % 8
@@ -103,6 +108,14 @@ mod tests {
     use super::*;
 
     const TEXT: &str = "echo abcdefghij\nx\necho 12345678";
+
+    #[test]
+    fn width_from_the_left_edge() {
+        assert_eq!(width(""), 0);
+        assert_eq!(width("    "), 4);
+        assert_eq!(width("\t"), 8);
+        assert_eq!(width("  \t "), 9);
+    }
 
     #[test]
     fn line_edges() {

@@ -52,6 +52,8 @@ bind '"`": insert-pair'
 bind '")": insert-close'
 bind '"]": insert-close'
 bind '"}": insert-close'
+bind '"\C-m": accept-or-newline'
+bind '"\e\C-m": insert-newline'
 bind 'set bind-tty-special-chars off'
 bind '"\C-?": delete-pair'
 "#;

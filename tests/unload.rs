@@ -50,3 +50,12 @@ fn library_stays_loaded_after_enable_d() {
     let mappings: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
     assert!(mappings > 0, "libinkline.so was unmapped by enable -d");
 }
+
+#[test]
+fn enter_is_accept_line_after_enable_d() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("enable -d inkline\r");
+    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.send("for x in a; do\r");
+    sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
+}

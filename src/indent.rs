@@ -58,7 +58,7 @@ pub fn outdent(line: &str, step: usize) -> usize {
 }
 
 /// The spaces and tabs `line` starts with.
-fn indentation(line: &str) -> &str {
+pub fn indentation(line: &str) -> &str {
     &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
 }
 

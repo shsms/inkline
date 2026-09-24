@@ -232,6 +232,14 @@ pub fn heredoc_open(before: &str) -> bool {
     scan::scan(&format!("{before}\n")).open
 }
 
+/// Whether a line starting after `before` is inside a quote that `before`
+/// leaves open: `'…'`, `"…"`, `$'…'` or `$"…"`. A backquoted command is code.
+pub fn quote_open(before: &str) -> bool {
+    scan::scan(&format!("{before}\n"))
+        .open_quote
+        .is_some_and(|q| before.as_bytes().get(q) != Some(&b'`'))
+}
+
 fn walk<'a>(n: Node<'a>, f: &mut impl FnMut(Node<'a>)) {
     f(n);
     let mut c = n.walk();
@@ -858,6 +866,20 @@ mod tests {
         assert!(!heredoc_open("cat <<EOF\nhi\nEOF"));
         assert!(!heredoc_open("cat <<<x"));
         assert!(!heredoc_open("echo hi"));
+    }
+
+    #[test]
+    fn lines_inside_a_quote() {
+        assert!(quote_open("echo \"a"));
+        assert!(quote_open("for x in a; do\n    echo \"a"));
+        assert!(quote_open("echo 'a"));
+        assert!(quote_open("echo $'a\\'"));
+        assert!(quote_open("echo \"$(echo a"));
+        assert!(!quote_open("echo \"a\""));
+        assert!(!quote_open("for x in a; do # don't"));
+        assert!(!quote_open("echo `ls"));
+        assert!(!quote_open("cat <<EOF\n'"));
+        assert!(!quote_open("echo a \\"));
     }
 
     /// One line of `tests/data/syntax-cases.txt`.

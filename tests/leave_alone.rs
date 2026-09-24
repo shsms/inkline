@@ -282,3 +282,20 @@ fn coloured_again_after_a_job_notice() {
     sh.send("ls");
     sh.wait_for("colours", |s| fg_is(s, "ls", Color::Idx(2)));
 }
+
+/// A job notice while typing a multi-line command: the rest is drawn as
+/// readline draws it.
+#[test]
+fn job_notice_during_a_multi_line_command() {
+    let (mut with, mut plain) = with_and_without(setup("set -b"));
+    for sh in [&mut with, &mut plain] {
+        start_job(sh);
+        sh.send(&format!("\x0cfor x in a; do{LITERAL_NEWLINE}    echo"));
+    }
+    with.wait_for("the notice", |s| find(s, "Done").is_some());
+    wait_same(&with, &plain, "the notice");
+    for sh in [&mut with, &mut plain] {
+        sh.send(" $x");
+    }
+    wait_same(&with, &plain, "keys after the notice");
+}

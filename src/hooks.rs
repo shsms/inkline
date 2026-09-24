@@ -17,6 +17,8 @@ use crate::render::{self, Repaint};
 use crate::suggest;
 use crate::syntax::{self, Checker, Status};
 
+mod multiline;
+
 /// The readline functions inkline replaced. Kept apart from `State` in a
 /// `Cell`, so the fallback after a panic can always read them.
 #[derive(Clone, Copy, Default)]
@@ -112,6 +114,8 @@ pub fn load() {
                 ffi::add_command(c"insert-pair", insert_pair);
                 ffi::add_command(c"insert-close", insert_close);
                 ffi::add_command(c"delete-pair", delete_pair);
+                ffi::add_command(c"accept-or-newline", multiline::accept_or_newline);
+                ffi::add_command(c"insert-newline", multiline::insert_newline);
             });
             STATE.with_borrow_mut(|s| s.unloaded = false);
             enable();
@@ -442,6 +446,18 @@ fn left_to_readline() -> bool {
         || !ffi::utf8_locale()
         // Readline 8.1+ highlights a search match or pasted text itself.
         || ffi::region_active()
+}
+
+/// Whether readline draws a newline in the line as a line break. With
+/// `horizontal-scroll-mode`, or on a terminal it cannot move the cursor up
+/// on, it draws `^J` instead.
+fn shows_newlines() -> bool {
+    !ffi::variable_on(c"horizontal-scroll-mode") && ffi::terminal_can_move_up()
+}
+
+/// Draws the line now, with the drawing function in place for this key.
+fn repaint_now() {
+    ffi::call_redisplay(ffi::redisplay_function());
 }
 
 /// Repaints the line readline just drew, in colour, with a suggestion after it
