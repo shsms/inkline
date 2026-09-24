@@ -175,6 +175,40 @@ pub fn variable(name: &CStr) -> Option<String> {
 }
 
 unsafe extern "C" {
+    static mut bash_readline_initialized: c_int;
+    static rl_readline_version: c_int;
+    fn initialize_readline();
+    fn rl_variable_bind(name: *const c_char, value: *const c_char) -> c_int;
+}
+
+/// Runs bash's readline set-up, as `bind` does, unless it already ran; it
+/// reads `inputrc`.
+pub fn initialize_readline_once() {
+    unsafe {
+        if bash_readline_initialized == 0 {
+            initialize_readline();
+        }
+    }
+}
+
+/// Readline's version, such as 0x0800 for 8.0.
+pub fn readline_version() -> c_int {
+    unsafe { rl_readline_version }
+}
+
+/// Sets a readline variable; false when readline has no such variable.
+pub fn set_readline_variable(name: &str, value: &str) -> bool {
+    let (Ok(n), Ok(v)) = (CString::new(name), CString::new(value)) else {
+        return false;
+    };
+    if variable(&n).is_none() {
+        return false;
+    }
+    unsafe { rl_variable_bind(n.as_ptr(), v.as_ptr()) };
+    true
+}
+
+unsafe extern "C" {
     fn rl_get_termcap(cap: *const c_char) -> *mut c_char;
     static mut _rl_echoing_p: c_int;
 }

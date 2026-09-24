@@ -80,6 +80,9 @@ pub fn bind_seq(
     if !ffi::bind_command(&keydesc::readline_text(seq), function) {
         return Err(format!("{desc}: readline would not bind it"));
     }
+    if TTY_KEYS.contains(&seq) {
+        ffi::set_readline_variable("bind-tty-special-chars", "off");
+    }
     TABLE.with_borrow_mut(|t| {
         t.retain(|b| b.seq != seq);
         t.push(Bound {
@@ -134,6 +137,11 @@ pub fn restore_all() {
     unset_where(|_| true);
     LEFT_ALONE.with_borrow_mut(Vec::clear);
 }
+
+/// The keys readline binds to its own commands at each new line while
+/// `bind-tty-special-chars` is on: the usual erase (`DEL` or `C-h`), kill
+/// (`C-u`), literal-next (`C-v`) and word-erase (`C-w`) characters.
+pub const TTY_KEYS: [&[u8]; 5] = [b"\x7f", b"\x08", b"\x15", b"\x16", b"\x17"];
 
 /// Whether inkline has any of `seqs` bound.
 pub fn bound_any(seqs: &[&[u8]]) -> bool {
@@ -202,6 +210,60 @@ pub fn register(ctx: &mut TulispContext) {
         "keymap-global-unset",
         |key: String| -> Result<TulispObject, Error> {
             unset(&key).map_err(Error::invalid_argument)?;
+            Ok(TulispObject::nil())
+        },
+    );
+    ctx.defun(
+        "inkline-unbind-defaults",
+        |groups: Option<TulispObject>| -> Result<TulispObject, Error> {
+            let group = |g: TulispObject| {
+                g.symbolp()
+                    .then(|| Group::named(&g.to_string()))
+                    .flatten()
+                    .ok_or_else(|| {
+                        Error::invalid_argument(format!(
+                            "{g}: not a layout group (suggestions, multi-line, pairing)"
+                        ))
+                    })
+            };
+            let groups: Vec<Group> = match groups.filter(|g| !g.null()) {
+                None => Group::ALL.to_vec(),
+                Some(list) if list.consp() => {
+                    // Stops at the end of a dotted list, and once a circular
+                    // list comes back to a cell it has been through.
+                    let mut items = list.base_iter();
+                    let groups = items.by_ref().map(group).collect::<Result<_, _>>()?;
+                    items.take_error().map_err(|_| {
+                        Error::invalid_argument(format!("{list}: not a list of layout groups"))
+                    })?;
+                    groups
+                }
+                Some(one) => vec![group(one)?],
+            };
+            unset_groups(&groups);
+            if !bound_any(&TTY_KEYS) {
+                ffi::set_readline_variable("bind-tty-special-chars", "on");
+            }
+            Ok(TulispObject::nil())
+        },
+    );
+    ctx.defun(
+        "inkline-set-readline-variable",
+        |name: String, value: TulispObject| -> Result<TulispObject, Error> {
+            let text = if value.stringp() {
+                value.as_string()?
+            } else if value.null() {
+                "off".into()
+            } else if value.symbolp() && value.to_string() == "t" {
+                "on".into()
+            } else {
+                value.to_string()
+            };
+            if !ffi::set_readline_variable(&name, &text) {
+                return Err(Error::invalid_argument(format!(
+                    "{name}: no such readline variable"
+                )));
+            }
             Ok(TulispObject::nil())
         },
     );

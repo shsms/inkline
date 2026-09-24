@@ -134,6 +134,7 @@ pub fn load() {
                 ffi::add_command(c"kill-to-line-end", multiline::kill_to_line_end);
                 ffi::add_command(c"kill-to-line-start", multiline::kill_to_line_start);
                 ffi::add_command(c"comment-lines", multiline::comment_lines);
+                ffi::add_command(c"accept-as-is", accept_as_is);
             });
             crate::lisp::start_for_shell();
             STATE.with_borrow_mut(|s| s.unloaded = false);
@@ -263,6 +264,14 @@ fn disable() {
         ffi::set_deprep_function(orig.deprep);
         ffi::set_pre_input_hook(orig.pre_input);
     }
+}
+
+/// Runs the line as it is.
+extern "C" fn accept_as_is(count: c_int, key: c_int) -> c_int {
+    guard(
+        || ffi::accept_line(count, key),
+        || ffi::accept_line(count, key),
+    )
 }
 
 /// Runs `f`. If it panics, turns inkline off and runs `on_panic` instead, so a

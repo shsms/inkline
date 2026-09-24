@@ -49,45 +49,10 @@ pub fn bash_command() -> Command {
     cmd
 }
 
-/// `bind` lines the tests load right after inkline.
-pub const BINDINGS: &str = r#"bind '"\C-f": accept-suggestion-char'
-bind '"\e[C": accept-suggestion-char'
-bind '"\ef": accept-suggestion-word'
-bind '"\C-e": accept-suggestion'
-bind '"\e[F": accept-suggestion'
-bind '"(": insert-pair'
-bind '"[": insert-pair'
-bind '"{": insert-pair'
-bind '"\"": insert-pair'
-bind "\"'\": insert-pair"
-bind '"`": insert-pair'
-bind '")": insert-close'
-bind '"]": insert-close'
-bind '"}": insert-close'
-bind '"\C-m": accept-or-newline'
-bind '"\C-j": insert-newline'
-bind '"\e\C-m": accept-line'
-bind 'set bind-tty-special-chars off'
-bind '"\C-?": delete-pair'
-bind '"\e[A": previous-line-or-history'
-bind '"\eOA": previous-line-or-history'
-bind '"\C-p": previous-line-or-history'
-bind '"\e[B": next-line-or-history'
-bind '"\eOB": next-line-or-history'
-bind '"\C-n": next-line-or-history'
-bind '"\C-a": line-start'
-bind '"\e[H": line-start'
-bind '"\eOH": line-start'
-bind '"\e[1~": line-start'
-bind '"\C-k": kill-to-line-end'
-bind '"\C-u": kill-to-line-start'
-bind '"\e#": comment-lines'
-"#;
-
 pub struct Options {
     pub rows: u16,
     pub cols: u16,
-    /// Load inkline and `BINDINGS`.
+    /// Load inkline.
     pub inkline: bool,
     /// History entries, oldest first.
     pub history: Vec<&'static str>,
@@ -175,7 +140,7 @@ impl Shell {
         let mut rc = String::new();
         rc += &opts.before_inkline;
         if opts.inkline {
-            rc += &format!("enable -f {} inkline\n{BINDINGS}", so_path().display());
+            rc += &format!("enable -f {} inkline\n", so_path().display());
         }
         rc += "PS1='$ '\nPS2='> '\nHISTFILE=\n";
         rc += "bind 'set bell-style none'\nbind 'set enable-bracketed-paste on'\n";

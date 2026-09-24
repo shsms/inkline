@@ -37,9 +37,10 @@ pub fn start() {
 }
 
 /// Starts Lisp for the shell on the first `enable -f`: a fresh interpreter
-/// and, where line editing is on, the terminal watcher and `init.el`. Once an
-/// interpreter exists it does nothing, even when a panic ended the last start
-/// part way, so a later `enable -f` only switches inkline on.
+/// and, where line editing is on, the default layout, the terminal watcher
+/// and `init.el`. Once an interpreter exists it does nothing, even when a
+/// panic ended the last start part way, so a later `enable -f` only switches
+/// inkline on.
 #[cfg(not(test))]
 pub fn start_for_shell() {
     if STARTED.get() {
@@ -47,6 +48,8 @@ pub fn start_for_shell() {
     }
     start();
     if crate::ffi::line_editing_shell() {
+        layout::prepare_readline();
+        layout::bind_defaults();
         init::warn_old_variables();
         lockout::watch_terminal();
         init::read_at_start();

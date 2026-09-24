@@ -7,8 +7,7 @@ const INPUTRC: &str = "\"\\C-xa\": accept-suggestion\n";
 
 #[test]
 fn inputrc_bindings_work_when_inkline_loads_first() {
-    // The harness's rc runs `enable -f` before any `bind`, and bash reads
-    // INPUTRC on the first `bind`.
+    // inkline sets readline up when it loads, which reads INPUTRC.
     let mut sh = Shell::start(Options {
         history: vec!["git status"],
         inputrc: Some(INPUTRC.into()),
