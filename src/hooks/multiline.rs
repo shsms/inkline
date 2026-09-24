@@ -315,6 +315,60 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
     )
 }
 
+pub(super) extern "C" fn line_start(count: c_int, key: c_int) -> c_int {
+    on_line(count, key, ffi::beginning_of_line, |line, point| {
+        ffi::set_point(lines::line_start(line, point));
+    })
+}
+
+pub(super) extern "C" fn line_end(count: c_int, key: c_int) -> c_int {
+    end_of_line(count, key)
+}
+
+/// `line-end`; also what `accept-suggestion` does without a suggestion.
+pub(super) fn end_of_line(count: c_int, key: c_int) -> c_int {
+    on_line(count, key, ffi::end_of_line, |line, point| {
+        ffi::set_point(lines::line_end(line, point));
+    })
+}
+
+pub(super) extern "C" fn kill_to_line_end(count: c_int, key: c_int) -> c_int {
+    on_line(count, key, ffi::kill_line, |line, point| {
+        let kill = lines::kill_forward(line, point);
+        ffi::kill_text(kill.start, kill.end);
+        ffi::set_point(kill.start);
+    })
+}
+
+pub(super) extern "C" fn kill_to_line_start(count: c_int, key: c_int) -> c_int {
+    on_line(count, key, ffi::unix_line_discard, |line, point| {
+        let kill = lines::kill_backward(line, point);
+        ffi::kill_text(kill.end, kill.start);
+        ffi::set_point(kill.start);
+    })
+}
+
+/// Runs `edit` on the line and cursor. Readline's `fallback` runs instead
+/// when the multi-line commands are off, the command has one line, or a
+/// count was typed, so single-line editing stays readline's.
+fn on_line(
+    count: c_int,
+    key: c_int,
+    fallback: fn(c_int, c_int) -> c_int,
+    edit: impl FnOnce(&str, usize),
+) -> c_int {
+    guard(
+        || match active_line() {
+            Some(line) if line.contains('\n') && !ffi::explicit_count() => {
+                edit(&line, ffi::point());
+                0
+            }
+            _ => fallback(count, key),
+        },
+        || fallback(count, key),
+    )
+}
+
 /// Puts the cursor at the start of a multi-line history entry just recalled,
 /// so the next Up leaves it at once. `INKLINE_HISTORY_CURSOR=end`, readline's
 /// `history-preserve-point` and an entry taller than the screen keep

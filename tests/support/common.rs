@@ -62,6 +62,12 @@ bind '"\C-p": previous-line-or-history'
 bind '"\e[B": next-line-or-history'
 bind '"\eOB": next-line-or-history'
 bind '"\C-n": next-line-or-history'
+bind '"\C-a": line-start'
+bind '"\e[H": line-start'
+bind '"\eOH": line-start'
+bind '"\e[1~": line-start'
+bind '"\C-k": kill-to-line-end'
+bind '"\C-u": kill-to-line-start'
 "#;
 
 pub struct Options {

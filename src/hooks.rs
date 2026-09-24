@@ -133,6 +133,10 @@ pub fn load() {
                     multiline::previous_line_or_search,
                 );
                 ffi::add_command(c"next-line-or-search", multiline::next_line_or_search);
+                ffi::add_command(c"line-start", multiline::line_start);
+                ffi::add_command(c"line-end", multiline::line_end);
+                ffi::add_command(c"kill-to-line-end", multiline::kill_to_line_end);
+                ffi::add_command(c"kill-to-line-start", multiline::kill_to_line_start);
             });
             STATE.with_borrow_mut(|s| s.unloaded = false);
             enable();
@@ -599,7 +603,7 @@ extern "C" fn accept_suggestion_word(count: c_int, key: c_int) -> c_int {
 }
 
 extern "C" fn accept_suggestion(count: c_int, key: c_int) -> c_int {
-    accept(count, key, suggest::all, ffi::end_of_line)
+    accept(count, key, suggest::all, multiline::end_of_line)
 }
 
 /// Inserts the part of the suggestion `take` picks. Without a suggestion for

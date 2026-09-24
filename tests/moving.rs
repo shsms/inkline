@@ -91,6 +91,41 @@ fn inkline_history_cursor_end_keeps_readlines_place() {
 }
 
 #[test]
+fn home_and_end_stay_on_the_line() {
+    let mut sh = Shell::start(Options::default());
+    block(&mut sh, &["echo a", "echo b"]);
+    sh.send("\x01");
+    sh.wait_for("the line's start", |s| s.cursor_position() == (1, 0));
+    sh.send("\x05");
+    sh.wait_for("the line's end", |s| s.cursor_position() == (1, 6));
+}
+
+#[test]
+fn kills_stop_at_the_line() {
+    let mut sh = Shell::start(Options::default());
+    block(&mut sh, &["echo a", "echo b"]);
+    sh.send("\x01\x0b");
+    sh.wait_for("the killed line", |s| {
+        row_text(s, 0) == "$ echo a" && row_text(s, 1).is_empty()
+    });
+    sh.send("\x19");
+    sh.wait_for("the yank", |s| row_text(s, 1) == "echo b");
+}
+
+#[test]
+fn at_a_line_edge_the_kills_join_lines() {
+    let mut sh = Shell::start(Options::default());
+    block(&mut sh, &["echo a", "echo b"]);
+    sh.send("\x01\x15");
+    sh.wait_for("joined by C-u", |s| row_text(s, 0) == "$ echo aecho b");
+    sh.send("\x1f");
+    sh.wait_for("undone", |s| row_text(s, 1) == "echo b");
+    sh.send(UP);
+    sh.send("\x05\x0b");
+    sh.wait_for("joined by C-k", |s| row_text(s, 0) == "$ echo aecho b");
+}
+
+#[test]
 fn up_can_search_history() {
     let mut sh = Shell::start(Options {
         rc: "bind '\"\\e[A\": previous-line-or-search'\n".into(),

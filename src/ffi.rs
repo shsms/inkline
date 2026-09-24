@@ -674,3 +674,31 @@ pub fn set_point(point: usize) {
 pub fn explicit_count() -> bool {
     unsafe { rl_explicit_arg != 0 }
 }
+
+unsafe extern "C" {
+    fn rl_beg_of_line(count: c_int, key: c_int) -> c_int;
+    fn rl_kill_line(count: c_int, key: c_int) -> c_int;
+    fn rl_unix_line_discard(count: c_int, key: c_int) -> c_int;
+    fn rl_kill_text(from: c_int, to: c_int) -> c_int;
+}
+
+/// readline's `beginning-of-line`.
+pub fn beginning_of_line(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_beg_of_line(count, key) }
+}
+
+/// readline's `kill-line`.
+pub fn kill_line(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_kill_line(count, key) }
+}
+
+/// readline's `unix-line-discard`.
+pub fn unix_line_discard(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_unix_line_discard(count, key) }
+}
+
+/// Moves bytes `from..to` of the line to the kill ring, after the last kill
+/// when `from < to` and before it otherwise. The cursor does not move.
+pub fn kill_text(from: usize, to: usize) {
+    unsafe { rl_kill_text(from as c_int, to as c_int) };
+}

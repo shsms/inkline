@@ -27,6 +27,8 @@ const SEQUENCES: &[(&str, &str)] = &[
     ("DEL", "\x7f"),
     ("M-2 DEL", "\x1b2\x7f"),
     ("C-a C-f DEL", "\x01\x06\x7f"),
+    ("C-a M-f M-f C-u", "\x01\x1bf\x1bf\x15"),
+    ("Home End", "\x1b[H\x1b[F"),
 ];
 
 #[test]
