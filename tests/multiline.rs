@@ -628,6 +628,15 @@ fn ctrl_c_with_keys_after_it() {
 }
 
 #[test]
+fn ctrl_c_with_keys_after_it_ending_in_insert_newline() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("for x in a; do\r");
+    sh.wait_for("the new line", |s| s.cursor_position() == (1, 4));
+    sh.send(&format!("\x03echo hi{ALT_ENTER}"));
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+}
+
+#[test]
 fn alt_hash_comments_every_line() {
     let mut sh = Shell::start(Options::default());
     sh.send("echo a");

@@ -89,9 +89,14 @@ fn empty_pair(line: &str, point: usize) -> bool {
 }
 
 /// M-Enter: always adds a line.
-pub(super) extern "C" fn insert_newline(_count: c_int, _key: c_int) -> c_int {
+pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
     guard(
         || {
+            // A C-c that came with more keys is still waiting for bash to act
+            // on it, which bash does once the line is accepted.
+            if ffi::interrupted() {
+                return ffi::accept_line(count, key);
+            }
             match active_line() {
                 Some(line) => new_line(&line, ffi::point(), false),
                 None => ffi::insert_text("\n"),
