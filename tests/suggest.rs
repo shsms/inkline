@@ -233,7 +233,7 @@ fn scrolls_at_the_bottom_and_comes_back() {
 #[test]
 fn a_long_suggestion_is_cut() {
     let mut sh = Shell::start(Options {
-        rc: "INKLINE_SUGGESTION_LINES=3\n".into(),
+        rc: "inkline eval '(setq inkline-suggestion-lines 3)' >/dev/null\n".into(),
         history: vec!["echo 1\necho 2\necho 3\necho 4\necho 5"],
         ..Options::default()
     });

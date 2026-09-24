@@ -8,7 +8,6 @@ use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
 
-use crate::colors::Colors;
 use crate::commands::{self, PathCache};
 use crate::ffi;
 use crate::lexer::{Kind, Lexer};
@@ -32,9 +31,6 @@ struct Originals {
 struct State {
     enabled: bool,
     lexer: Lexer,
-    colors: Colors,
-    /// The `INKLINE_COLORS` value `colors` was parsed from.
-    colors_spec: Option<String>,
     paths: PathCache,
     /// The line a suggestion was drawn for, and the suggestion, for the accept
     /// commands.
@@ -85,8 +81,6 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
         lexer: Lexer::new(),
-        colors: Colors::default(),
-        colors_spec: None,
         paths: PathCache::default(),
         suggestion: None,
         shown_at: None,
@@ -185,25 +179,12 @@ fn run_builtin(args: &[String]) -> c_int {
             disable();
             ffi::EXECUTION_SUCCESS
         }
-        ["eval", expr] => match crate::lisp::eval(expr) {
-            Ok(value) => {
-                if let Some(text) = value {
-                    let _ = writeln!(std::io::stdout(), "{text}");
-                }
-                ffi::EXECUTION_SUCCESS
+        ["eval", expr] => lisp_status(crate::lisp::eval(expr).map(|value| {
+            if let Some(text) = value {
+                let _ = writeln!(std::io::stdout(), "{text}");
             }
-            Err(e) => {
-                let _ = writeln!(std::io::stderr(), "inkline: {e}");
-                ffi::EXECUTION_FAILURE
-            }
-        },
-        ["load", file] => match crate::lisp::load(file) {
-            Ok(()) => ffi::EXECUTION_SUCCESS,
-            Err(e) => {
-                let _ = writeln!(std::io::stderr(), "inkline: {e}");
-                ffi::EXECUTION_FAILURE
-            }
-        },
+        })),
+        ["load", file] => lisp_status(crate::lisp::load(file)),
         _ => {
             let _ = writeln!(
                 std::io::stderr(),
@@ -212,6 +193,22 @@ fn run_builtin(args: &[String]) -> c_int {
             ffi::EX_USAGE
         }
     }
+}
+
+/// The exit status for a Lisp run. Prints its error, then each bad setting
+/// value not yet reported, to stderr.
+fn lisp_status(result: Result<(), String>) -> c_int {
+    let status = match result {
+        Ok(()) => ffi::EXECUTION_SUCCESS,
+        Err(e) => {
+            let _ = writeln!(std::io::stderr(), "inkline: {e}");
+            ffi::EXECUTION_FAILURE
+        }
+    };
+    for line in crate::lisp::settings::problems() {
+        let _ = writeln!(std::io::stderr(), "inkline: {line}");
+    }
+    status
 }
 
 /// Installs the key-reading, pre-input and terminal-restore hooks. The drawing
@@ -543,9 +540,8 @@ fn repaint_line() -> bool {
     };
     let point = ffi::point();
     let (rows, cols) = ffi::screen_size();
-    let colors_spec = ffi::shell_variable("INKLINE_COLORS");
-    let suggestion_lines =
-        suggest::line_limit(ffi::shell_variable("INKLINE_SUGGESTION_LINES").as_deref());
+    let colors = crate::lisp::settings::colors();
+    let suggestion_lines = crate::lisp::settings::suggestion_lines();
     let path = ffi::shell_variable("PATH").unwrap_or_default();
     let suggestion = if editing && point == line.len() {
         ffi::history_find_map(|entry| suggest::rest(&line, entry).map(str::to_owned))
@@ -553,10 +549,6 @@ fn repaint_line() -> bool {
         None
     };
     STATE.with_borrow_mut(|s| {
-        if s.colors_spec != colors_spec {
-            s.colors = Colors::parse(colors_spec.as_deref().unwrap_or(""));
-            s.colors_spec = colors_spec;
-        }
         let error = error_to_underline(s, &line, point);
         let paths = &mut s.paths;
         let spans = s.lexer.spans(&line, |word| {
@@ -567,7 +559,7 @@ fn repaint_line() -> bool {
             line: &line,
             point,
             spans: &spans,
-            colors: &s.colors,
+            colors: &colors,
             suggestion: suggestion.as_deref(),
             suggestion_lines,
             error: error.clone(),

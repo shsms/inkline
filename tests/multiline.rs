@@ -215,7 +215,7 @@ fn enter_between_braces_inside_a_loop_opens_the_group() {
 #[test]
 fn enter_between_parentheses_inside_a_block_with_inkline_indent_0() {
     let mut sh = Shell::start(Options {
-        rc: "INKLINE_INDENT=0\n".into(),
+        rc: "inkline eval '(setq inkline-indent 0)' >/dev/null\n".into(),
         ..Options::default()
     });
     sh.send("if true; then\r");
@@ -438,7 +438,7 @@ fn plain_enter_after_inkline_off() {
 #[test]
 fn inkline_indent_sets_the_step() {
     let mut sh = Shell::start(Options {
-        rc: "INKLINE_INDENT=2\n".into(),
+        rc: "inkline eval '(setq inkline-indent 2)' >/dev/null\n".into(),
         ..Options::default()
     });
     sh.send("for x in a; do\r");
@@ -447,7 +447,7 @@ fn inkline_indent_sets_the_step() {
     // next keys go in a write of their own.
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
-    sh.send("INKLINE_INDENT=0\r");
+    sh.send("inkline eval '(setq inkline-indent 0)' >/dev/null\r");
     sh.wait_for("the next prompt", |s| s.cursor_position().0 == 3);
     sh.send("for x in a; do\r");
     sh.wait_for("no indentation", |s| {
@@ -599,11 +599,11 @@ fn no_indentation_inside_a_here_document() {
     sh.wait_for("the body line", |s| s.cursor_position() == (2, 0));
 }
 
-/// `INKLINE_INDENT=0` also leaves a closing word's tab alone.
+/// `inkline-indent` 0 also leaves a closing word's tab alone.
 #[test]
 fn no_outdent_with_inkline_indent_0() {
     let mut sh = Shell::start(Options {
-        rc: "INKLINE_INDENT=0\n".into(),
+        rc: "inkline eval '(setq inkline-indent 0)' >/dev/null\n".into(),
         ..Options::default()
     });
     sh.send("for x in a; do\r");

@@ -115,7 +115,7 @@ pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
 /// Inserts a newline at `point` as one undo step with what goes with it: the
 /// line left moves out when it starts with a closing word, and the new line
 /// gets its indentation. Neither happens when more input is already waiting
-/// (pasted text keeps its own spacing) or `INKLINE_INDENT` is 0. With
+/// (pasted text keeps its own spacing) or `inkline-indent` is 0. With
 /// `close_below`, the text after the cursor goes on a line of its own below
 /// the new one, as indented as the cursor's line.
 fn new_line(line: &str, point: usize, close_below: bool) {
@@ -146,13 +146,13 @@ fn new_line(line: &str, point: usize, close_below: bool) {
 }
 
 fn indent_step() -> usize {
-    indent::step(ffi::shell_variable("INKLINE_INDENT").as_deref())
+    crate::lisp::settings::indent()
 }
 
 /// Moves the line the cursor is on back one step when it starts with a word
 /// that closes a block, and returns the new cursor position. A line already
 /// less indented than a new line after the code above it would be has moved
-/// out before, so it stays. An `INKLINE_INDENT` of 0 leaves lines where they
+/// out before, so it stays. An `inkline-indent` of 0 leaves lines where they
 /// are.
 fn move_out(line: &str, point: usize) -> Option<usize> {
     let step = indent_step();
@@ -400,13 +400,13 @@ pub(super) extern "C" fn comment_lines(count: c_int, key: c_int) -> c_int {
 }
 
 /// Puts the cursor at the start of a multi-line history entry just recalled,
-/// so the next Up leaves it at once. `INKLINE_HISTORY_CURSOR=end`, readline's
-/// `history-preserve-point` and an entry taller than the screen keep
-/// readline's placement.
+/// so the next Up leaves it at once. `inkline-history-cursor` set to `end`,
+/// readline's `history-preserve-point` and an entry taller than the screen
+/// keep readline's placement.
 fn open_at_start() {
     let Some(line) = ffi::line() else { return };
     if !line.contains('\n')
-        || ffi::shell_variable("INKLINE_HISTORY_CURSOR").as_deref() == Some("end")
+        || crate::lisp::settings::history_cursor_end()
         || ffi::variable_on(c"history-preserve-point")
     {
         return;

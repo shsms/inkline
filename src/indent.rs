@@ -7,15 +7,6 @@ const CLOSERS: &[&str] = &["done", "fi", "esac", "}", ")", "else", "elif"];
 /// Operators that continue a command on the next line.
 const CONTINUERS: &[&str] = &["|", "|&", "&&", "||", "\\"];
 
-/// The indentation step: the value of `INKLINE_INDENT`, 4 by default. 0 turns
-/// indentation off; values above 16 are ignored.
-pub fn step(value: Option<&str>) -> usize {
-    value
-        .and_then(|v| v.trim().parse().ok())
-        .filter(|&n: &usize| n <= 16)
-        .unwrap_or(4)
-}
-
 /// The indentation for a new line inserted at `point`: that of the line the
 /// cursor is on, one step more after a word that opens a block or an
 /// operator that continues the command, one step less after the last line of
@@ -254,14 +245,5 @@ mod tests {
     fn escapes_before_wide_characters() {
         assert_eq!(new("echo \\日本 do"), "");
         assert_eq!(new("echo \"\\日\" x; do"), "    ");
-    }
-
-    #[test]
-    fn step_from_the_setting() {
-        assert_eq!(step(None), 4);
-        assert_eq!(step(Some("2")), 2);
-        assert_eq!(step(Some("0")), 0);
-        assert_eq!(step(Some("x")), 4);
-        assert_eq!(step(Some("99")), 4);
     }
 }

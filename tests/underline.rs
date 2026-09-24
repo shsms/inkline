@@ -16,7 +16,7 @@ const UNDERLINED_PAREN: &[u8] = b"\x1b[4m)";
 /// Plain underlines, which the test terminal can see.
 fn plain_underline() -> Options {
     Options {
-        rc: "INKLINE_COLORS='error=4'\n".into(),
+        rc: "inkline eval '(setq inkline-colors \"error=4\")' >/dev/null\n".into(),
         ..Options::default()
     }
 }
@@ -74,7 +74,7 @@ fn the_default_underline_is_wavy_and_red() {
 #[test]
 fn an_empty_error_colour_turns_it_off() {
     let mut sh = Shell::start(Options {
-        rc: "INKLINE_COLORS='error='\n".into(),
+        rc: "inkline eval '(setq inkline-colors \"error=\")' >/dev/null\n".into(),
         ..Options::default()
     });
     sh.send("echo ) x");
@@ -133,7 +133,7 @@ fn an_underline_is_forgotten_with_the_line() {
 #[test]
 fn not_in_read_e_from_prompt_command() {
     let mut sh = Shell::start(Options {
-        rc: "INKLINE_COLORS='error=4'\n\
+        rc: "inkline eval '(setq inkline-colors \"error=4\")' >/dev/null\n\
              PROMPT_COMMAND='if [ -n \"$go\" ]; then go=; read -e v; fi'\n"
             .into(),
         ..Options::default()

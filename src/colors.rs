@@ -1,5 +1,6 @@
-//! The colour table: the SGR codes each kind of piece is drawn with, set by the
-//! `INKLINE_COLORS` shell variable in the same format as `LS_COLORS`.
+//! The colour table: the SGR codes each kind of piece is drawn with, set by
+//! `inkline-colors` (see `crate::lisp::settings`), as a list of pairs or in
+//! the same format as `LS_COLORS`.
 
 use crate::lexer::Kind;
 
@@ -75,6 +76,41 @@ impl Colors {
     pub fn error(&self) -> &str {
         &self.error
     }
+
+    /// The default colours with `entries` (name, SGR codes) applied on top.
+    /// The first entry for a name wins; empty codes mean no colour, and turn
+    /// the underline off for `error`.
+    pub fn from_entries(entries: &[(String, String)]) -> Result<Colors, String> {
+        let mut colors = Colors::default();
+        let mut seen: Vec<&str> = Vec::new();
+        for (name, codes) in entries {
+            if seen.contains(&name.as_str()) {
+                continue;
+            }
+            seen.push(name);
+            if !codes
+                .bytes()
+                .all(|b| b.is_ascii_digit() || b == b';' || b == b':')
+            {
+                return Err(format!("{name}: {codes:?} is not an SGR code"));
+            }
+            match name.as_str() {
+                "error" => {
+                    colors.error = if codes.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\x1b[{codes}m")
+                    }
+                }
+                "suggestion" => colors.suggestion = codes.clone(),
+                _ => match kind_named(name) {
+                    Some(kind) => colors.kinds[kind as usize] = codes.clone(),
+                    None => return Err(format!("unknown colour name {name}")),
+                },
+            }
+        }
+        Ok(colors)
+    }
 }
 
 impl Default for Colors {
@@ -125,6 +161,41 @@ fn kind_named(name: &str) -> Option<Kind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn entries(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn entries_first_wins_and_empty_means_plain() {
+        let colors = Colors::from_entries(&entries(&[
+            ("command", "35"),
+            ("command", "36"),
+            ("string", ""),
+            ("error", ""),
+            ("suggestion", "38:5:244"),
+        ]))
+        .unwrap();
+        assert_eq!(colors.sgr(Kind::Command), "35");
+        assert_eq!(colors.sgr(Kind::String), "");
+        assert_eq!(colors.error(), "");
+        assert_eq!(colors.suggestion(), "38:5:244");
+        assert_eq!(colors.sgr(Kind::Keyword), "35");
+    }
+
+    #[test]
+    fn entries_reject_unknown_names_and_bad_codes() {
+        assert_eq!(
+            Colors::from_entries(&entries(&[("comand", "1")])),
+            Err("unknown colour name comand".to_owned())
+        );
+        assert_eq!(
+            Colors::from_entries(&entries(&[("command", "red")])),
+            Err("command: \"red\" is not an SGR code".to_owned())
+        );
+    }
 
     #[test]
     fn defaults() {

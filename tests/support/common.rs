@@ -85,6 +85,8 @@ pub struct Options {
     pub inputrc: Option<String>,
     /// Directory bash starts in; its temporary home when None.
     pub cwd: Option<PathBuf>,
+    /// Contents for `~/.config/inkline/init.el`; none when None.
+    pub init_el: Option<String>,
     /// How the cursor row starts once the first prompt is up.
     pub prompt: &'static str,
     pub term: &'static str,
@@ -101,6 +103,7 @@ impl Default for Options {
             rc: String::new(),
             inputrc: None,
             cwd: None,
+            init_el: None,
             prompt: "$",
             term: "xterm-256color",
             lang: "C.UTF-8",
@@ -123,6 +126,17 @@ pub struct Shell {
 impl Shell {
     pub fn start(opts: Options) -> Shell {
         let home = tempfile::tempdir().unwrap();
+        if let Some(text) = &opts.init_el {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = home.path().join(".config/inkline");
+            std::fs::create_dir_all(&dir).unwrap();
+            for d in [home.path().join(".config"), dir.clone()] {
+                std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            let file = dir.join("init.el");
+            std::fs::write(&file, text).unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let mut rc = String::new();
         if opts.inkline {
             rc += &format!("enable -f {} inkline\n{BINDINGS}", so_path().display());

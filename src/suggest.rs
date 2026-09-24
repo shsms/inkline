@@ -16,15 +16,6 @@ pub fn rest<'a>(line: &str, entry: &'a str) -> Option<&'a str> {
     (!rest.is_empty()).then_some(rest)
 }
 
-/// The most lines of a suggestion to show: the value of
-/// `INKLINE_SUGGESTION_LINES`, or 5.
-pub fn line_limit(value: Option<&str>) -> usize {
-    value
-        .and_then(|v| v.trim().parse().ok())
-        .filter(|&n: &usize| n >= 1)
-        .unwrap_or(5)
-}
-
 /// The first `count` characters of `suggestion`.
 pub fn chars(suggestion: &str, count: usize) -> &str {
     let end = suggestion
@@ -77,14 +68,6 @@ mod tests {
         assert_eq!(rest("for i in 1", "for i in 1\ndone"), Some("\ndone"));
         assert_eq!(rest("echo", "echo a\tb"), Some(" a\tb"));
         assert_eq!(rest("echo", "echo\u{1b}[m"), None);
-    }
-
-    #[test]
-    fn line_limit_from_the_setting() {
-        assert_eq!(line_limit(None), 5);
-        assert_eq!(line_limit(Some("3")), 3);
-        assert_eq!(line_limit(Some("0")), 5);
-        assert_eq!(line_limit(Some("many")), 5);
     }
 
     #[test]

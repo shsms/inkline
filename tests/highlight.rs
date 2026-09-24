@@ -68,7 +68,7 @@ fn functions_aliases_and_builtins_are_known() {
 #[test]
 fn inkline_colors_overrides_defaults() {
     let opts = Options {
-        rc: "INKLINE_COLORS='command=35'\n".into(),
+        rc: "inkline eval '(setq inkline-colors \"command=35\")' >/dev/null\n".into(),
         ..Options::default()
     };
     let sh = typed(opts, "ls -l");

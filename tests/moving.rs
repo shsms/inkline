@@ -80,7 +80,7 @@ fn a_recalled_multi_line_entry_opens_at_its_start() {
 #[test]
 fn inkline_history_cursor_end_keeps_readlines_place() {
     let mut sh = Shell::start(Options {
-        rc: "INKLINE_HISTORY_CURSOR=end\n".into(),
+        rc: "inkline eval \"(setq inkline-history-cursor 'end)\" >/dev/null\n".into(),
         history: vec![LOOP],
         ..Options::default()
     });

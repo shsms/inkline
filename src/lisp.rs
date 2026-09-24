@@ -8,6 +8,7 @@ use tulisp::TulispContext;
 
 pub mod emacs;
 pub mod errors;
+pub mod settings;
 
 thread_local! {
     static SLOT: RefCell<Option<TulispContext>> = const { RefCell::new(None) };
@@ -32,6 +33,7 @@ fn new_context() -> TulispContext {
     let mut ctx = TulispContext::new();
     errors::register(&mut ctx);
     emacs::register(&mut ctx);
+    settings::register(&mut ctx);
     ctx
 }
 
