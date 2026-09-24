@@ -225,6 +225,8 @@ entry of its own, so a commented block comes back one line at a time.
 cargo test
 scripts/build-bash.sh 5.0      # needs libncurses-dev / ncurses-devel
 INKLINE_TEST_BASH=target/bash-5.0/bin/bash cargo test
+scripts/build-bash.sh 5.3
+INKLINE_TEST_BASH=target/bash-5.3/bin/bash cargo test
 ```
 
 ## License
