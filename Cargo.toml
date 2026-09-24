@@ -16,9 +16,15 @@ libc = "0.2"
 # holds that file to bash. Update the two crates together and rerun the tests.
 tree-sitter = "=0.27.0"
 tree-sitter-bash = "=0.25.1"
+tulisp = { path = "../tulisp" }
 unicode-width = "0.2"
 
 [dev-dependencies]
 portable-pty = "0.9"
 tempfile = "3"
 vt100 = "0.16"
+
+# The end-to-end tests load the debug library; an optimised interpreter keeps
+# Lisp as fast there as in a release build.
+[profile.dev.package.tulisp]
+opt-level = 3

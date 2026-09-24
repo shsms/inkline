@@ -14,7 +14,7 @@ fn loads_and_switches_on_and_off() {
         String::from_utf8_lossy(&out.stdout),
         "inkline: on\ninkline: off\ninkline: on\nrc=2\n"
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: inkline [on|off|status]"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: inkline [on|off|status|"));
 }
 
 #[test]

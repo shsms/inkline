@@ -140,6 +140,7 @@ pub fn load() {
                 ffi::add_command(c"kill-to-line-end", multiline::kill_to_line_end);
                 ffi::add_command(c"kill-to-line-start", multiline::kill_to_line_start);
                 ffi::add_command(c"comment-lines", multiline::comment_lines);
+                crate::lisp::start();
             });
             STATE.with_borrow_mut(|s| s.unloaded = false);
             enable();
@@ -184,8 +185,30 @@ fn run_builtin(args: &[String]) -> c_int {
             disable();
             ffi::EXECUTION_SUCCESS
         }
+        ["eval", expr] => match crate::lisp::eval(expr) {
+            Ok(value) => {
+                if let Some(text) = value {
+                    let _ = writeln!(std::io::stdout(), "{text}");
+                }
+                ffi::EXECUTION_SUCCESS
+            }
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "inkline: {e}");
+                ffi::EXECUTION_FAILURE
+            }
+        },
+        ["load", file] => match crate::lisp::load(file) {
+            Ok(()) => ffi::EXECUTION_SUCCESS,
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "inkline: {e}");
+                ffi::EXECUTION_FAILURE
+            }
+        },
         _ => {
-            let _ = writeln!(std::io::stderr(), "inkline: usage: inkline [on|off|status]");
+            let _ = writeln!(
+                std::io::stderr(),
+                "inkline: usage: inkline [on|off|status|load FILE|eval EXPR]"
+            );
             ffi::EX_USAGE
         }
     }

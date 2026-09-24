@@ -54,7 +54,7 @@ pub static mut inkline_struct: Builtin = Builtin {
     function: Some(inkline_builtin),
     flags: BUILTIN_ENABLED,
     long_doc: (&raw const LONG_DOC.0) as *const *const c_char,
-    short_doc: c"inkline [on|off|status]".as_ptr(),
+    short_doc: c"inkline [on|off|status|load FILE|eval EXPR]".as_ptr(),
     handle: std::ptr::null_mut(),
 };
 
