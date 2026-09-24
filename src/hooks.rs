@@ -4,6 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::c_int;
 use std::io::Write;
+use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
 
@@ -14,6 +15,7 @@ use crate::lexer::Lexer;
 use crate::pairs::{self, Action};
 use crate::render::{self, Repaint};
 use crate::suggest;
+use crate::syntax::{self, Checker, Status};
 
 /// The readline functions inkline replaced. Kept apart from `State` in a
 /// `Cell`, so the fallback after a panic can always read them.
@@ -44,6 +46,15 @@ struct State {
     /// Set by `enable -d`: the readline commands stay registered but only run
     /// readline's own.
     unloaded: bool,
+    checker: Checker,
+    /// The line last checked for syntax errors, and what the check said.
+    checked: Option<(String, Status)>,
+    /// The bytes of the line underlined on screen.
+    underlined: Option<Range<usize>>,
+    /// The line typing paused on: an error in it is underlined.
+    paused_on: Option<String>,
+    /// Set when a new error waits for a pause before it is underlined.
+    wants_pause: bool,
 }
 
 static REGISTER: Once = Once::new();
@@ -54,6 +65,9 @@ static REGISTER: Once = Once::new();
 /// flickering. Other terminals ignore both.
 const BEGIN_UPDATE: &[u8] = b"\x1b[?2026h";
 const END_UPDATE: &[u8] = b"\x1b[?2026l";
+
+/// How long typing must pause before a new syntax error is underlined.
+const PAUSE_MS: c_int = 150;
 
 thread_local! {
     static ORIGINALS: Cell<Originals> = Cell::default();
@@ -69,6 +83,11 @@ thread_local! {
         shown_at: None,
         displaced: false,
         unloaded: false,
+        checker: Checker::new(),
+        checked: None,
+        underlined: None,
+        paused_on: None,
+        wants_pause: false,
     });
 }
 
@@ -226,8 +245,25 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         || (),
     );
     loop {
-        match ffi::wait_for_input(stream) {
+        let pause = guard(
+            || STATE.with_borrow_mut(|s| std::mem::take(&mut s.wants_pause)),
+            || false,
+        )
+        .then_some(PAUSE_MS);
+        match ffi::wait_for_input(stream, pause) {
             ffi::Wait::Ready | ffi::Wait::Error => break,
+            // Typing paused with a new error on the line: underline it.
+            ffi::Wait::Paused => guard(
+                || {
+                    STATE.with_borrow_mut(|s| s.paused_on = ffi::line());
+                    begin_update();
+                    erase_suggestion();
+                    draw();
+                    end_update();
+                    ffi::flush_out();
+                },
+                || (),
+            ),
             // Readline's reader stops on these and leaves the signal to be
             // handled after the read.
             ffi::Wait::Signal(libc::SIGHUP | libc::SIGTERM) => {
@@ -308,7 +344,14 @@ extern "C" fn pre_input() -> c_int {
     let result = ffi::call_hook(originals().pre_input);
     guard(
         || {
-            STATE.with_borrow_mut(|s| s.displaced = false);
+            STATE.with_borrow_mut(|s| {
+                s.displaced = false;
+                // Aliases and `extglob` may have changed since the last line.
+                s.checked = None;
+                s.underlined = None;
+                s.paused_on = None;
+                s.wants_pause = false;
+            });
             draw();
             ffi::flush_out();
         },
@@ -406,16 +449,30 @@ fn left_to_readline() -> bool {
 /// search) the stored suggestion is kept, so `M-3 C-f` can still take from it;
 /// `accept` checks it against the line before using it.
 fn draw() {
+    if !repaint_line() {
+        // Readline's plain drawing has no underline, and an error that shows
+        // up later, even the same one, waits for a new pause.
+        STATE.with_borrow_mut(|s| {
+            s.underlined = None;
+            s.paused_on = None;
+        });
+    }
+}
+
+/// Does `draw`'s work. Returns whether it repainted the line.
+fn repaint_line() -> bool {
     let editing = ffi::normal_editing();
     if editing {
         STATE.with_borrow_mut(|s| s.suggestion = None);
     }
-    let Some(line) = ffi::line() else { return };
+    let Some(line) = ffi::line() else {
+        return false;
+    };
     if line.is_empty() || STATE.with_borrow(|s| s.displaced) || left_to_readline() {
-        return;
+        return false;
     }
     let Some(prompt_width) = render::prompt_width(&ffi::display_prompt()) else {
-        return;
+        return false;
     };
     let point = ffi::point();
     let (rows, cols) = ffi::screen_size();
@@ -433,6 +490,7 @@ fn draw() {
             s.colors = Colors::parse(colors_spec.as_deref().unwrap_or(""));
             s.colors_spec = colors_spec;
         }
+        let error = error_to_underline(s, &line, point);
         let paths = &mut s.paths;
         let spans = s.lexer.spans(&line, |word| {
             !commands::is_plain(word) || commands::exists(word, &path, paths, ffi::known_to_bash)
@@ -445,19 +503,56 @@ fn draw() {
             colors: &s.colors,
             suggestion: suggestion.as_deref(),
             suggestion_lines,
-            error: None,
+            error: error.clone(),
             rows,
             cols,
         };
         let Some(out) = render::build(&repaint) else {
-            return;
+            return false;
         };
         ffi::write_queued(&out.bytes);
         s.shown_at = out.suggestion_col;
+        s.underlined = error;
         if let (Some(_), Some(rest)) = (out.suggestion_col, suggestion) {
             s.suggestion = Some((line.clone(), rest));
         }
-    });
+        true
+    })
+}
+
+/// What bash would make of `line`, checked once for each text of the line.
+fn status_of(s: &mut State, line: &str) -> Status {
+    if let Some((checked, status)) = &s.checked
+        && checked == line
+    {
+        return status.clone();
+    }
+    let status = s.checker.check(line, ffi::extglob());
+    s.checked = Some((line.to_owned(), status.clone()));
+    status
+}
+
+/// The bytes of `line` to underline as a syntax error. A new error waits for
+/// a pause in typing and asks `getc` for one; an error already underlined
+/// stays. The word the cursor is at the end of is being typed, so it is never
+/// underlined.
+fn error_to_underline(s: &mut State, line: &str, point: usize) -> Option<Range<usize>> {
+    if !ffi::reading_command() {
+        return None;
+    }
+    let Status::Wrong(range) = status_of(s, line) else {
+        return None;
+    };
+    let word = syntax::word_around(line, range);
+    if word.is_empty() || word.end == point {
+        return None;
+    }
+    if s.underlined.as_ref() == Some(&word) || s.paused_on.as_deref() == Some(line) {
+        Some(word)
+    } else {
+        s.wants_pause = true;
+        None
+    }
 }
 
 extern "C" fn accept_suggestion_char(count: c_int, key: c_int) -> c_int {

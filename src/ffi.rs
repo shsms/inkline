@@ -384,6 +384,8 @@ unsafe extern "C" {
 pub enum Wait {
     /// Input is ready to read, or readline's timeout (`read -t`) is up.
     Ready,
+    /// The pause asked for passed without input.
+    Paused,
     /// A signal interrupted the wait. The value is the signal readline caught
     /// and has not handled yet, or 0 for one readline does not catch, such as
     /// the `SIGCHLD` of a background job ending.
@@ -419,9 +421,9 @@ fn timeout_remaining() -> c_int {
     }
 }
 
-/// Blocks until `stream` has input, readline's timeout is up, or a signal
-/// arrives.
-pub fn wait_for_input(stream: *mut libc::FILE) -> Wait {
+/// Blocks until `stream` has input, readline's timeout is up, `pause`
+/// milliseconds pass, or a signal arrives.
+pub fn wait_for_input(stream: *mut libc::FILE, pause: Option<c_int>) -> Wait {
     let fd = if stream.is_null() {
         0
     } else {
@@ -432,12 +434,16 @@ pub fn wait_for_input(stream: *mut libc::FILE) -> Wait {
         events: libc::POLLIN,
         revents: 0,
     };
-    if unsafe { libc::poll(&mut poll, 1, timeout_remaining()) } >= 0 {
-        Wait::Ready
-    } else if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-        Wait::Signal(unsafe { rl_pending_signal() })
-    } else {
-        Wait::Error
+    let remaining = timeout_remaining();
+    // The pause only counts if it ends before readline's timeout.
+    let pause = pause.filter(|&p| remaining < 0 || p < remaining);
+    match unsafe { libc::poll(&mut poll, 1, pause.unwrap_or(remaining)) } {
+        0 if pause.is_some() => Wait::Paused,
+        n if n >= 0 => Wait::Ready,
+        _ if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {
+            Wait::Signal(unsafe { rl_pending_signal() })
+        }
+        _ => Wait::Error,
     }
 }
 
@@ -483,6 +489,34 @@ pub fn handle_interrupted_wait() {
             hook();
         }
     }
+}
+
+// ---- Reading a command ----
+
+/// bash's completion function, `rl_attempted_completion_function`.
+pub type CompletionFn = unsafe extern "C" fn(*const c_char, c_int, c_int) -> *mut *mut c_char;
+
+unsafe extern "C" {
+    static mut current_command_line_count: c_int;
+    static mut executing: c_int;
+    static mut extended_glob: c_int;
+    static mut rl_attempted_completion_function: Option<CompletionFn>;
+}
+
+/// Whether readline is reading the first line of a command for bash. Not so on
+/// a continuation line after `PS2`, where readline holds only part of the
+/// command, nor for `read -e`, which runs while bash executes a command and
+/// clears bash's completion function while it reads.
+pub fn reading_command() -> bool {
+    unsafe {
+        let completion = rl_attempted_completion_function;
+        current_command_line_count == 0 && executing == 0 && completion.is_some()
+    }
+}
+
+/// Whether bash's `extglob` option is on.
+pub fn extglob() -> bool {
+    unsafe { extended_glob != 0 }
 }
 
 // ---- Commands ----
