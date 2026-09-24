@@ -643,6 +643,28 @@ fn ctrl_c_with_keys_after_it() {
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
 }
 
+/// Keys typed after a `C-c` that arrive in two reads all go to the
+/// interrupted line, as with readline's own key reader: none of them start
+/// the next line.
+#[test]
+fn ctrl_c_with_keys_after_it_in_two_reads() {
+    let mut sh = Shell::start(Options::default());
+    for (first, rest) in [("ech", "o hi"), ("e", "cho hi")] {
+        sh.send("ab");
+        sh.wait_for("the typing", |s| cursor_row(s) == "$ ab");
+        sh.send(&format!("\x03{first}"));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        sh.send(&format!("{rest}\r"));
+        sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+        let s = sh.settle();
+        let split = format!(
+            "bash: {}: command not found",
+            rest.split(' ').next().unwrap()
+        );
+        assert!(!has_row(&s, &split), "{}", dump(&s));
+    }
+}
+
 #[test]
 fn ctrl_c_with_keys_after_it_ending_in_insert_newline() {
     let mut sh = Shell::start(Options::default());

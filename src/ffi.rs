@@ -386,6 +386,15 @@ pub fn normal_editing() -> bool {
     unsafe { rl_readline_state & busy == 0 && rl_done == 0 }
 }
 
+/// Whether readline is reading the key for the next command of a line.
+/// A key that a running command reads (a question, the key after `C-q`,
+/// the keys of a search) is not one, so while a Lisp command runs, this
+/// holds only inside a line of its own, such as `read -e` in shell code
+/// that a readline command runs.
+pub fn reading_command_key() -> bool {
+    unsafe { rl_readline_state & RL_STATE_READCMD != 0 }
+}
+
 /// Whether readline has accepted the line.
 pub fn line_done() -> bool {
     unsafe { rl_done != 0 }
@@ -419,6 +428,26 @@ unsafe extern "C" {
     static mut rl_signal_event_hook: Option<unsafe extern "C" fn() -> c_int>;
     fn rl_check_signals();
     fn rl_pending_signal() -> c_int;
+}
+
+/// A signal that came before the wait for a key started (such as while
+/// readline redrew the line), as `Wait::Signal` gives it: one readline
+/// caught and has not handled yet, or 0 for a `C-c` readline has handled
+/// and bash's signal hook has yet to act on. Readline's own reader would
+/// wait for a key before either is acted on.
+pub fn signal_before_wait() -> Option<Wait> {
+    // SAFETY: these read plain values readline and bash keep.
+    unsafe {
+        let signal = rl_pending_signal();
+        let hook = rl_signal_event_hook;
+        if signal != 0 {
+            Some(Wait::Signal(signal))
+        } else if interrupted() && hook.is_some() {
+            Some(Wait::Signal(0))
+        } else {
+            None
+        }
+    }
 }
 
 pub enum Wait {
@@ -481,7 +510,7 @@ pub fn wait_for_input(stream: *mut libc::FILE, pause: Option<c_int>) -> Wait {
 pub fn read_error() -> c_int {
     // READERR in readline.h.
     const READ_ERROR: c_int = -2;
-    if unsafe { rl_readline_state } & RL_STATE_READCMD != 0 {
+    if reading_command_key() {
         READ_ERROR
     } else {
         libc::EOF
@@ -491,19 +520,25 @@ pub fn read_error() -> c_int {
 unsafe extern "C" {
     static mut asynchronous_notification: c_int;
     fn signal_is_trapped(signal: c_int) -> c_int;
+    fn first_pending_trap() -> c_int;
 }
 
 /// Whether bash may write to the terminal while it handles `signal`, a value
 /// from `Wait::Signal`: under `set -b`, a job notice from its `SIGCHLD`
-/// handler (0: readline does not catch it), or a trap on a signal readline
-/// catches. A `WINCH` trap runs while readline handles the resize.
+/// handler (0: readline does not catch it), a trap on a signal readline
+/// catches, or a trap waiting to run on any other signal, where bash's
+/// signal hook runs it now (as in `read -e`). A `WINCH` trap runs while
+/// readline handles the resize.
 pub fn signal_may_print(signal: c_int) -> bool {
+    // SAFETY: these read plain values bash and readline keep.
     unsafe {
-        if signal == 0 {
+        let trapped = if signal == 0 {
             asynchronous_notification != 0
         } else {
             signal_is_trapped(signal) != 0
-        }
+        };
+        let hook = rl_signal_event_hook;
+        trapped || (hook.is_some() && first_pending_trap() > 0)
     }
 }
 
@@ -519,6 +554,38 @@ pub fn handle_interrupted_wait() {
             hook();
         }
     }
+}
+
+unsafe extern "C" {
+    /// The signal readline's handler caught and readline has not handled
+    /// yet; `rl_pending_signal` reads it.
+    static mut _rl_caught_signal: c_int;
+}
+
+/// Takes from readline a `SIGINT` it caught and has not handled yet, and
+/// returns whether there was one. Readline's key reader then does not
+/// handle it under the command reading the key (handling it frees the
+/// line's undo list, ends a search and passes the signal on to bash).
+/// `release_interrupt` gives it back.
+pub fn hold_interrupt() -> bool {
+    // SAFETY: readline's signal handler writes this int at any time, so it
+    // is read and written as volatile. A second SIGINT arriving between the
+    // two is lost, as it would be to readline.
+    unsafe {
+        let caught = &raw mut _rl_caught_signal;
+        let held = caught.read_volatile() == libc::SIGINT;
+        if held {
+            caught.write_volatile(0);
+        }
+        held
+    }
+}
+
+/// Gives readline back the `SIGINT` `hold_interrupt` took, for
+/// `handle_interrupted_wait` to handle.
+pub fn release_interrupt() {
+    // SAFETY: as in `hold_interrupt`.
+    unsafe { (&raw mut _rl_caught_signal).write_volatile(libc::SIGINT) };
 }
 
 // ---- Reading a command ----
@@ -662,6 +729,9 @@ unsafe extern "C" {
     fn rl_newline(count: c_int, key: c_int) -> c_int;
     static mut rl_pending_input: c_int;
     static mut rl_instream: *mut libc::FILE;
+    /// Keys readline read ahead and put back, as while it matched a longer
+    /// key sequence.
+    fn _rl_pushed_input_available() -> c_int;
 }
 
 /// readline's `accept-line`.
@@ -678,11 +748,39 @@ pub fn replaying_macro() -> bool {
 /// Whether more input is already waiting: typed ahead, pasted without
 /// bracketed paste, or coming from a macro.
 pub fn input_waiting() -> bool {
+    replaying_macro() || key_waiting()
+}
+
+/// Whether a key is already waiting: typed ahead, pasted without bracketed
+/// paste, or read by readline and put back. Macro text does not count.
+pub fn key_waiting() -> bool {
     unsafe {
-        if rl_pending_input != 0 || replaying_macro() {
-            return true;
-        }
-        poll_input(rl_instream, 0) > 0
+        rl_pending_input != 0 || _rl_pushed_input_available() != 0 || poll_input(rl_instream, 0) > 0
+    }
+}
+
+unsafe extern "C" {
+    fn rl_read_key() -> c_int;
+}
+
+/// Reads one more key for the command that is running, as readline's own
+/// commands do: from a macro or `rl_pending_input` first, else through the
+/// key reader. A readline command to run with `call_command`, so that a
+/// jump readline or bash makes while it waits stops there; it returns the
+/// key, below 0 when no key can be read.
+pub fn read_key_command() -> CommandFn {
+    read_key
+}
+
+unsafe extern "C" fn read_key(_count: c_int, _key: c_int) -> c_int {
+    // SAFETY: rl_read_key reads through the key reader and then handles
+    // the signals readline caught. `RL_STATE_MOREINPUT` is only a flag,
+    // set around the read as readline's own commands do.
+    unsafe {
+        rl_readline_state |= RL_STATE_MOREINPUT;
+        let key = rl_read_key();
+        rl_readline_state &= !RL_STATE_MOREINPUT;
+        key
     }
 }
 
@@ -941,10 +1039,17 @@ pub enum Jumped {
 /// and Lisp frames above.
 pub fn call_command(f: CommandFn, count: c_int, key: c_int) -> Result<c_int, Jumped> {
     let mut jumped: c_int = 0;
+    let reading_flags = RL_STATE_READCMD | RL_STATE_MOREINPUT;
+    // SAFETY: rl_readline_state is a plain set of flags readline keeps.
+    let reading = unsafe { rl_readline_state } & reading_flags;
     // SAFETY: inkline_call_command calls `f` between saving and putting
     // back readline's and bash's jump points. A jump from inside `f` lands
     // in its own C frame, so it never crosses this function or its callers.
     let result = unsafe { inkline_call_command(f, count, key, &raw mut jumped) };
+    // A key read that `f` left by a jump, as a timed-out `read -e -t`
+    // makes, can leave readline's flags for reading a key set.
+    // SAFETY: rl_readline_state is a plain set of flags readline keeps.
+    unsafe { rl_readline_state = rl_readline_state & !reading_flags | reading };
     match jumped {
         0 => Ok(result),
         value if value > 0 => Err(Jumped::Shell(value)),

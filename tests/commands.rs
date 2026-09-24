@@ -610,6 +610,223 @@ fn a_message_shows_under_an_empty_line_and_after_a_resize() {
     });
 }
 
+const INIT_ASK: &str = r#"
+(defun ask () (if (y-or-n-p "Sure? ") (insert "yes") (insert "no")))
+(keymap-global-set "C-x q" 'ask)
+(keymap-global-set "C-x s" (lambda () (call-interactively 'reverse-search-history) (insert "after")))
+(keymap-global-set "C-x v" (lambda () (call-interactively 'character-search) (insert "after")))
+(keymap-global-set "C-x w" (lambda () (insert "zz") (y-or-n-p "Q? ") (insert "after")))
+(keymap-global-set "C-x x"
+  (lambda ()
+    (catch 'inkline--quit (y-or-n-p "Q? "))
+    (call-interactively 'reverse-search-history)
+    (insert "after")))
+"#;
+
+fn ask_shell() -> Shell {
+    Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_ASK}")),
+        ..Options::default()
+    })
+}
+
+#[test]
+fn y_or_n_p_asks_under_the_line() {
+    let mut sh = ask_shell();
+    sh.send("\x18q");
+    sh.wait_for("the question", |s| row_below(s) == "Sure? (y or n)");
+    sh.send("y");
+    sh.wait_for("the answer", |s| {
+        cursor_row(s) == "$ yes" && row_below(s).is_empty()
+    });
+}
+
+#[test]
+fn y_or_n_p_rings_and_asks_again_on_another_key() {
+    let mut sh = ask_shell();
+    sh.send("\x18q");
+    sh.wait_for("the question", |s| row_below(s) == "Sure? (y or n)");
+    sh.send("x");
+    let s = sh.settle();
+    assert_eq!(row_below(&s), "Sure? (y or n)", "{}", dump(&s));
+    sh.send("N");
+    sh.wait_for("the answer", |s| {
+        cursor_row(s) == "$ no" && row_below(s).is_empty()
+    });
+}
+
+#[test]
+fn c_g_at_y_or_n_p_quits_quietly() {
+    let mut sh = ask_shell();
+    sh.send("ab\x18q");
+    sh.wait_for("the question", |s| row_below(s).starts_with("Sure?"));
+    sh.send("\x07");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ ab");
+    assert!(row_below(&s).is_empty(), "{}", dump(&s));
+}
+
+#[test]
+fn c_c_at_y_or_n_p_gives_a_new_prompt() {
+    let mut sh = ask_shell();
+    sh.send("ab\x18q");
+    sh.wait_for("the question", |s| row_below(s).starts_with("Sure?"));
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("\x18q");
+    sh.wait_for("asks again", |s| row_below(s).starts_with("Sure?"));
+    sh.send("n");
+    sh.wait_for("answered", |s| cursor_row(s) == "$ no");
+    sh.send("\x15cd\x18u");
+    sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
+    sh.send("\x15inkline status\r");
+    sh.wait_for("on", |s| has_row(s, "inkline: on"));
+}
+
+#[test]
+fn a_key_typed_ahead_is_not_an_answer() {
+    let mut sh = ask_shell();
+    sh.send("\x18qy");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ y");
+}
+
+/// A key typed ahead that readline read while matching a longer key
+/// sequence, and put back, is not an answer either.
+#[test]
+fn a_key_readline_put_back_is_not_an_answer() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_ASK}")),
+        rc: "bind '\"\\C-xqz\": \"Z\"'\n".into(),
+        ..Options::default()
+    });
+    sh.send("\x18qy");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ y", "{}", dump(&s));
+}
+
+/// A question asked on the last key of macro text is asked, and the keys
+/// of macro text answer it.
+#[test]
+fn y_or_n_p_asks_from_macro_text() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_ASK}")),
+        rc: "bind '\"\\C-t\": \"a\\C-xq\"'\n\
+             bind '\"\\C-xz\": \"c\\C-xqy\"'\n"
+            .into(),
+        ..Options::default()
+    });
+    sh.send("\x14");
+    sh.wait_for("the question", |s| row_below(s) == "Sure? (y or n)");
+    sh.send("y");
+    sh.wait_for("the answer", |s| cursor_row(s) == "$ ayes");
+    sh.send("\x15\x18z");
+    sh.wait_for("the answer from the macro", |s| cursor_row(s) == "$ cyes");
+}
+
+#[test]
+fn y_or_n_p_works_only_in_a_command() {
+    let mut sh = ask_shell();
+    sh.send("inkline eval '(y-or-n-p \"x\")'\r");
+    sh.wait_for("the error", |s| {
+        (0..s.size().0)
+            .any(|r| row_text(s, r).starts_with("inkline: y-or-n-p works only in a command"))
+    });
+}
+
+/// A readline command run from Lisp that reads keys gets `C-c` too: the
+/// Lisp command stops, and bash gives a new prompt. Undo still works there,
+/// also after a command that changed the line before it asked. A command
+/// that catches the quit runs no readline command after it.
+#[test]
+fn c_c_in_a_readline_command_run_from_lisp_gives_a_new_prompt() {
+    for (key, reading) in [
+        ("\x18s", "(reverse-i-search)"),
+        ("\x18v", "$ ab"),
+        ("\x18w", "$ abzz"),
+        ("\x18x", "$ ab"),
+    ] {
+        let mut sh = ask_shell();
+        sh.send("ab");
+        sh.wait_for("the typing", |s| cursor_row(s) == "$ ab");
+        sh.send(key);
+        sh.wait_for("reading keys", |s| cursor_row(s).starts_with(reading));
+        // character-search shows nothing new: give it time to start reading.
+        sh.settle();
+        sh.send("\x03");
+        sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+        let s = sh.settle();
+        assert!(!has_row(&s, "after"), "{}", dump(&s));
+        sh.send("cd\x18u");
+        sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
+        sh.send("\x1f");
+        sh.wait_for("undo", |s| cursor_row(s) == "$ cd");
+    }
+}
+
+#[test]
+fn y_or_n_p_asks_above_the_line_where_inkline_does_not_draw() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_ASK}")),
+        rc: "inkline off\n".into(),
+        ..Options::default()
+    });
+    sh.send("\x18q");
+    sh.wait_for("the question above", |s| {
+        let row = s.cursor_position().0;
+        cursor_row(s) == "$" && row > 0 && row_text(s, row - 1) == "Sure? (y or n)"
+    });
+    sh.send("y");
+    sh.wait_for("the answer", |s| cursor_row(s) == "$ yes");
+    // `C-c` while Lisp reads a key still waits for Lisp to stop, with
+    // inkline off too: in `y-or-n-p`, and in a readline command Lisp ran.
+    sh.send("\x15\x18q");
+    sh.wait_for("the question above", |s| {
+        let row = s.cursor_position().0;
+        cursor_row(s) == "$" && row > 0 && row_text(s, row - 1) == "Sure? (y or n)"
+    });
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        cursor_row(s) == "$" && has_row(s, "$ ^C")
+    });
+    sh.send("\x18s");
+    sh.wait_for("the search", |s| {
+        cursor_row(s).starts_with("(reverse-i-search)")
+    });
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    let s = sh.settle();
+    assert!(!has_row(&s, "after"), "{}", dump(&s));
+    sh.send("inkline eval '(+ 40 2)'\r");
+    sh.wait_for("Lisp still runs", |s| has_row(s, "42"));
+}
+
+/// A readline command run from Lisp can run a key's command itself (here
+/// `universal-argument` runs the key after it). When that key is a Lisp
+/// command, it cannot run while the first one does; the `C-c` still waits
+/// for the first one to end, and Lisp works at the new prompt.
+#[test]
+fn c_c_in_a_key_a_readline_command_runs_leaves_lisp_working() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{INIT}{}",
+            r#"
+(keymap-global-set "C-g" (lambda () (insert "G")))
+(keymap-global-set "C-x n" (lambda () (call-interactively 'universal-argument) (insert "after")))
+"#
+        )),
+        ..Options::default()
+    });
+    sh.send("ab\x18n");
+    sh.settle();
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    let s = sh.settle();
+    assert!(!has_row(&s, "after"), "{}", dump(&s));
+    sh.send("cd\x18u");
+    sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
+}
+
 /// A readline command inside `save-excursion` does not move its saved
 /// point: when the command shortened the line, point comes back at the
 /// end of the line, or at the start of the character the saved point is
@@ -669,4 +886,337 @@ fn a_shell_error_in_a_readline_command_run_from_lisp_gives_a_new_prompt() {
     sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
     sh.send("\x15inkline eval '(+ 40 2)'\r");
     sh.wait_for("Lisp still runs", |s| has_row(s, "42"));
+}
+
+/// Shell code that a Lisp command runs while inkline is off can switch
+/// inkline on (here `edit-and-execute-command` runs the line). inkline is
+/// then on with its own key reader, which the syntax-error underline after
+/// a pause needs, and `inkline off` afterwards puts readline's back: keys,
+/// Lisp and the shell keep working.
+#[test]
+fn inkline_on_from_a_lisp_command_while_off() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{INIT}{}",
+            r#"
+(keymap-global-set "C-x e" (lambda () (call-interactively 'edit-and-execute-command)))
+"#
+        )),
+        rc: "inkline eval '(setq inkline-colors \"error=4\")' >/dev/null\n\
+             inkline off\nexport VISUAL=true\n"
+            .into(),
+        ..Options::default()
+    });
+    sh.send("inkline on\x18e");
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    sh.send("inkline status | head -1\r");
+    sh.wait_for("inkline on", |s| {
+        has_row(s, "inkline: on") && cursor_row(s) == "$"
+    });
+    sh.send("echo ) x");
+    sh.wait_for("the underline", |s| underlined(s, ")"));
+    sh.send("\x15inkline off\r");
+    sh.settle();
+    sh.send("ab\x18u");
+    sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ AB");
+    sh.send("\x15inkline eval '(+ 40 2)'\r");
+    sh.wait_for("Lisp still runs", |s| {
+        has_row(s, "42") && cursor_row(s) == "$"
+    });
+}
+
+/// A readline command that Lisp runs can run a key's Lisp command, which
+/// cannot run while the first one does. With inkline off, that key leaves
+/// inkline's key reader in place, so a `C-c` at a question the first
+/// command asks afterwards still waits for Lisp to stop.
+#[test]
+fn a_nested_lisp_key_keeps_the_key_reader_with_inkline_off() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{INIT}{}",
+            r#"
+(keymap-global-set "C-x g"
+  (lambda ()
+    (call-interactively 'universal-argument)
+    (insert (if (y-or-n-p "Sure? ") "yes" "no"))))
+"#
+        )),
+        rc: "inkline off\nbind '\"\\C-t\": \"\\C-xg\\C-xl\"'\n".into(),
+        ..Options::default()
+    });
+    sh.send("\x14");
+    sh.wait_for("the question", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).starts_with("Sure? (y or n)"))
+    });
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("inkline eval '(+ 40 2)'\r");
+    sh.wait_for("Lisp still runs", |s| {
+        has_row(s, "42") && cursor_row(s) == "$"
+    });
+}
+
+/// Shell code that a Lisp command runs can switch inkline off, or remove
+/// it with `enable -d`, and the command can then still read a key. inkline's
+/// key reader stays in place until the command has returned, so a `C-c` at
+/// the question still waits for Lisp to stop, and Lisp keeps working.
+#[test]
+fn inkline_off_from_a_lisp_command_that_asks_afterwards() {
+    let enable = format!("enable -f {} inkline", so_path().display());
+    for (off, on) in [
+        ("inkline off", "inkline on"),
+        ("enable -d inkline", enable.as_str()),
+    ] {
+        let mut sh = Shell::start(Options {
+            init_el: Some(format!(
+                "{INIT}{}",
+                r#"
+(keymap-global-set "C-x e"
+  (lambda ()
+    (call-interactively 'edit-and-execute-command)
+    (insert (if (y-or-n-p "Sure? ") "yes" "no"))))
+"#
+            )),
+            rc: "export VISUAL=true\n".into(),
+            ..Options::default()
+        });
+        sh.send(&format!("{off}\x18e"));
+        sh.wait_for("the question", |s| {
+            (0..s.size().0).any(|r| row_text(s, r).starts_with("Sure? (y or n)"))
+        });
+        sh.send("\x03");
+        sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+        sh.send(&format!("{on}; inkline eval '(+ 40 2)'\r"));
+        sh.wait_for("Lisp still runs", |s| {
+            has_row(s, "42") && cursor_row(s) == "$"
+        });
+        sh.send("ab\x18u");
+        sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ AB");
+    }
+}
+
+/// A `C-c` while a Lisp command runs without reading a key gives a new
+/// prompt once the command has returned, and the line is not run.
+#[test]
+fn c_c_while_a_command_computes_gives_a_new_prompt() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"
+(keymap-global-set "C-x z"
+  (lambda () (let ((i 0)) (while (< i 6000000) (setq i (1+ i)))) (insert "done")))
+"#
+            .into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("ab\x18z");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    // The command is still running.
+    let s = sh.screen();
+    assert_eq!(cursor_row(&s), "$ ab", "{}", dump(&s));
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    sh.send("echo hi\r");
+    sh.wait_for("the new line run", |s| {
+        has_row(s, "hi") && cursor_row(s) == "$"
+    });
+    let s = sh.settle();
+    assert!(!has_row(&s, "$ abdoneecho hi"), "{}", dump(&s));
+}
+
+/// `read -e` in shell code that a Lisp command runs reads a line of its
+/// own: a `C-c` there stops the shell code as it does without inkline,
+/// also in a search on that line, and once Lisp has returned, bash gives
+/// a new prompt. Lisp and the shell keep working, with inkline on or off.
+#[test]
+fn c_c_at_read_e_in_shell_code_run_from_lisp() {
+    for (rc, search) in [("", false), ("inkline off\n", false), ("", true)] {
+        let mut sh = Shell::start(Options {
+            init_el: Some(format!(
+                "{INIT}{}",
+                r#"
+(keymap-global-set "C-x e"
+  (lambda () (call-interactively 'edit-and-execute-command) (insert "after")))
+"#
+            )),
+            rc: format!("{rc}export VISUAL=true\n"),
+            ..Options::default()
+        });
+        sh.send("read -e -p 'name? ' x; echo \"ran:[$x]\"\x18e");
+        sh.wait_for("the nested prompt", |s| cursor_row(s) == "name?");
+        sh.send("abc");
+        sh.wait_for("the typing", |s| cursor_row(s) == "name? abc");
+        if search {
+            sh.send("\x12a");
+            sh.wait_for("the search", |s| {
+                cursor_row(s).starts_with("(reverse-i-search)")
+            });
+        }
+        sh.send("\x03");
+        sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+        let s = sh.settle();
+        assert!(
+            !(0..s.size().0).any(|r| row_text(&s, r).starts_with("ran:")),
+            "{}",
+            dump(&s)
+        );
+        assert!(!has_row(&s, "$ after"), "{}", dump(&s));
+        sh.send("inkline eval '(+ 40 2)'\r");
+        sh.wait_for("Lisp still runs", |s| {
+            has_row(s, "42") && cursor_row(s) == "$"
+        });
+        sh.send("ab\x18u");
+        sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ AB");
+    }
+}
+
+/// A timed-out `read -e -t` in shell code that a Lisp command runs (here
+/// a completion function) leaves a line of its own by a jump. A question
+/// the command asks afterwards quits on `C-c`, and Lisp and the shell
+/// keep working.
+#[test]
+fn a_question_after_a_timed_out_read_e_leaves_lisp_working() {
+    // bash 5.0 leaves its line broken after such a read (`C-c` gives no new
+    // prompt), with or without Lisp.
+    if bash_version() < (5, 1) {
+        return;
+    }
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{INIT}{}",
+            r#"
+(keymap-global-set "C-x q"
+  (lambda () (call-interactively 'complete) (insert (if (y-or-n-p "Q? ") "yes" "no"))))
+"#
+        )),
+        rc: "f() { read -e -t 1 -p 'n? ' y; COMPREPLY=(foobar); }; complete -F f zz\n".into(),
+        ..Options::default()
+    });
+    sh.send("zz ");
+    sh.wait_for("the typing", |s| cursor_row(s) == "$ zz");
+    sh.send("\x18q");
+    sh.wait_for("the question", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).contains("Q? (y or n)"))
+    });
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("inkline eval '(+ 40 2)'\r");
+    sh.wait_for("Lisp still runs", |s| {
+        has_row(s, "42") && cursor_row(s) == "$"
+    });
+    sh.send("ab\x18u");
+    sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ AB");
+}
+
+/// A question on a `read -e -t` line whose time runs out while it waits:
+/// the read ends (in bash 5.0 once the question is answered, else at
+/// once), Lisp keeps working, and inkline's suggestions still show on the
+/// next line.
+#[test]
+fn a_question_on_a_line_that_times_out() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_ASK}")),
+        history: vec!["git status"],
+        ..Options::default()
+    });
+    sh.send("read -e -t 1 -p 'x? ' v; echo \"rc=$?\"\r");
+    sh.wait_for("the read", |s| cursor_row(s) == "x?");
+    sh.send("\x18q");
+    if bash_version() < (5, 1) {
+        // bash 5.0 times the read out in its own signal check, which runs
+        // once Lisp has stopped.
+        sh.wait_for("the question", |s| has_row(s, "Sure? (y or n)"));
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        sh.send("y");
+    }
+    sh.wait_for("the timeout", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).starts_with("rc=")) && cursor_row(s) == "$"
+    });
+    sh.send("git st");
+    sh.wait_for("the suggestion", |s| cursor_row(s) == "$ git status");
+    sh.send("\x15inkline eval '(+ 40 2)'\r");
+    sh.wait_for("Lisp still runs", |s| {
+        has_row(s, "42") && cursor_row(s) == "$"
+    });
+}
+
+/// A trap that runs while a Lisp command asks on a `read -e` line prints
+/// once the command has returned, as it would at readline's own prompt, and
+/// the question leaves nothing behind on the screen.
+#[test]
+fn a_trap_during_a_question_leaves_no_question_behind() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_ASK}")),
+        rc: "trap 'echo got-usr1' USR1\n".into(),
+        ..Options::default()
+    });
+    sh.send("read -e -p 'x? ' v; echo \"v=$v\"\r");
+    sh.wait_for("the read", |s| cursor_row(s) == "x?");
+    sh.send("abc\x18q");
+    sh.wait_for("the question", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).starts_with("Sure? (y or n)"))
+    });
+    sh.take_output();
+    sh.signal(libc::SIGUSR1);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    sh.send("y");
+    sh.wait_for("the trap", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).ends_with("got-usr1"))
+    });
+    // The trap's output is not held back behind an open synchronized update.
+    let out = sh.take_output();
+    let trap = find(&out, b"got-usr1").expect("the trap's output");
+    if let Some(begin) = rfind(&out[..trap], b"\x1b[?2026h") {
+        assert!(
+            find(&out[begin..trap], b"\x1b[?2026l").is_some(),
+            "{:?}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+    sh.send("\r");
+    sh.wait_for("the read done", |s| {
+        has_row(s, "v=abcyes") && cursor_row(s) == "$"
+    });
+    let s = sh.settle();
+    assert!(
+        !(0..s.size().0).any(|r| {
+            let row = row_text(&s, r);
+            row.contains("or n)") || row.contains("yesabc")
+        }),
+        "{}",
+        dump(&s)
+    );
+}
+
+/// A trap waiting for its signal at readline's own prompt runs only once
+/// the line is done, so inkline keeps drawing the line and its suggestion.
+#[test]
+fn a_trap_waiting_at_the_prompt_keeps_the_suggestion() {
+    let mut sh = Shell::start(Options {
+        rc: "trap 'echo got-usr1' USR1\n".into(),
+        history: vec!["echo hello world"],
+        ..Options::default()
+    });
+    sh.send("ec");
+    sh.wait_for("the suggestion", |s| cursor_row(s) == "$ echo hello world");
+    sh.signal(libc::SIGUSR1);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    sh.send("ho ");
+    sh.wait_for("the suggestion still", |s| {
+        cursor_row(s) == "$ echo hello world"
+    });
+}
+
+/// Where `needle` first starts in `haystack`.
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Where `needle` last starts in `haystack`.
+fn rfind(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).rposition(|w| w == needle)
 }

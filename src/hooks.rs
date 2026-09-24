@@ -76,6 +76,11 @@ const END_UPDATE: &[u8] = b"\x1b[?2026l";
 /// How long typing must pause before a new syntax error is underlined.
 const PAUSE_MS: c_int = 150;
 
+/// `C-g` as a key. While Lisp runs, a `C-c` comes back as this key.
+pub const CTRL_G: c_int = 7;
+/// `C-c` as a key, where the terminal does not turn it into `SIGINT`.
+pub const CTRL_C: c_int = 3;
+
 thread_local! {
     static ORIGINALS: Cell<Originals> = Cell::default();
     /// Whether a synchronized update is open.
@@ -85,10 +90,27 @@ thread_local! {
     /// The message to show under the line until the next key. Kept apart
     /// from `State` so Lisp can set it while it runs.
     static MESSAGE: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Set when `C-c` came while Lisp was reading a key; `run_lisp_command`
+    /// hands it on to readline and bash once the command has returned.
+    static INTERRUPTED_IN_LISP: Cell<bool> = const { Cell::new(false) };
+    /// Set when another signal interrupted inkline's wait for a key while
+    /// Lisp was reading one: the signal, as `ffi::Wait::Signal` gives it.
+    /// Readline handles it once the key is read; `run_lisp_command` runs
+    /// bash's part (traps, `read -e -t` timing out in bash 5.0) once the
+    /// command has returned.
+    static SIGNAL_IN_LISP: Cell<Option<c_int>> = const { Cell::new(None) };
     /// Set when shell code that a readline command run from Lisp ran jumped
     /// to bash's top level: the value it jumped with. `run_lisp_command`
     /// makes the jump once Lisp has stopped.
     static SHELL_JUMP: Cell<Option<c_int>> = const { Cell::new(None) };
+    /// Set once readline reads a line of its own (`read -e` in shell code)
+    /// under a readline command that Lisp runs, until that command returns.
+    static NESTED_LINE: Cell<bool> = const { Cell::new(false) };
+    /// Set when a key typed after a `C-c` bash has yet to act on is waiting
+    /// or has been read; cleared at the first wait after bash acts on it.
+    /// Those keys and the ones after them go to the interrupted line, as
+    /// with readline's own reader.
+    static KEYS_AFTER_C_C: Cell<bool> = const { Cell::new(false) };
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
         lexer: Lexer::new(),
@@ -259,11 +281,11 @@ fn enable() {
         }
         ORIGINALS.set(Originals {
             redisplay: ffi::redisplay_function(),
-            getc: ffi::getc_function(),
             deprep: ffi::deprep_function(),
             pre_input: ffi::pre_input_hook(),
+            ..originals()
         });
-        ffi::set_getc_function(Some(getc as ffi::GetcFn));
+        use_own_key_reader();
         ffi::set_deprep_function(Some(deprep_terminal as ffi::VoidFn));
         ffi::set_pre_input_hook(Some(pre_input as ffi::HookFn));
         s.enabled = true;
@@ -284,11 +306,15 @@ fn disable() {
             std::mem::replace(&mut s.enabled, false)
         })
     });
-    // Restore unless the state says inkline was already off.
+    // Restore unless the state says inkline was already off. While Lisp
+    // runs, inkline's key reader stays until the Lisp command's key has
+    // returned (see `run_lisp_key`).
     if !matches!(enabled, Ok(Ok(false))) {
         let orig = originals();
         ffi::set_redisplay_function(orig.redisplay);
-        ffi::set_getc_function(orig.getc);
+        if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
+            ffi::set_getc_function(orig.getc);
+        }
         ffi::set_deprep_function(orig.deprep);
         ffi::set_pre_input_hook(orig.pre_input);
     }
@@ -303,16 +329,22 @@ extern "C" fn accept_as_is(count: c_int, key: c_int) -> c_int {
 }
 
 /// The readline function of a Lisp command's key, `slot` telling which
-/// command. Holds no borrow of `STATE` while Lisp runs. When inkline's
-/// drawing function is not in place (inkline is off), the command's message
-/// is printed once it returns. A jump to bash's top level that shell code
-/// run from Lisp made is made last, once Lisp has stopped running.
+/// command. Holds no borrow of `STATE` while Lisp runs. inkline's key
+/// reader is in place while the command runs, also when inkline is off,
+/// so a `C-c` while the command reads a key waits for Lisp to stop. When
+/// inkline's drawing function is not in place (inkline is off), the
+/// command's message is printed once it returns. A `C-c` that came while
+/// the command ran, or bash's part of another signal that came while it
+/// read a key, is handled last, as it is after inkline's wait for a key,
+/// and then a jump to bash's top level that shell code run from Lisp made;
+/// only once Lisp has stopped running, so not when this command's key was
+/// run by a readline command that Lisp called.
 pub fn run_lisp_command(slot: usize, count: c_int, key: c_int) -> c_int {
+    use_own_key_reader();
     let result = guard(
         || {
             let result = crate::lisp::commands::run(slot, count, key);
-            let ours = redisplay as ffi::VoidFn;
-            if !ffi::redisplay_function().is_some_and(|f| std::ptr::fn_addr_eq(f, ours)) {
+            if !drawing() {
                 print_message_above();
             }
             result
@@ -320,12 +352,45 @@ pub fn run_lisp_command(slot: usize, count: c_int, key: c_int) -> c_int {
         || 0,
     );
     if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
-        // Bash jumps from here back to a new prompt; nothing in this frame
-        // needs dropping.
-        if let Some(value) = SHELL_JUMP.take() {
+        // Shell code the command ran may have switched inkline on or off;
+        // inkline keeps its reader only while it is on.
+        if !is_on() {
+            ffi::set_getc_function(originals().getc);
+        }
+        // Bash may jump from here back to a new prompt; nothing in this
+        // frame needs dropping.
+        let jump = SHELL_JUMP.take();
+        // A `C-c` that came while Lisp ran but read no key is still waiting
+        // in readline, which would only echo it, as inkline's key reader
+        // does not call bash's hook: it is handed on here too. So is any
+        // other signal that came while Lisp read a key (bash 5.0 times out
+        // `read -e -t` in its hook).
+        let interrupted = INTERRUPTED_IN_LISP.replace(false) || ffi::hold_interrupt();
+        if interrupted {
+            ffi::release_interrupt();
+        }
+        match SIGNAL_IN_LISP.take() {
+            Some(signal) => {
+                guard(|| before_signal(signal), || ());
+                ffi::handle_interrupted_wait();
+            }
+            None if interrupted => ffi::handle_interrupted_wait(),
+            None => {}
+        }
+        if let Some(value) = jump {
             ffi::jump_to_shell_top_level(value);
         }
     }
+    result
+}
+
+/// Runs `f`, which runs a readline command for Lisp with
+/// `ffi::call_command`. Keys read for a line of its own under that command
+/// get their signals as usual (see `getc`).
+pub fn in_readline_command<R>(f: impl FnOnce() -> R) -> R {
+    let outer = NESTED_LINE.replace(false);
+    let result = f();
+    NESTED_LINE.set(outer);
     result
 }
 
@@ -335,11 +400,51 @@ pub fn note_shell_jump(value: c_int) {
     SHELL_JUMP.set(Some(value));
 }
 
-/// Whether a jump to bash's top level is waiting for Lisp to stop: the
-/// running Lisp command then quits, and no more readline commands run
-/// from it.
+/// Whether a `C-c` or a jump to bash's top level is waiting for Lisp to
+/// stop: the running Lisp command then quits, and no more readline
+/// commands or questions run from it.
 pub fn lisp_must_stop() -> bool {
-    SHELL_JUMP.get().is_some()
+    INTERRUPTED_IN_LISP.get() || SHELL_JUMP.get().is_some()
+}
+
+/// Puts inkline's key reader in place, and the one it replaces in
+/// `ORIGINALS`. Does nothing when inkline's reader is already in place, so
+/// its own reader never becomes the original, which it calls to read a
+/// key.
+fn use_own_key_reader() {
+    let ours = getc as ffi::GetcFn;
+    let current = ffi::getc_function();
+    if current.is_some_and(|f| std::ptr::fn_addr_eq(f, ours)) {
+        return;
+    }
+    ORIGINALS.set(Originals {
+        getc: current,
+        ..originals()
+    });
+    ffi::set_getc_function(Some(ours));
+}
+
+/// Whether inkline is on. State that cannot be read counts as on.
+fn is_on() -> bool {
+    STATE
+        .try_with(|s| s.try_borrow().map_or(true, |s| s.enabled))
+        .unwrap_or(true)
+}
+
+/// Whether inkline's drawing function is in place.
+fn drawing() -> bool {
+    let ours = redisplay as ffi::VoidFn;
+    ffi::redisplay_function().is_some_and(|f| std::ptr::fn_addr_eq(f, ours))
+}
+
+/// Draws the line and the message now, for a Lisp command that waits for a
+/// key: the message goes under the line, or where inkline does not draw,
+/// on a row of its own above the line.
+pub fn show_message_now() {
+    if !drawing() {
+        print_message_above();
+    }
+    repaint_now();
 }
 
 /// Shows `text` under the line from the next draw until the next key; a
@@ -397,6 +502,21 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
 /// Readline's own drawing function is in place while waiting, so a resize is
 /// redrawn the way readline expects; inkline's is installed once the key
 /// arrives.
+///
+/// While Lisp runs (a Lisp command reading a key), bash must not jump from a
+/// signal to a new prompt: that would skip the Lisp and Rust frames. A
+/// `C-c` then comes back as `C-g`, and is handed on once the command has
+/// returned (see `run_lisp_command`); readline handles other signals after
+/// the key, and bash's part of them waits for the command too. A line of
+/// its own that shell code run from Lisp reads (`read -e`) gets its signals
+/// as usual, from its first key until the readline command that ran the
+/// shell code returns: bash's jump from there stops at `ffi::call_command`
+/// (see `in_readline_command`).
+///
+/// A signal that came before the wait (while readline redrew the line or ran
+/// a command) did not interrupt it, and is acted on before the wait, unless a
+/// key is typed ahead or, for a `C-c`, keys typed after it have already been
+/// read (see `KEYS_AFTER_C_C`).
 extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
     guard(
         || {
@@ -407,14 +527,31 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         },
         || (),
     );
-    loop {
+    let running = crate::lisp::RUNNING.load(Ordering::Relaxed);
+    if running && ffi::reading_command_key() {
+        NESTED_LINE.set(true);
+    }
+    let in_lisp = running && !NESTED_LINE.get();
+    let key = loop {
+        if take_interrupt(in_lisp) {
+            break Some(CTRL_G);
+        }
         let pause = guard(
             || STATE.with_borrow_mut(|s| std::mem::take(&mut s.wants_pause)),
             || false,
         )
         .then_some(PAUSE_MS);
-        match ffi::wait_for_input(stream, pause) {
-            ffi::Wait::Ready | ffi::Wait::Error => break,
+        // A signal that came before the wait did not interrupt it: it is
+        // handled first, or it would wait for a key. When a key is typed
+        // ahead, or keys typed after a `C-c` have already been read, it waits
+        // for the key as readline's own reader does.
+        let typed_ahead = ffi::key_waiting();
+        KEYS_AFTER_C_C.set(ffi::interrupted() && (typed_ahead || KEYS_AFTER_C_C.get()));
+        let signal = (!in_lisp && !typed_ahead && !KEYS_AFTER_C_C.get())
+            .then(ffi::signal_before_wait)
+            .flatten();
+        match signal.unwrap_or_else(|| ffi::wait_for_input(stream, pause)) {
+            ffi::Wait::Ready | ffi::Wait::Error => break None,
             // Typing paused with a new error on the line: underline it.
             ffi::Wait::Paused => guard(
                 || {
@@ -439,24 +576,20 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                 );
                 return ffi::read_error();
             }
+            // A `C-c` is taken at the top of the loop.
+            ffi::Wait::Signal(signal) if in_lisp => SIGNAL_IN_LISP.set(Some(signal)),
             ffi::Wait::Signal(signal) => {
                 // Readline's redraw after a resize and inkline's repaint go out
                 // as one update. Other signals are not held back: bash may jump
                 // from them to a new prompt and run commands there. Bash may
                 // also print while it handles a signal, which can move the
                 // cursor: then readline draws the rest of the line on its own.
-                let may_print = ffi::signal_may_print(signal);
                 guard(
                     || {
-                        if may_print {
-                            STATE.with_borrow_mut(|s| {
-                                s.displaced = true;
-                                s.suggestion = None;
-                            });
-                        } else if signal == libc::SIGWINCH {
+                        if signal == libc::SIGWINCH && !ffi::signal_may_print(signal) {
                             begin_update();
                         }
-                        erase_suggestion_and_message();
+                        before_signal(signal);
                     },
                     || (),
                 );
@@ -473,7 +606,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                 );
             }
         }
-    }
+    };
     guard(
         || {
             // The update opens here only to hide the erase; otherwise it opens
@@ -488,7 +621,30 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         },
         || (),
     );
-    let key = ffi::call_getc(originals().getc, stream);
+    // Readline handles a signal it caught just before it reads the key and
+    // again once the key is back, so a `C-c` is taken before and after the
+    // read too (the key read is then dropped). One that comes after the
+    // check at the top of the loop but before the wait starts is only seen
+    // once a key arrives.
+    let key = match key {
+        Some(key) => key,
+        None if take_interrupt(in_lisp) => CTRL_G,
+        None => {
+            let key = ffi::call_getc(originals().getc, stream);
+            if take_interrupt(in_lisp) {
+                CTRL_G
+            } else {
+                // Bash has a `C-c` it has yet to act on, and readline's
+                // reader read this key after acting on it: as with readline's
+                // own reader, this key and the ones after it go to the
+                // interrupted line.
+                if ffi::interrupted() {
+                    KEYS_AFTER_C_C.set(true);
+                }
+                key
+            }
+        }
+    };
     guard(
         || {
             if STATE.with_borrow(|s| s.enabled) {
@@ -498,6 +654,35 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         || (),
     );
     key
+}
+
+/// Gets the line ready for bash to handle `signal`, a value from
+/// `ffi::Wait::Signal`: bash may print while it does, which can move the
+/// cursor, and readline then draws the rest of the line on its own.
+fn before_signal(signal: c_int) {
+    let may_print = ffi::signal_may_print(signal);
+    if may_print {
+        STATE.with_borrow_mut(|s| {
+            s.displaced = true;
+            s.suggestion = None;
+        });
+    }
+    erase_suggestion_and_message();
+    if may_print {
+        // What bash prints must not wait behind an open update.
+        end_update();
+    }
+    ffi::flush_out();
+}
+
+/// While Lisp runs, takes a `C-c` readline caught and has not handled yet,
+/// and notes it in `INTERRUPTED_IN_LISP`. Returns whether there was one.
+fn take_interrupt(in_lisp: bool) -> bool {
+    let taken = in_lisp && ffi::hold_interrupt();
+    if taken {
+        INTERRUPTED_IN_LISP.set(true);
+    }
+    taken
 }
 
 /// Readline calls this at the start of each line, once it has drawn the prompt

@@ -450,8 +450,8 @@ fn call_interactively(
         }
         Command::Lisp(LispCommand::Lambda(function)) => ctx.funcall(&function, ()),
         Command::Readline(f, _) => {
-            // After a jump to bash's top level, no more readline commands
-            // run.
+            // After a `C-c` or a jump to bash's top level, no more readline
+            // commands run.
             if crate::hooks::lisp_must_stop() {
                 return Err(quit_error(ctx));
             }
@@ -466,9 +466,11 @@ fn call_interactively(
             let outer = ffi::replace_explicit_count(count.is_some());
             let result = call_command(f, count.unwrap_or(1), KEY.get());
             ffi::replace_explicit_count(outer);
+            // A `C-c` while the command read a key, or a jump to bash's top
+            // level, stops the Lisp command too.
             match result {
-                Ok(_) => Ok(TulispObject::nil()),
-                Err(_) => Err(quit_error(ctx)),
+                Ok(_) if !crate::hooks::lisp_must_stop() => Ok(TulispObject::nil()),
+                _ => Err(quit_error(ctx)),
             }
         }
     }
@@ -477,11 +479,44 @@ fn call_interactively(
 /// Runs the readline command `f` with `ffi::call_command`. A jump to
 /// bash's top level that it stopped is noted for `run_lisp_command` to make.
 fn call_command(f: ffi::CommandFn, count: c_int, key: c_int) -> Result<c_int, ffi::Jumped> {
-    let result = ffi::call_command(f, count, key);
+    let result = crate::hooks::in_readline_command(|| ffi::call_command(f, count, key));
     if let Err(ffi::Jumped::Shell(value)) = result {
         crate::hooks::note_shell_jump(value);
     }
     result
+}
+
+/// `(y-or-n-p PROMPT)`: shows `PROMPT(y or n) ` under the line and reads a
+/// key, until it is `y` or `n` in either case. Any other key rings the bell.
+/// `C-g`, `C-c` and a key typed ahead before it asks quit: a key typed
+/// before the question showed is not an answer, though macro text is.
+/// After a `C-c` or a jump to bash's top level, it quits without asking.
+fn y_or_n_p(ctx: &mut TulispContext, prompt: &str) -> Result<TulispObject, Error> {
+    // `UNDO_GROUP` is set while a command runs.
+    if UNDO_GROUP.get().is_none() {
+        return Err(Error::lisp_error("y-or-n-p works only in a command"));
+    }
+    let question = format!("{prompt}(y or n) ");
+    loop {
+        if ffi::key_waiting() || crate::hooks::lisp_must_stop() {
+            return Err(quit_error(ctx));
+        }
+        crate::hooks::show_message(&question);
+        crate::hooks::show_message_now();
+        // A jump readline or bash made while it waited quits too.
+        let Ok(key) = call_command(ffi::read_key_command(), 1, 0) else {
+            return Err(quit_error(ctx));
+        };
+        // Below 0: no key could be read.
+        if key < 0 || key == crate::hooks::CTRL_G || key == crate::hooks::CTRL_C {
+            return Err(quit_error(ctx));
+        }
+        match u8::try_from(key) {
+            Ok(b'y' | b'Y') => return Ok(TulispObject::t()),
+            Ok(b'n' | b'N') => return Ok(TulispObject::nil()),
+            _ => ffi::ding(),
+        }
+    }
 }
 
 /// Readline's line as a `Buffer`. Each change first opens the running
@@ -568,6 +603,9 @@ pub fn register(ctx: &mut TulispContext) {
         "call-interactively",
         |ctx: &mut TulispContext, command: TulispObject| call_interactively(ctx, &command),
     );
+    ctx.defun("y-or-n-p", |ctx: &mut TulispContext, prompt: String| {
+        y_or_n_p(ctx, &prompt)
+    });
     ctx.defun("ding", |_arg: Option<TulispObject>| {
         ffi::ding();
         TulispObject::nil()
