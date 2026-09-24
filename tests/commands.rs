@@ -438,6 +438,178 @@ fn vi_undo_from_a_command_takes_back_whole_steps() {
     sh.wait_for("the typing undone", |s| cursor_row(s) == "$");
 }
 
+const INIT_MSG: &str = r#"
+(defun say () (message "hi %s" "there"))
+(keymap-global-set "C-x m" 'say)
+(keymap-global-set "C-x c" (lambda () (message "first") (insert (message "hi")) (message nil)))
+(keymap-global-set "C-x p" (lambda () (print 'sym)))
+(keymap-global-set "C-x s" (lambda () (setq inkline-indent 99)))
+(keymap-global-set "C-x e" (lambda () (setq inkline-indent 99) (error "oops")))
+"#;
+
+fn message_shell(rc: &str) -> Shell {
+    Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_MSG}")),
+        rc: rc.into(),
+        ..Options::default()
+    })
+}
+
+/// The text of the row under the cursor's row.
+fn row_below(s: &vt100::Screen) -> String {
+    row_text(s, s.cursor_position().0 + 1)
+}
+
+#[test]
+fn message_shows_under_the_line_until_the_next_key() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_MSG}")),
+        ..Options::default()
+    });
+    sh.send("ab\x02\x18m");
+    sh.wait_for("the message", |s| row_below(s) == "hi there");
+    sh.send("X");
+    sh.wait_for("gone, text kept", |s| {
+        cursor_row(s) == "$ aXb" && row_below(s).is_empty()
+    });
+}
+
+#[test]
+fn a_command_error_shows_under_the_line() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(INIT.into()),
+        ..Options::default()
+    });
+    sh.send("abc\x18b");
+    sh.wait_for("the error", |s| row_below(s) == "inkline: boom: nope 7");
+}
+
+#[test]
+fn message_nil_clears_and_message_returns_the_text() {
+    let mut sh = message_shell("");
+    sh.send("ab\x18c");
+    sh.wait_for("the text", |s| cursor_row(s) == "$ abhi");
+    let s = sh.settle();
+    assert!(row_below(&s).is_empty(), "{}", dump(&s));
+}
+
+#[test]
+fn print_shows_under_the_line_while_editing() {
+    let mut sh = message_shell("");
+    sh.send("ab\x18p");
+    sh.wait_for("the printed value", |s| {
+        cursor_row(s) == "$ ab" && row_below(s) == "sym"
+    });
+}
+
+#[test]
+fn outside_editing_print_goes_to_stdout_and_message_to_stderr() {
+    let mut sh = message_shell("");
+    sh.send("inkline eval '(progn (princ \"a\") (prin1 \"b\") (print 1) nil)' 2>/dev/null\r");
+    sh.wait_for("the printed text", |s| has_row(s, "a\"b\"1"));
+    sh.send("inkline eval '(message \"to %s\" \"err\")' >/dev/null\r");
+    sh.wait_for("the message", |s| has_row(s, "to err"));
+}
+
+#[test]
+fn a_message_on_the_last_row_scrolls_the_screen() {
+    let mut sh = message_shell("");
+    sh.send("seq 40\r");
+    sh.wait_for("the prompt at the bottom", |s| {
+        s.cursor_position().0 == 23 && cursor_row(s) == "$"
+    });
+    sh.send("ab\x02\x18m");
+    sh.wait_for("the message", |s| {
+        s.cursor_position().0 == 22 && cursor_row(s) == "$ ab" && row_below(s) == "hi there"
+    });
+    sh.send("X");
+    sh.wait_for("gone, text kept", |s| {
+        cursor_row(s) == "$ aXb" && row_below(s).is_empty() && has_row(s, "40")
+    });
+}
+
+#[test]
+fn a_bad_setting_from_a_command_shows_under_the_line() {
+    let mut sh = message_shell("");
+    sh.send("ab\x18s");
+    sh.wait_for("the problem", |s| {
+        row_below(s) == "inkline: inkline-indent: expected a number from 0 to 16"
+    });
+}
+
+/// A command's error and the bad settings it left show together.
+#[test]
+fn an_error_and_a_bad_setting_show_together() {
+    let mut sh = message_shell("");
+    sh.send("ab\x18e");
+    sh.wait_for("both", |s| {
+        row_below(s)
+            == "inkline: lambda: oops; inkline: inkline-indent: expected a number from 0 to 16"
+    });
+}
+
+/// Where readline draws the line alone, or inkline is off, the message goes
+/// on a row of its own above a new prompt.
+#[test]
+fn the_message_goes_above_the_prompt_where_inkline_does_not_draw() {
+    for rc in ["bind 'set mark-modified-lines on'\n", "inkline off\n"] {
+        let mut sh = message_shell(rc);
+        sh.send("ab\x18m");
+        sh.wait_for("the message above", |s| {
+            let row = s.cursor_position().0;
+            cursor_row(s) == "$ ab" && row > 0 && row_text(s, row - 1) == "hi there"
+        });
+        sh.send("X");
+        sh.wait_for("typing goes on", |s| cursor_row(s) == "$ abX");
+    }
+}
+
+/// A message above the prompt goes below every row of a line that takes
+/// more than one, and on a row of its own.
+#[test]
+fn the_message_above_goes_below_a_line_of_several_rows() {
+    let mut sh = Shell::start(Options {
+        cols: 20,
+        init_el: Some(format!("{INIT}{INIT_MSG}")),
+        rc: "inkline off\n".into(),
+        ..Options::default()
+    });
+    sh.send("echo 123456789012345678901234567890");
+    sh.wait_for("the typing", |s| cursor_row(s) == "45678901234567890");
+    sh.send("\x01\x18m");
+    let s = sh.wait_for("the message", |s| {
+        s.cursor_position() == (3, 2) && has_row(s, "hi there")
+    });
+    assert_eq!(row_text(&s, 0), "$ echo 1234567890123", "{}", dump(&s));
+    assert_eq!(row_text(&s, 1), "45678901234567890", "{}", dump(&s));
+    assert_eq!(row_text(&s, 2), "hi there", "{}", dump(&s));
+    assert_eq!(row_text(&s, 3), "$ echo 1234567890123", "{}", dump(&s));
+    assert_eq!(row_text(&s, 4), "45678901234567890", "{}", dump(&s));
+}
+
+#[test]
+fn a_message_shows_under_an_empty_line_and_after_a_resize() {
+    let mut sh = message_shell("");
+    sh.send("\x18m");
+    sh.wait_for("the message", |s| {
+        cursor_row(s) == "$" && row_below(s) == "hi there"
+    });
+    sh.send("echo 12345678");
+    sh.wait_for("the typing", |s| {
+        cursor_row(s) == "$ echo 12345678" && row_below(s).is_empty()
+    });
+    sh.send("\x18m");
+    sh.wait_for("the message", |s| row_below(s) == "hi there");
+    // Narrower, the line takes two rows: the message goes under the second.
+    sh.resize(24, 12);
+    sh.wait_for("the message again", |s| {
+        let row = s.cursor_position().0;
+        cursor_row(s) == "678"
+            && row_text(s, row - 1) == "$ echo 12345"
+            && row_below(s) == "hi there"
+    });
+}
+
 /// A readline command inside `save-excursion` does not move its saved
 /// point: when the command shortened the line, point comes back at the
 /// end of the line, or at the start of the character the saved point is

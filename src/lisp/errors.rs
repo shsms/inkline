@@ -33,7 +33,10 @@ pub fn register(ctx: &mut TulispContext) {
 }
 
 /// `(format ARGS…)`.
-fn format_args(ctx: &mut TulispContext, args: Rest<TulispObject>) -> Result<String, Error> {
+pub fn format_args(
+    ctx: &mut TulispContext,
+    args: impl IntoIterator<Item = TulispObject>,
+) -> Result<String, Error> {
     let format = ctx.intern("format");
     ctx.apply(&format, args.into_iter().collect::<Vec<_>>())?
         .as_string()

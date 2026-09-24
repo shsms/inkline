@@ -38,6 +38,9 @@ struct State {
     suggestion: Option<(String, String)>,
     /// The column where the suggestion on screen starts, if one is showing.
     shown_at: Option<usize>,
+    /// How many rows below the cursor the message on screen is, if one is
+    /// showing.
+    message_rows: Option<usize>,
     /// Set when bash may have printed while the line was being edited: the
     /// cursor may not be where readline thinks it is, so readline draws the
     /// rest of the line on its own. Cleared when the next line starts.
@@ -79,6 +82,9 @@ thread_local! {
     static UPDATING: Cell<bool> = const { Cell::new(false) };
     /// bash's completion function, which `complete` calls.
     static COMPLETION: Cell<Option<ffi::CompletionFn>> = const { Cell::new(None) };
+    /// The message to show under the line until the next key. Kept apart
+    /// from `State` so Lisp can set it while it runs.
+    static MESSAGE: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Set when shell code that a readline command run from Lisp ran jumped
     /// to bash's top level: the value it jumped with. `run_lisp_command`
     /// makes the jump once Lisp has stopped.
@@ -89,6 +95,7 @@ thread_local! {
         paths: PathCache::default(),
         suggestion: None,
         shown_at: None,
+        message_rows: None,
         displaced: false,
         unloaded: false,
         checker: Checker::new(),
@@ -266,7 +273,8 @@ fn enable() {
 /// Puts readline's functions back. Also the recovery after a panic, so it must
 /// not depend on `STATE` being borrowable.
 fn disable() {
-    let _ = catch_unwind(erase_suggestion);
+    let _ = catch_unwind(erase_suggestion_and_message);
+    let _ = MESSAGE.try_with(|m| m.replace(None));
     unwrap_completion();
     end_update();
     ffi::flush_out();
@@ -295,11 +303,22 @@ extern "C" fn accept_as_is(count: c_int, key: c_int) -> c_int {
 }
 
 /// The readline function of a Lisp command's key, `slot` telling which
-/// command. Holds no borrow of `STATE` while Lisp runs. A jump to bash's
-/// top level that shell code run from Lisp made is made last, once Lisp
-/// has stopped running.
+/// command. Holds no borrow of `STATE` while Lisp runs. When inkline's
+/// drawing function is not in place (inkline is off), the command's message
+/// is printed once it returns. A jump to bash's top level that shell code
+/// run from Lisp made is made last, once Lisp has stopped running.
 pub fn run_lisp_command(slot: usize, count: c_int, key: c_int) -> c_int {
-    let result = guard(|| crate::lisp::commands::run(slot, count, key), || 0);
+    let result = guard(
+        || {
+            let result = crate::lisp::commands::run(slot, count, key);
+            let ours = redisplay as ffi::VoidFn;
+            if !ffi::redisplay_function().is_some_and(|f| std::ptr::fn_addr_eq(f, ours)) {
+                print_message_above();
+            }
+            result
+        },
+        || 0,
+    );
     if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
         // Bash jumps from here back to a new prompt; nothing in this frame
         // needs dropping.
@@ -323,13 +342,34 @@ pub fn lisp_must_stop() -> bool {
     SHELL_JUMP.get().is_some()
 }
 
-/// Shows `text` on a row of its own above the line, which readline draws
-/// again below it.
+/// Shows `text` under the line from the next draw until the next key; a
+/// later message replaces it. Only the text before the first control
+/// character other than a tab shows. Touches nothing but the message, so
+/// Lisp can call it while it runs.
 pub fn show_message(text: &str) {
-    erase_suggestion();
-    ffi::new_line_for_message();
-    ffi::write_queued(text.as_bytes());
-    ffi::new_line_for_message();
+    let end = text
+        .find(|c: char| c.is_control() && c != '\t')
+        .unwrap_or(text.len());
+    let text = &text[..end];
+    MESSAGE.set(Some(text.to_owned()).filter(|t| !t.is_empty()));
+}
+
+/// Takes away the message `show_message` set.
+pub fn clear_message() {
+    MESSAGE.set(None);
+}
+
+/// Prints the message waiting to be shown, if any, on a row of its own
+/// below the line, and leaves readline to draw the prompt and line again
+/// below it.
+fn print_message_above() {
+    if let Some(text) = MESSAGE.take() {
+        ffi::new_line_for_message();
+        ffi::write_queued(text.as_bytes());
+        // Clears the rest of the row.
+        ffi::write_queued(b"\x1b[K");
+        ffi::new_line_for_message();
+    }
 }
 
 /// Runs `f`. If it panics, turns inkline off and runs `on_panic` instead, so a
@@ -380,7 +420,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                 || {
                     STATE.with_borrow_mut(|s| s.paused_on = ffi::line());
                     begin_update();
-                    erase_suggestion();
+                    erase_suggestion_and_message();
                     draw();
                     end_update();
                     ffi::flush_out();
@@ -392,7 +432,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             ffi::Wait::Signal(libc::SIGHUP | libc::SIGTERM) => {
                 guard(
                     || {
-                        erase_suggestion();
+                        erase_suggestion_and_message();
                         ffi::flush_out();
                     },
                     || (),
@@ -416,7 +456,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                         } else if signal == libc::SIGWINCH {
                             begin_update();
                         }
-                        erase_suggestion();
+                        erase_suggestion_and_message();
                     },
                     || (),
                 );
@@ -440,10 +480,11 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             // when readline redraws. The key's command may run a `bind -x`
             // command, whose output a terminal would hold back while the
             // update is open.
-            if STATE.with_borrow(|s| s.shown_at.is_some()) {
+            if STATE.with_borrow(|s| s.shown_at.is_some() || s.message_rows.is_some()) {
                 begin_update();
             }
-            erase_suggestion();
+            erase_suggestion_and_message();
+            clear_message();
         },
         || (),
     );
@@ -491,20 +532,20 @@ extern "C" fn pre_input() -> c_int {
 /// cursor at the start of the row below the line, so the suggestion is erased
 /// there: one row up, or on the cursor's own row when the line exactly filled
 /// its last row and the suggestion started at column 0 of the next. Clearing to
-/// the end of the screen also clears the suggestion's other rows. Readline's
-/// own drawing function goes back in place, so a later terminal setup (such as
+/// the end of the screen also clears the suggestion's other rows and the
+/// message, which is on the cursor's row or the row below it. Readline's own
+/// drawing function goes back in place, so a later terminal setup (such as
 /// after `TERM` changes) sees it.
 extern "C" fn deprep_terminal() {
     guard(
         || {
-            let shown_at = STATE.with_borrow_mut(|s| s.shown_at.take());
-            if let Some(col) = shown_at
-                && ffi::line_done()
-            {
-                let erase = if col == 0 {
-                    "\r\x1b[J".to_string()
-                } else {
-                    format!("\x1b[A\x1b[{}G\x1b[J\x1b[B\r", col + 1)
+            clear_message();
+            let (shown_at, message_rows) =
+                STATE.with_borrow_mut(|s| (s.shown_at.take(), s.message_rows.take()));
+            if (shown_at.is_some() || message_rows.is_some()) && ffi::line_done() {
+                let erase = match shown_at {
+                    Some(col) if col > 0 => format!("\x1b[A\x1b[{}G\x1b[J\x1b[B\r", col + 1),
+                    _ => "\r\x1b[J".to_string(),
                 };
                 ffi::write_queued(erase.as_bytes());
             }
@@ -517,13 +558,20 @@ extern "C" fn deprep_terminal() {
     ffi::call_deprep(originals().deprep);
 }
 
-/// Clears from the cursor to the end of the screen: the suggestion starts at
-/// the cursor and may take rows below it. The cursor is where the last draw
-/// left it, at the end of the line.
-fn erase_suggestion() {
-    let shown = STATE.with_borrow_mut(|s| s.shown_at.take());
+/// Erases the suggestion and the message the last draw left on screen, with
+/// the cursor where that draw left it. A suggestion starts at the cursor, at
+/// the end of the line, with the message and any other suggestion rows below:
+/// clearing from the cursor to the end of the screen erases them all. A
+/// message alone is erased from the start of its row down, and the cursor
+/// comes back: the line may go on after the cursor, and readline would not
+/// draw it again.
+fn erase_suggestion_and_message() {
+    let (shown, message_rows) =
+        STATE.with_borrow_mut(|s| (s.shown_at.take(), s.message_rows.take()));
     if shown.is_some() {
         ffi::write_queued(b"\x1b[J");
+    } else if let Some(rows) = message_rows {
+        ffi::write_queued(format!("\x1b7\x1b[{rows}B\r\x1b[J\x1b8").as_bytes());
     }
 }
 
@@ -543,7 +591,7 @@ extern "C" fn redisplay() {
     guard(
         || {
             begin_update();
-            erase_suggestion();
+            erase_suggestion_and_message();
         },
         || (),
     );
@@ -595,6 +643,13 @@ fn draw() {
             s.paused_on = None;
         });
     }
+    // A message that could not go under the line goes above it, once, and
+    // the line is drawn again below it.
+    if STATE.with_borrow(|s| s.message_rows.is_none()) && MESSAGE.with_borrow(Option::is_some) {
+        print_message_above();
+        ffi::call_redisplay(originals().redisplay);
+        draw();
+    }
 }
 
 /// Does `draw`'s work. Returns whether it repainted the line.
@@ -606,7 +661,11 @@ fn repaint_line() -> bool {
     let Some(line) = ffi::line() else {
         return false;
     };
-    if line.is_empty() || STATE.with_borrow(|s| s.displaced) || left_to_readline() {
+    let message = MESSAGE.with_borrow(Clone::clone);
+    if (line.is_empty() && message.is_none())
+        || STATE.with_borrow(|s| s.displaced)
+        || left_to_readline()
+    {
         return false;
     }
     let Some(prompt_width) = render::prompt_width(&ffi::display_prompt()) else {
@@ -617,7 +676,7 @@ fn repaint_line() -> bool {
     let colors = crate::lisp::settings::colors();
     let suggestion_lines = crate::lisp::settings::suggestion_lines();
     let path = ffi::shell_variable("PATH").unwrap_or_default();
-    let suggestion = if editing && point == line.len() {
+    let suggestion = if editing && !line.is_empty() && point == line.len() {
         ffi::history_find_map(|entry| suggest::rest(&line, entry).map(str::to_owned))
     } else {
         None
@@ -637,6 +696,7 @@ fn repaint_line() -> bool {
             suggestion: suggestion.as_deref(),
             suggestion_lines,
             error: error.clone(),
+            message: message.as_deref(),
             rows,
             cols,
         };
@@ -645,6 +705,7 @@ fn repaint_line() -> bool {
         };
         ffi::write_queued(&out.bytes);
         s.shown_at = out.suggestion_col;
+        s.message_rows = out.message_rows;
         s.underlined = error;
         if let (Some(_), Some(rest)) = (out.suggestion_col, suggestion) {
             s.suggestion = Some((line.clone(), rest));

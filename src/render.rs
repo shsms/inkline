@@ -1,5 +1,5 @@
 //! Builds the bytes that repaint readline's line in colour and draw the grey
-//! suggestion after it.
+//! suggestion after it and a message under it.
 //!
 //! The output saves the cursor, moves to where the line starts, rewrites the
 //! same characters readline drew with colours, and restores the cursor.
@@ -27,6 +27,9 @@ pub struct Repaint<'a> {
     pub suggestion_lines: usize,
     /// The bytes of `line` to underline as a syntax error.
     pub error: Option<Range<usize>>,
+    /// Text to show on the row after the line's last row. While it shows,
+    /// a suggestion takes one row.
+    pub message: Option<&'a str>,
     pub rows: usize,
     pub cols: usize,
 }
@@ -35,6 +38,8 @@ pub struct Output {
     pub bytes: Vec<u8>,
     /// The column the suggestion starts at, if one was drawn.
     pub suggestion_col: Option<usize>,
+    /// How many rows below the cursor the message is, if one was drawn.
+    pub message_rows: Option<usize>,
 }
 
 /// Columns used by the last line of `prompt`, skipping the parts between `\001`
@@ -94,12 +99,24 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
     paint_line(&mut out, repaint, start);
     out.extend_from_slice(b"\x1b8");
 
+    // The message needs a row below the line, without pushing the line's
+    // first row off the screen.
+    let message = repaint
+        .message
+        .map(|text| fit(&expand_tabs(text, 0), cols.saturating_sub(1)).to_owned())
+        .filter(|text| !text.is_empty() && end.0 + 2 <= repaint.rows);
+    let suggestion_lines = if message.is_some() {
+        1
+    } else {
+        repaint.suggestion_lines
+    };
+
     let mut suggestion_col = None;
     if let Some(suggestion) = repaint
         .suggestion
         .filter(|_| repaint.point == repaint.line.len())
     {
-        let rows = suggestion_rows(suggestion, cursor.1, end.0, repaint);
+        let rows = suggestion_rows(suggestion, cursor.1, end.0, suggestion_lines, repaint);
         if rows.iter().any(|row| !row.is_empty()) {
             let _ = write!(out, "\x1b[{}m", repaint.colors.suggestion());
             for (i, row) in rows.iter().enumerate() {
@@ -120,9 +137,22 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
             suggestion_col = Some(cursor.1);
         }
     }
+
+    let mut message_rows = None;
+    if let Some(text) = message {
+        // A line feed from the last row scrolls the screen as needed; the
+        // cursor then goes back up by rows, as after a multi-row suggestion.
+        let below = end.0 - cursor.0 + 1;
+        if below > 1 {
+            let _ = write!(out, "\x1b[{}B", below - 1);
+        }
+        let _ = write!(out, "\r\n{text}\x1b[K\x1b[{below}A\x1b[{}G", cursor.1 + 1);
+        message_rows = Some(below);
+    }
     Some(Output {
         bytes: out,
         suggestion_col,
+        message_rows,
     })
 }
 
@@ -240,20 +270,21 @@ fn move_down(out: &mut Vec<u8>, cursor_row: &mut usize, (row, col): (usize, usiz
 }
 
 /// The rows of grey text to draw for `suggestion`, the first starting at
-/// column `col` on the command's last row `last_row`: at most
-/// `repaint.suggestion_lines` lines, only as many as fit on the screen with
-/// the command's rows above, each cut to the screen's width. When lines are
-/// left out, the last row says how many.
+/// column `col` on the command's last row `last_row`: at most `max_lines`
+/// lines, only as many as fit on the screen with the command's rows above,
+/// each cut to the screen's width. When lines are left out, the last row
+/// says how many.
 fn suggestion_rows(
     suggestion: &str,
     col: usize,
     last_row: usize,
+    max_lines: usize,
     repaint: &Repaint,
 ) -> Vec<String> {
     let cols = repaint.cols;
     let lines: Vec<&str> = suggestion.split('\n').collect();
     let room = repaint.rows.saturating_sub(last_row).max(1);
-    let shown = lines.len().min(repaint.suggestion_lines.max(1)).min(room);
+    let shown = lines.len().min(max_lines.max(1)).min(room);
     let start_of = |i: usize| if i == 0 { col } else { 0 };
     // Keep the last column free so the terminal never wraps.
     let mut rows: Vec<String> = lines[..shown]
@@ -334,6 +365,7 @@ mod tests {
             suggestion: None,
             suggestion_lines: 5,
             error: None,
+            message: None,
             rows: 24,
             cols: 80,
         }
@@ -641,5 +673,107 @@ mod tests {
             })
             .is_some()
         );
+    }
+    #[test]
+    fn a_message_goes_on_the_row_below() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            message: Some("hello"),
+            ..repaint("ab", 1, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).ends_with("ab\x1b8\r\nhello\x1b[K\x1b[1A\x1b[4G"),
+            "{:?}",
+            text(&out)
+        );
+        assert_eq!(out.message_rows, Some(1));
+        assert_eq!(out.suggestion_col, None);
+    }
+
+    #[test]
+    fn a_message_leaves_the_suggestion_one_row() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            suggestion: Some(" a b; do\n    echo\ndone"),
+            message: Some("hello"),
+            ..repaint("for x in", 8, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).ends_with(
+                "\x1b8\x1b[90m a b; do … 2 more lines\x1b[0m\x1b8\r\nhello\x1b[K\x1b[1A\x1b[11G"
+            ),
+            "{:?}",
+            text(&out)
+        );
+        assert_eq!(out.suggestion_col, Some(10));
+        assert_eq!(out.message_rows, Some(1));
+    }
+
+    #[test]
+    fn a_message_goes_below_the_last_row_of_a_wrapped_line() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            cols: 10,
+            message: Some("hello"),
+            ..repaint("echo 12345678", 0, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).ends_with("\x1b8\x1b[1B\r\nhello\x1b[K\x1b[2A\x1b[3G"),
+            "{:?}",
+            text(&out)
+        );
+        assert_eq!(out.message_rows, Some(2));
+    }
+
+    #[test]
+    fn a_message_is_one_row_cut_to_the_screen() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            cols: 10,
+            message: Some("0123456789abc"),
+            ..repaint("ab", 2, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).contains("\r\n012345678\x1b[K"),
+            "{:?}",
+            text(&out)
+        );
+        let out = build(&Repaint {
+            message: Some("one\ttab\x1b[31m"),
+            ..repaint("ab", 2, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).contains("\r\none     tab\x1b[K"),
+            "{:?}",
+            text(&out)
+        );
+    }
+
+    #[test]
+    fn no_message_without_a_row_for_it() {
+        let colors = Colors::default();
+        let line = "x".repeat(15);
+        let out = build(&Repaint {
+            rows: 2,
+            cols: 10,
+            message: Some("hello"),
+            ..repaint(&line, 15, &[], &colors)
+        })
+        .unwrap();
+        assert!(!text(&out).contains("hello"));
+        assert_eq!(out.message_rows, None);
+        let out = build(&Repaint {
+            rows: 3,
+            cols: 10,
+            message: Some("hello"),
+            ..repaint(&line, 15, &[], &colors)
+        })
+        .unwrap();
+        assert_eq!(out.message_rows, Some(1));
     }
 }

@@ -207,12 +207,30 @@ pub fn free_unused_lambda_slots(used: &[usize]) {
 /// Shows `text` after `inkline: `: on stderr, or while a line is being
 /// edited, with the line.
 pub fn notice(text: &str) {
-    let text = format!("inkline: {text}");
+    message(&format!("inkline: {text}"));
+}
+
+/// Shows `text` under the line while a line is being edited, else prints it
+/// on stderr.
+fn message(text: &str) {
     if buffer::editing() {
-        crate::hooks::show_message(&text);
+        crate::hooks::show_message(text);
     } else {
         let _ = writeln!(std::io::stderr(), "{text}");
     }
+}
+
+/// Shows `text` under the line while a line is being edited, else writes it
+/// to stdout at once.
+fn print(text: &str) -> Result<(), Error> {
+    if buffer::editing() {
+        crate::hooks::show_message(text);
+        return Ok(());
+    }
+    let mut out = std::io::stdout().lock();
+    out.write_all(text.as_bytes())
+        .and_then(|()| out.flush())
+        .map_err(|e| Error::os_error(format!("print: {e}")))
 }
 
 /// The running command's undo group.
@@ -347,9 +365,18 @@ pub fn run(slot: usize, count: c_int, key: c_int) -> c_int {
     let end = ffi::line_bytes().len();
     ffi::set_point(ffi::point().min(end));
     ffi::set_mark(ffi::mark().min(end));
+    // The command's error and the bad settings it left go in one message,
+    // the error first.
+    let mut notices = Vec::new();
     if let Err(Failure::Error(text)) = result {
         let name = command.name().unwrap_or("lambda");
-        crate::hooks::show_message(&format!("inkline: {name}: {text}"));
+        notices.push(format!("inkline: {name}: {text}"));
+    }
+    for problem in crate::lisp::settings::problems() {
+        notices.push(format!("inkline: {problem}"));
+    }
+    if !notices.is_empty() {
+        crate::hooks::show_message(&notices.join("; "));
     }
     0
 }
@@ -545,6 +572,44 @@ pub fn register(ctx: &mut TulispContext) {
         ffi::ding();
         TulispObject::nil()
     });
+    ctx.defun(
+        "message",
+        |ctx: &mut TulispContext,
+         format: TulispObject,
+         args: Rest<TulispObject>|
+         -> Result<TulispObject, Error> {
+            if format.null() {
+                if buffer::editing() {
+                    crate::hooks::clear_message();
+                }
+                return Ok(TulispObject::nil());
+            }
+            let text = errors::format_args(ctx, std::iter::once(format).chain(args))?;
+            message(&text);
+            Ok(TulispObject::from(text))
+        },
+    );
+    ctx.defun(
+        "print",
+        |value: TulispObject| -> Result<TulispObject, Error> {
+            print(&format!("{}\n", value.fmt_string()))?;
+            Ok(value)
+        },
+    );
+    ctx.defun(
+        "princ",
+        |value: TulispObject| -> Result<TulispObject, Error> {
+            print(&value.fmt_string())?;
+            Ok(value)
+        },
+    );
+    ctx.defun(
+        "prin1",
+        |value: TulispObject| -> Result<TulispObject, Error> {
+            print(&value.to_string())?;
+            Ok(value)
+        },
+    );
     ctx.eval_prelude("<inkline-commands>", "(defvar current-prefix-arg nil)")
         .expect("inkline's own Lisp compiles");
     let own = READLINE_NAMES
