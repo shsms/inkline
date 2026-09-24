@@ -9,6 +9,7 @@ use tulisp::{TulispContext, TulispObject};
 pub mod emacs;
 pub mod errors;
 pub mod init;
+pub mod keydesc;
 pub mod lockout;
 pub mod settings;
 
