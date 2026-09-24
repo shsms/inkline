@@ -2,16 +2,27 @@
 //! accept command takes.
 
 /// The part of `entry` after `line`, if `entry` starts with a non-empty `line`
-/// and has more before its first control character. The cut keeps the
-/// suggestion to what can be drawn: a newline ends the row, and a tab or an
-/// escape would not show as one column.
+/// and has more before its first control character other than a newline or a
+/// tab: an escape sequence would not show as one column.
 pub fn rest<'a>(line: &str, entry: &'a str) -> Option<&'a str> {
     if line.is_empty() {
         return None;
     }
     let rest = entry.strip_prefix(line)?;
-    let rest = &rest[..rest.find(char::is_control).unwrap_or(rest.len())];
+    let end = rest
+        .find(|c: char| c.is_control() && c != '\n' && c != '\t')
+        .unwrap_or(rest.len());
+    let rest = &rest[..end];
     (!rest.is_empty()).then_some(rest)
+}
+
+/// The most lines of a suggestion to show: the value of
+/// `INKLINE_SUGGESTION_LINES`, or 5.
+pub fn line_limit(value: Option<&str>) -> usize {
+    value
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|&n: &usize| n >= 1)
+        .unwrap_or(5)
 }
 
 /// The first `count` characters of `suggestion`.
@@ -58,11 +69,22 @@ mod tests {
     }
 
     #[test]
-    fn rest_stops_at_control_characters() {
-        assert_eq!(rest("for", "for i in 1\ndo echo $i; done"), Some(" i in 1"));
-        assert_eq!(rest("for i in 1", "for i in 1\ndo echo $i; done"), None);
-        assert_eq!(rest("echo", "echo a\tb"), Some(" a"));
+    fn rest_keeps_newlines_and_tabs() {
+        assert_eq!(
+            rest("for", "for i in 1\ndo echo $i; done"),
+            Some(" i in 1\ndo echo $i; done")
+        );
+        assert_eq!(rest("for i in 1", "for i in 1\ndone"), Some("\ndone"));
+        assert_eq!(rest("echo", "echo a\tb"), Some(" a\tb"));
         assert_eq!(rest("echo", "echo\u{1b}[m"), None);
+    }
+
+    #[test]
+    fn line_limit_from_the_setting() {
+        assert_eq!(line_limit(None), 5);
+        assert_eq!(line_limit(Some("3")), 3);
+        assert_eq!(line_limit(Some("0")), 5);
+        assert_eq!(line_limit(Some("many")), 5);
     }
 
     #[test]

@@ -321,7 +321,8 @@ extern "C" fn pre_input() -> c_int {
 /// `getc` (typed ahead in one burst); readline's final update has then left the
 /// cursor at the start of the row below the line, so the suggestion is erased
 /// there: one row up, or on the cursor's own row when the line exactly filled
-/// its last row and the suggestion started at column 0 of the next. Readline's
+/// its last row and the suggestion started at column 0 of the next. Clearing to
+/// the end of the screen also clears the suggestion's other rows. Readline's
 /// own drawing function goes back in place, so a later terminal setup (such as
 /// after `TERM` changes) sees it.
 extern "C" fn deprep_terminal() {
@@ -332,9 +333,9 @@ extern "C" fn deprep_terminal() {
                 && ffi::line_done()
             {
                 let erase = if col == 0 {
-                    "\r\x1b[K".to_string()
+                    "\r\x1b[J".to_string()
                 } else {
-                    format!("\x1b[A\x1b[{}G\x1b[K\x1b[B\r", col + 1)
+                    format!("\x1b[A\x1b[{}G\x1b[J\x1b[B\r", col + 1)
                 };
                 ffi::write_queued(erase.as_bytes());
             }
@@ -347,12 +348,13 @@ extern "C" fn deprep_terminal() {
     ffi::call_deprep(originals().deprep);
 }
 
-/// Clears from the cursor to the end of its row. The cursor is where the last
-/// draw left it: at the end of the line, where the suggestion starts.
+/// Clears from the cursor to the end of the screen: the suggestion starts at
+/// the cursor and may take rows below it. The cursor is where the last draw
+/// left it, at the end of the line.
 fn erase_suggestion() {
     let shown = STATE.with_borrow_mut(|s| s.shown_at.take());
     if shown.is_some() {
-        ffi::write_queued(b"\x1b[K");
+        ffi::write_queued(b"\x1b[J");
     }
 }
 
@@ -418,6 +420,8 @@ fn draw() {
     let point = ffi::point();
     let (rows, cols) = ffi::screen_size();
     let colors_spec = ffi::shell_variable("INKLINE_COLORS");
+    let suggestion_lines =
+        suggest::line_limit(ffi::shell_variable("INKLINE_SUGGESTION_LINES").as_deref());
     let path = ffi::shell_variable("PATH").unwrap_or_default();
     let suggestion = if editing && point == line.len() {
         ffi::history_find_map(|entry| suggest::rest(&line, entry).map(str::to_owned))
@@ -440,6 +444,7 @@ fn draw() {
             spans: &spans,
             colors: &s.colors,
             suggestion: suggestion.as_deref(),
+            suggestion_lines,
             error: None,
             rows,
             cols,

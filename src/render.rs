@@ -23,6 +23,8 @@ pub struct Repaint<'a> {
     pub colors: &'a Colors,
     /// Text to show after the line; drawn only when the cursor is at the end.
     pub suggestion: Option<&'a str>,
+    /// The most lines of a multi-line suggestion to show.
+    pub suggestion_lines: usize,
     /// The bytes of `line` to underline as a syntax error.
     pub error: Option<Range<usize>>,
     pub rows: usize,
@@ -97,14 +99,24 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
         .suggestion
         .filter(|_| repaint.point == repaint.line.len())
     {
-        // Keep the last column free so the terminal never wraps.
-        let shown = fit(suggestion, cols.saturating_sub(cursor.1 + 1));
-        if !shown.is_empty() {
-            let _ = write!(
-                out,
-                "\x1b[{}m{shown}\x1b[0m\x1b8",
-                repaint.colors.suggestion()
-            );
+        let rows = suggestion_rows(suggestion, cursor.1, end.0, repaint);
+        if rows.iter().any(|row| !row.is_empty()) {
+            let _ = write!(out, "\x1b[{}m", repaint.colors.suggestion());
+            for (i, row) in rows.iter().enumerate() {
+                if i > 0 {
+                    out.extend_from_slice(b"\r\n");
+                }
+                out.extend_from_slice(row.as_bytes());
+            }
+            out.extend_from_slice(b"\x1b[0m");
+            match rows.len() - 1 {
+                0 => out.extend_from_slice(b"\x1b8"),
+                // A line feed may have scrolled the screen, which leaves the
+                // saved cursor position one row off: go back by rows instead.
+                below => {
+                    let _ = write!(out, "\x1b[{below}A\x1b[{}G", cursor.1 + 1);
+                }
+            }
             suggestion_col = Some(cursor.1);
         }
     }
@@ -227,6 +239,67 @@ fn move_down(out: &mut Vec<u8>, cursor_row: &mut usize, (row, col): (usize, usiz
     }
 }
 
+/// The rows of grey text to draw for `suggestion`, the first starting at
+/// column `col` on the command's last row `last_row`: at most
+/// `repaint.suggestion_lines` lines, only as many as fit on the screen with
+/// the command's rows above, each cut to the screen's width. When lines are
+/// left out, the last row says how many.
+fn suggestion_rows(
+    suggestion: &str,
+    col: usize,
+    last_row: usize,
+    repaint: &Repaint,
+) -> Vec<String> {
+    let cols = repaint.cols;
+    let lines: Vec<&str> = suggestion.split('\n').collect();
+    let room = repaint.rows.saturating_sub(last_row).max(1);
+    let shown = lines.len().min(repaint.suggestion_lines.max(1)).min(room);
+    let start_of = |i: usize| if i == 0 { col } else { 0 };
+    // Keep the last column free so the terminal never wraps.
+    let mut rows: Vec<String> = lines[..shown]
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            fit(
+                &expand_tabs(line, start_of(i)),
+                cols.saturating_sub(start_of(i) + 1),
+            )
+            .to_owned()
+        })
+        .collect();
+    let hidden = lines.len() - shown;
+    if hidden > 0
+        && let Some(last) = rows.last_mut()
+    {
+        let used: usize =
+            start_of(shown - 1) + last.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+        let note = format!(
+            " … {hidden} more line{}",
+            if hidden == 1 { "" } else { "s" }
+        );
+        last.push_str(fit(&note, cols.saturating_sub(used + 1)));
+    }
+    rows
+}
+
+/// `text` with each tab replaced by the spaces up to the next multiple of 8
+/// columns, counting from `col`.
+fn expand_tabs(text: &str, col: usize) -> String {
+    let mut out = String::new();
+    let mut col = col;
+    for c in text.chars() {
+        if c == '\t' {
+            let spaces = 8 - col % 8;
+            out.extend(std::iter::repeat_n(' ', spaces));
+            col += spaces;
+        } else {
+            out.push(c);
+            col += c.width().unwrap_or(0);
+        }
+    }
+    out
+}
+
 /// The longest start of `text` that fits in `room` columns and has no control
 /// characters.
 fn fit(text: &str, room: usize) -> &str {
@@ -259,6 +332,7 @@ mod tests {
             spans,
             colors,
             suggestion: None,
+            suggestion_lines: 5,
             error: None,
             rows: 24,
             cols: 80,
@@ -395,6 +469,57 @@ mod tests {
         let out = build(&f).unwrap();
         assert!(!text(&out).contains("\x1b[90m"));
         assert_eq!(out.suggestion_col, None);
+    }
+
+    #[test]
+    fn a_multi_line_suggestion_goes_back_up() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            suggestion: Some(" a b; do\n    echo\ndone"),
+            ..repaint("for x in", 8, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).ends_with("\x1b8\x1b[90m a b; do\r\n    echo\r\ndone\x1b[0m\x1b[2A\x1b[11G"),
+            "{:?}",
+            text(&out)
+        );
+        assert_eq!(out.suggestion_col, Some(10));
+    }
+
+    #[test]
+    fn suggestion_lines_are_limited() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            suggestion: Some("1\n2\n3\n4"),
+            suggestion_lines: 2,
+            ..repaint("x", 1, &[], &colors)
+        })
+        .unwrap();
+        assert!(text(&out).ends_with("\x1b[90m1\r\n2 … 2 more lines\x1b[0m\x1b[1A\x1b[4G"));
+    }
+
+    #[test]
+    fn suggestion_rows_fit_on_the_screen() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            suggestion: Some("1\n2\n3"),
+            rows: 1,
+            ..repaint("x", 1, &[], &colors)
+        })
+        .unwrap();
+        assert!(text(&out).ends_with("\x1b[90m1 … 2 more lines\x1b[0m\x1b8"));
+    }
+
+    #[test]
+    fn tabs_in_a_suggestion_become_spaces() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            suggestion: Some("\tx"),
+            ..repaint("echo", 4, &[], &colors)
+        })
+        .unwrap();
+        assert!(text(&out).ends_with("\x1b[90m  x\x1b[0m\x1b8"));
     }
 
     #[test]

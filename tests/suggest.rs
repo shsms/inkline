@@ -170,3 +170,105 @@ fn erased_after_enter_in_same_burst_at_row_end() {
     let s = sh.wait_for("the output", |s| has_row(s, "aaaaaaaaaaaaa"));
     assert_eq!(row_text(&s, 0), "$ echo aaaaaaaaaaaaa");
 }
+
+const LOOP: &str = "for x in a b; do\n    echo $x\ndone";
+
+#[test]
+fn a_multi_line_entry_is_suggested_whole() {
+    let mut sh = Shell::start(Options {
+        history: vec![LOOP],
+        ..Options::default()
+    });
+    sh.send("for x");
+    let s = sh.wait_for("the suggestion", |s| {
+        has_row(s, "    echo $x") && has_row(s, "done")
+    });
+    assert_eq!(s.cursor_position(), (0, 7));
+    assert_eq!(fg(&s, "done"), Color::Idx(8));
+}
+
+#[test]
+fn accepting_takes_every_line() {
+    let mut sh = Shell::start(Options {
+        history: vec![LOOP],
+        ..Options::default()
+    });
+    sh.send("for x");
+    sh.wait_for("the suggestion", |s| has_row(s, "done"));
+    sh.send("\x05");
+    sh.wait_for("the accepted text in colour", |s| {
+        fg_is(s, "done", Color::Idx(5))
+    });
+}
+
+#[test]
+fn erased_when_enter_comes_in_the_same_burst() {
+    let mut sh = Shell::start(Options {
+        history: vec!["echo hi\necho there"],
+        ..Options::default()
+    });
+    sh.send("echo h\r");
+    let s = sh.wait_for("the output", |s| has_row(s, "h"));
+    sh.settle();
+    assert!(find(&s, "there").is_none(), "{}", dump(&s));
+}
+
+#[test]
+fn scrolls_at_the_bottom_and_comes_back() {
+    let mut sh = Shell::start(Options {
+        rows: 6,
+        history: vec![LOOP],
+        ..Options::default()
+    });
+    sh.send("\r\r\r\r\r\r");
+    sh.wait_for("the prompt on the last row", |s| s.cursor_position().0 == 5);
+    sh.send("for x");
+    sh.wait_for("the suggestion", |s| has_row(s, "done"));
+    sh.send(" ");
+    sh.wait_for("the cursor after the space", |s| {
+        cursor_row(s).starts_with("$ for x in a b; do") && s.cursor_position().1 == 8
+    });
+}
+
+#[test]
+fn a_long_suggestion_is_cut() {
+    let mut sh = Shell::start(Options {
+        rc: "INKLINE_SUGGESTION_LINES=3\n".into(),
+        history: vec!["echo 1\necho 2\necho 3\necho 4\necho 5"],
+        ..Options::default()
+    });
+    sh.send("echo 1");
+    let s = sh.wait_for("the cut suggestion", |s| {
+        find(s, "… 2 more lines").is_some()
+    });
+    assert!(has_row(&s, "echo 2"));
+    assert!(find(&s, "echo 4").is_none());
+}
+
+#[test]
+fn redrawn_once_after_a_resize() {
+    let mut sh = Shell::start(Options {
+        history: vec![LOOP],
+        ..Options::default()
+    });
+    sh.send("for x");
+    sh.wait_for("the suggestion", |s| has_row(s, "done"));
+    sh.resize(24, 60);
+    let s = sh.settle();
+    let dones = (0..24).filter(|&row| row_text(&s, row) == "done").count();
+    assert_eq!(dones, 1, "{}", dump(&s));
+}
+
+#[test]
+fn every_row_erased_when_the_line_stops_matching() {
+    let mut sh = Shell::start(Options {
+        history: vec![LOOP],
+        ..Options::default()
+    });
+    sh.send("for x");
+    sh.wait_for("the suggestion", |s| has_row(s, "done"));
+    sh.send("z");
+    sh.wait_for("the typed key", |s| cursor_row(s) == "$ for xz");
+    let s = sh.settle();
+    assert!(find(&s, "done").is_none(), "{}", dump(&s));
+}
