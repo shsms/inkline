@@ -322,6 +322,7 @@ const RL_STATE_ISEARCH: c_ulong = 0x80;
 const RL_STATE_NSEARCH: c_ulong = 0x100;
 const RL_STATE_SEARCH: c_ulong = 0x200;
 const RL_STATE_NUMERICARG: c_ulong = 0x400;
+const RL_STATE_MACROINPUT: c_ulong = 0x800;
 const RL_STATE_DONE: c_ulong = 0x2000000;
 
 #[repr(C)]
@@ -634,12 +635,17 @@ pub fn accept_line(count: c_int, key: c_int) -> c_int {
     unsafe { rl_newline(count, key) }
 }
 
+/// Whether readline is replaying a macro: the text bound to a key, or a
+/// keyboard macro.
+pub fn replaying_macro() -> bool {
+    unsafe { rl_readline_state & RL_STATE_MACROINPUT != 0 }
+}
+
 /// Whether more input is already waiting: typed ahead, pasted without
-/// bracketed paste, or coming from a keyboard macro.
+/// bracketed paste, or coming from a macro.
 pub fn input_waiting() -> bool {
-    const RL_STATE_MACROINPUT: c_ulong = 0x800;
     unsafe {
-        if rl_pending_input != 0 || rl_readline_state & RL_STATE_MACROINPUT != 0 {
+        if rl_pending_input != 0 || replaying_macro() {
             return true;
         }
         poll_input(rl_instream, 0) > 0

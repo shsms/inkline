@@ -649,3 +649,74 @@ fn alt_hash_comments_every_line() {
     assert!(has_row(&s, "#echo SHOULDNOTRUN"), "{}", dump(&s));
     assert!(!has_row(&s, "SHOULDNOTRUN"), "{}", dump(&s));
 }
+
+/// `C-j` adding lines and Alt+Enter sending the command as it is.
+const CTRL_J_ADDS_LINES: &str =
+    "bind '\"\\C-j\": insert-newline'\nbind '\"\\e\\C-m\": accept-line'\n";
+
+/// Where inkline adds no lines, `C-j` accepts the line.
+#[test]
+fn ctrl_j_in_read_e_finishes_the_read() {
+    let mut sh = Shell::start(Options {
+        rc: CTRL_J_ADDS_LINES.into(),
+        ..Options::default()
+    });
+    sh.send("read -e v\r");
+    sh.wait_for("read", |s| s.cursor_position() == (1, 0));
+    sh.send("for y in\n");
+    sh.send("echo \"[$v]\"\r");
+    sh.wait_for("the value", |s| has_row(s, "[for y in]"));
+}
+
+#[test]
+fn ctrl_j_at_the_continuation_prompt_accepts() {
+    let mut sh = Shell::start(Options {
+        rc: CTRL_J_ADDS_LINES.into(),
+        ..Options::default()
+    });
+    sh.send("for x in a b; do");
+    sh.send(ALT_ENTER);
+    sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
+    sh.send("echo $x\n");
+    sh.wait_for("the next continuation prompt", |s| {
+        s.cursor_position().0 == 2 && cursor_row(s) == ">"
+    });
+    sh.send("done\n");
+    sh.wait_for("the output", |s| has_row(s, "a") && has_row(s, "b"));
+}
+
+#[test]
+fn ctrl_j_after_inkline_off_accepts() {
+    let mut sh = Shell::start(Options {
+        rc: CTRL_J_ADDS_LINES.into(),
+        ..Options::default()
+    });
+    sh.send("inkline off\r");
+    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.send("for x in a; do\n");
+    sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
+}
+
+/// A macro's `\n` runs its command, as with readline's own `C-j`.
+#[test]
+fn a_macro_ending_in_ctrl_j_runs_its_command() {
+    let mut sh = Shell::start(Options {
+        rc: format!("{CTRL_J_ADDS_LINES}bind '\"\\C-xr\": \"echo hi\\n\"'\n"),
+        ..Options::default()
+    });
+    sh.send("\x18r");
+    sh.wait_for("the output", |s| row_text(s, 1) == "hi");
+}
+
+/// Where inkline adds no lines, `insert-newline` accepts the line on any key.
+#[test]
+fn another_key_accepts_after_inkline_off() {
+    let mut sh = Shell::start(Options {
+        rc: "bind '\"\\C-xn\": insert-newline'\n".into(),
+        ..Options::default()
+    });
+    sh.send("inkline off\r");
+    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.send("for x in a; do\x18n");
+    sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
+}

@@ -88,7 +88,9 @@ fn empty_pair(line: &str, point: usize) -> bool {
     rest.starts_with(close) && rest.chars().all(|c| ")]} \t".contains(c))
 }
 
-/// M-Enter: always adds a line.
+/// Adds a line. It accepts the line instead in three cases: while a `C-c`
+/// waits for bash, where inkline adds no lines, and while readline replays
+/// a macro, so a `\n` in a macro runs the command.
 pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
     guard(
         || {
@@ -97,16 +99,16 @@ pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
             if ffi::interrupted() {
                 return ffi::accept_line(count, key);
             }
-            match active_line() {
-                Some(line) => new_line(&line, ffi::point(), false),
-                None => ffi::insert_text("\n"),
+            if ffi::replaying_macro() {
+                return ffi::accept_line(count, key);
             }
+            let Some(line) = active_line() else {
+                return ffi::accept_line(count, key);
+            };
+            new_line(&line, ffi::point(), false);
             0
         },
-        || {
-            ffi::insert_text("\n");
-            0
-        },
+        || ffi::accept_line(count, key),
     )
 }
 
