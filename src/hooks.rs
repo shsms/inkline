@@ -440,6 +440,7 @@ fn draw() {
             spans: &spans,
             colors: &s.colors,
             suggestion: suggestion.as_deref(),
+            error: None,
             rows,
             cols,
         };

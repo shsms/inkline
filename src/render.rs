@@ -5,6 +5,7 @@
 //! same characters readline drew with colours, and restores the cursor.
 
 use std::io::Write;
+use std::ops::Range;
 
 use unicode_width::UnicodeWidthChar;
 
@@ -22,6 +23,8 @@ pub struct Repaint<'a> {
     pub colors: &'a Colors,
     /// Text to show after the line; drawn only when the cursor is at the end.
     pub suggestion: Option<&'a str>,
+    /// The bytes of `line` to underline as a syntax error.
+    pub error: Option<Range<usize>>,
     pub rows: usize,
     pub cols: usize,
 }
@@ -164,17 +167,21 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
     let cols = repaint.cols;
     let mut at = start;
     let mut cursor_row = start.0;
-    let mut style: Option<Kind> = None;
+    let mut style: (Option<Kind>, bool) = (None, false);
     let mut spans = repaint.spans.iter().peekable();
     for (i, c) in repaint.line.char_indices() {
         while spans.next_if(|s| s.end <= i).is_some() {}
-        let want = spans.peek().filter(|s| s.start <= i).map(|s| s.kind);
+        let kind = spans.peek().filter(|s| s.start <= i).map(|s| s.kind);
+        let want = (kind, repaint.error.as_ref().is_some_and(|e| e.contains(&i)));
         if want != style {
-            if style.is_some() {
+            if style != (None, false) {
                 out.extend_from_slice(b"\x1b[0m");
             }
-            if let Some(kind) = want {
+            if let Some(kind) = want.0 {
                 let _ = write!(out, "\x1b[{}m", repaint.colors.sgr(kind));
+            }
+            if want.1 {
+                out.extend_from_slice(repaint.colors.error().as_bytes());
             }
             style = want;
         }
@@ -203,7 +210,7 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
         }
         at = next;
     }
-    if style.is_some() {
+    if style != (None, false) {
         out.extend_from_slice(b"\x1b[0m");
     }
 }
@@ -252,6 +259,7 @@ mod tests {
             spans,
             colors,
             suggestion: None,
+            error: None,
             rows: 24,
             cols: 80,
         }
@@ -259,6 +267,33 @@ mod tests {
 
     fn text(out: &Output) -> String {
         String::from_utf8(out.bytes.clone()).unwrap()
+    }
+
+    #[test]
+    fn underlines_the_error() {
+        let colors = Colors::parse("error=4");
+        let out = build(&Repaint {
+            error: Some(5..6),
+            ..repaint("echo )", 6, &[], &colors)
+        })
+        .unwrap();
+        assert_eq!(text(&out), "\x1b7\r\x1b[2Cecho \x1b[4m)\x1b[0m\x1b8");
+    }
+
+    #[test]
+    fn the_underline_goes_on_top_of_the_colour() {
+        let colors = Colors::parse("error=4");
+        let spans = [Span {
+            start: 0,
+            end: 2,
+            kind: Kind::Command,
+        }];
+        let out = build(&Repaint {
+            error: Some(0..2),
+            ..repaint("fi x", 4, &spans, &colors)
+        })
+        .unwrap();
+        assert_eq!(text(&out), "\x1b7\r\x1b[2C\x1b[32m\x1b[4mfi\x1b[0m x\x1b8");
     }
 
     #[test]
