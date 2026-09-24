@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tulisp::{TulispContext, TulispObject};
 
+pub mod buffer;
 pub mod emacs;
 pub mod errors;
 pub mod init;
@@ -64,6 +65,7 @@ fn new_context() -> TulispContext {
     ctx.set_max_eval_depth(lockout::max_eval_depth(lockout::stack_limit()));
     errors::register(&mut ctx);
     emacs::register(&mut ctx);
+    buffer::register(&mut ctx);
     settings::register(&mut ctx);
     #[cfg(not(test))]
     keys::register(&mut ctx);
