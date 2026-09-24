@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tulisp::TulispContext;
 
+pub mod emacs;
 pub mod errors;
 
 thread_local! {
@@ -30,6 +31,7 @@ pub fn start() {
 fn new_context() -> TulispContext {
     let mut ctx = TulispContext::new();
     errors::register(&mut ctx);
+    emacs::register(&mut ctx);
     ctx
 }
 
