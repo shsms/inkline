@@ -32,6 +32,285 @@ fn enter_runs_a_wrong_command() {
     });
 }
 
+/// With pairing, `{` brings its `}`: Enter between them opens the block and
+/// puts the `}` on a line of its own.
+#[test]
+fn enter_between_braces_opens_the_block() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("f() {\r");
+    sh.wait_for("the new line", |s| {
+        s.cursor_position() == (1, 4) && row_text(s, 0) == "$ f() {" && row_text(s, 2) == "}"
+    });
+    sh.send("echo hi\r");
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position() == (3, 2) && row_text(s, 1) == "    echo hi"
+    });
+    sh.send("f\r");
+    sh.wait_for("the output", |s| row_text(s, 4) == "hi");
+}
+
+#[test]
+fn enter_between_parentheses_opens_the_list() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("a=(\r");
+    sh.wait_for("the new line", |s| {
+        s.cursor_position() == (1, 4) && row_text(s, 0) == "$ a=(" && row_text(s, 2) == ")"
+    });
+    sh.send("x y\r");
+    sh.wait_for("the next prompt", |s| s.cursor_position() == (3, 2));
+    sh.send("echo ${#a[@]}\r");
+    sh.wait_for("the output", |s| row_text(s, 4) == "2");
+}
+
+#[test]
+fn enter_inside_a_command_substitution_opens_it() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("x=$(\r");
+    sh.wait_for("the new line", |s| {
+        s.cursor_position() == (1, 4) && row_text(s, 2) == ")"
+    });
+}
+
+/// Inside a block that is still open, the closer still goes on a line of its
+/// own, so the lines typed next stay inside the pair.
+#[test]
+fn enter_between_parentheses_inside_a_block_opens_the_list() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("if true; then\r");
+    sh.wait_for("the first new line", |s| s.cursor_position() == (1, 4));
+    sh.send("a=(\r");
+    sh.wait_for("the list opened", |s| {
+        row_text(s, 0) == "$ if true; then"
+            && row_text(s, 1) == "    a=("
+            && s.cursor_position() == (2, 8)
+            && row_text(s, 3) == "    )"
+    });
+    sh.send("x y");
+    sh.wait_for("the words", |s| row_text(s, 2) == "        x y");
+    sh.send(TO_THE_CLOSER);
+    sh.wait_for("the closer's line", |s| s.cursor_position() == (3, 5));
+    sh.send("\r");
+    sh.wait_for("the line after the closer", |s| {
+        row_text(s, 3) == "    )" && s.cursor_position() == (4, 4)
+    });
+    sh.send("fi");
+    sh.wait_for("the closing word", |s| cursor_row(s).trim() == "fi");
+    sh.send("\r");
+    sh.wait_for("the next prompt", |s| {
+        row_text(s, 3) == "    )" && row_text(s, 4) == "fi" && cursor_row(s) == "$"
+    });
+    sh.send("echo ${#a[@]}\r");
+    sh.wait_for("the output", |s| has_row(s, "2"));
+}
+
+/// C-f over the newline and `    )` or `    }`, to the end of the closer's
+/// line.
+const TO_THE_CLOSER: &str = "\x06\x06\x06\x06\x06\x06";
+
+#[test]
+fn enter_on_the_closing_brace_keeps_it_in_place() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("if true; then\r");
+    sh.wait_for("the first new line", |s| s.cursor_position() == (1, 4));
+    sh.send("f() {\r");
+    sh.wait_for("the block opened", |s| {
+        s.cursor_position() == (2, 8) && row_text(s, 3) == "    }"
+    });
+    sh.send("echo hi");
+    sh.wait_for("the body", |s| row_text(s, 2) == "        echo hi");
+    sh.send(TO_THE_CLOSER);
+    sh.wait_for("the closer's line", |s| s.cursor_position() == (3, 5));
+    sh.send("\r");
+    sh.wait_for("the line after the closer", |s| {
+        row_text(s, 3) == "    }" && s.cursor_position() == (4, 4)
+    });
+}
+
+/// Enter on the closer's line of a finished command runs it as it is.
+#[test]
+fn enter_on_the_closer_of_a_finished_command_keeps_it_in_place() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("f() {\r");
+    sh.wait_for("the block opened", |s| s.cursor_position() == (1, 4));
+    sh.send("a=(\r");
+    sh.wait_for("the list opened", |s| {
+        s.cursor_position() == (2, 8) && row_text(s, 3) == "    )"
+    });
+    sh.send("x");
+    sh.wait_for("the word", |s| row_text(s, 2) == "        x");
+    sh.send(TO_THE_CLOSER);
+    sh.wait_for("the closer's line", |s| s.cursor_position() == (3, 5));
+    sh.send("\r");
+    sh.wait_for("the next prompt", |s| {
+        row_text(s, 3) == "    )" && row_text(s, 4) == "}" && cursor_row(s) == "$"
+    });
+}
+
+/// A here-document body above the closer does not count as its depth.
+#[test]
+fn enter_on_the_closer_after_a_here_document_keeps_it_in_place() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("for x in a; do\r");
+    sh.wait_for("the first new line", |s| s.cursor_position() == (1, 4));
+    sh.send("f() {\r");
+    sh.wait_for("the block opened", |s| {
+        s.cursor_position() == (2, 8) && row_text(s, 3) == "    }"
+    });
+    sh.send("cat <<EOF\r");
+    sh.wait_for("the body line", |s| s.cursor_position() == (3, 0));
+    sh.send("hi\r");
+    sh.wait_for("the terminator line", |s| s.cursor_position() == (4, 0));
+    sh.send("EOF");
+    sh.wait_for("the terminator", |s| row_text(s, 4) == "EOF");
+    sh.send(TO_THE_CLOSER);
+    sh.wait_for("the closer's line", |s| s.cursor_position() == (5, 5));
+    sh.send("\r");
+    sh.wait_for("the line after the closer", |s| {
+        row_text(s, 5) == "    }" && s.cursor_position().0 == 6
+    });
+}
+
+#[test]
+fn alt_enter_on_the_closer_keeps_it_in_place() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("if true; then\r");
+    sh.wait_for("the first new line", |s| s.cursor_position() == (1, 4));
+    sh.send("a=(\r");
+    sh.wait_for("the list opened", |s| {
+        s.cursor_position() == (2, 8) && row_text(s, 3) == "    )"
+    });
+    sh.send("x");
+    sh.wait_for("the word", |s| row_text(s, 2) == "        x");
+    sh.send(TO_THE_CLOSER);
+    sh.wait_for("the closer's line", |s| s.cursor_position() == (3, 5));
+    sh.send(ALT_ENTER);
+    sh.wait_for("the line after the closer", |s| {
+        row_text(s, 3) == "    )" && s.cursor_position() == (4, 4)
+    });
+}
+
+#[test]
+fn enter_inside_a_command_substitution_inside_a_loop_opens_it() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("for f in a; do\r");
+    sh.wait_for("the first new line", |s| s.cursor_position() == (1, 4));
+    sh.send("x=$(\r");
+    sh.wait_for("the substitution opened", |s| {
+        row_text(s, 1) == "    x=$(" && s.cursor_position() == (2, 8) && row_text(s, 3) == "    )"
+    });
+}
+
+#[test]
+fn enter_between_braces_inside_a_loop_opens_the_group() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("while :; do\r");
+    sh.wait_for("the first new line", |s| s.cursor_position() == (1, 4));
+    sh.send("{\r");
+    sh.wait_for("the group opened", |s| {
+        row_text(s, 1) == "    {" && s.cursor_position() == (2, 8) && row_text(s, 3) == "    }"
+    });
+}
+
+#[test]
+fn enter_between_parentheses_inside_a_block_with_inkline_indent_0() {
+    let mut sh = Shell::start(Options {
+        rc: "INKLINE_INDENT=0\n".into(),
+        ..Options::default()
+    });
+    sh.send("if true; then\r");
+    sh.wait_for("the first new line", |s| s.cursor_position() == (1, 0));
+    sh.send("a=(\r");
+    sh.wait_for("the list opened", |s| {
+        row_text(s, 1) == "a=(" && s.cursor_position() == (2, 0) && row_text(s, 3) == ")"
+    });
+}
+
+/// With pairing, a quote or a pair with text in it is closed already, so
+/// Enter runs the command wherever the cursor is.
+#[test]
+fn enter_inside_a_closed_quote_runs_the_command() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("echo \"hi\r");
+    sh.wait_for("the output", |s| {
+        row_text(s, 0) == "$ echo \"hi\"" && row_text(s, 1) == "hi" && cursor_row(s) == "$"
+    });
+    sh.send("echo \"\r");
+    sh.wait_for("the empty output", |s| {
+        s.cursor_position().0 == 4 && row_text(s, 3).is_empty() && cursor_row(s) == "$"
+    });
+}
+
+#[test]
+fn enter_inside_a_filled_command_substitution_runs_the_command() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("echo $(date\r");
+    sh.wait_for("the output", |s| {
+        row_text(s, 0) == "$ echo $(date)"
+            && !row_text(s, 1).is_empty()
+            && s.cursor_position() == (2, 2)
+    });
+}
+
+/// `{` and `[` after a command's name are plain words, so Enter between the
+/// pair runs the command.
+#[test]
+fn enter_between_a_pair_in_an_argument_runs_the_command() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("echo {\r");
+    sh.wait_for("the braces", |s| {
+        row_text(s, 0) == "$ echo {}" && row_text(s, 1) == "{}" && cursor_row(s) == "$"
+    });
+    sh.send("echo [\r");
+    sh.wait_for("the brackets", |s| {
+        row_text(s, 2) == "$ echo []" && row_text(s, 3) == "[]" && cursor_row(s) == "$"
+    });
+}
+
+/// When the text before the pair is already wrong, Enter runs the command,
+/// so bash reports the error.
+#[test]
+fn enter_between_braces_after_a_wrong_word_runs_the_command() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("fi {\r");
+    sh.wait_for("bash's error", |s| {
+        row_text(s, 0) == "$ fi {}" && find(s, "syntax error near unexpected token").is_some()
+    });
+}
+
+/// Inside a here-document the pair is text: Enter adds a plain line.
+#[test]
+fn enter_between_braces_inside_a_here_document_adds_a_plain_line() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("cat <<EOF\r");
+    sh.wait_for("the body line", |s| s.cursor_position() == (1, 0));
+    sh.send("f() {\r");
+    sh.wait_for("the next body line", |s| {
+        row_text(s, 1) == "f() {" && s.cursor_position() == (2, 0) && row_text(s, 2) == "}"
+    });
+}
+
+/// Only closers after the cursor make an empty pair: with more text after
+/// them, Enter runs the command.
+#[test]
+fn enter_between_parentheses_with_text_after_them_runs_the_command() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("a=(\x05 && echo x\x01\x06\x06\x06\r");
+    sh.wait_for("the output", |s| {
+        row_text(s, 0) == "$ a=() && echo x" && row_text(s, 1) == "x" && cursor_row(s) == "$"
+    });
+}
+
+#[test]
+fn one_undo_removes_the_opened_block() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("f() {\r");
+    sh.wait_for("the new line", |s| s.cursor_position() == (1, 4));
+    sh.send("\x1f");
+    sh.wait_for("the single line", |s| {
+        s.cursor_position() == (0, 7) && cursor_row(s) == "$ f() {}" && row_text(s, 1).is_empty()
+    });
+}
+
 /// Without pairing, `{` comes alone and Enter adds a line as for any
 /// unfinished command.
 #[test]

@@ -37,12 +37,31 @@ pub(super) extern "C" fn accept_or_newline(count: c_int, key: c_int) -> c_int {
                 return ffi::accept_line(count, key);
             };
             let point = ffi::point();
+            // With pairing, the closer typed with an opener already follows
+            // the cursor: `f() {}` is wrong as it stands, but bash would ask
+            // for another line after `f() {`. Only an empty pair counts, so
+            // `echo "hi"` and `echo $(date)` run wherever the cursor is. The
+            // pair decides this whether or not the whole command is finished,
+            // so inside an open block the closer goes below too.
+            if empty_pair(&line, point)
+                && starts_code(&line[..point])
+                && STATE.with_borrow_mut(|s| s.checker.check(&line[..point], ffi::extglob()))
+                    == Status::Unfinished
+            {
+                // Pasted text brings its own closer, which moves over this one.
+                let below = !ffi::input_waiting();
+                if !fits_more_rows(&line, point, if below { 2 } else { 1 }) {
+                    return ffi::accept_line(count, key);
+                }
+                new_line(&line, point, below);
+                return 0;
+            }
             let status = STATE.with_borrow_mut(|s| status_of(s, &line));
             if status == Status::Unfinished {
                 if !fits_more_rows(&line, point, 1) {
                     return ffi::accept_line(count, key);
                 }
-                new_line(&line, point);
+                new_line(&line, point, false);
                 return 0;
             }
             if !ffi::input_waiting() && move_out(&line, point).is_some() {
@@ -55,12 +74,26 @@ pub(super) extern "C" fn accept_or_newline(count: c_int, key: c_int) -> c_int {
     )
 }
 
+/// Whether the cursor is between an opening bracket and its closer, such as
+/// pairing puts there, with only closing brackets after it on its line.
+fn empty_pair(line: &str, point: usize) -> bool {
+    let before = line[lines::line_start(line, point)..point].trim_end_matches([' ', '\t']);
+    let rest = line[point..lines::line_end(line, point)].trim_start_matches([' ', '\t']);
+    let close = match before.chars().last() {
+        Some('{') => '}',
+        Some('(') => ')',
+        Some('[') => ']',
+        _ => return false,
+    };
+    rest.starts_with(close) && rest.chars().all(|c| ")]} \t".contains(c))
+}
+
 /// M-Enter: always adds a line.
 pub(super) extern "C" fn insert_newline(_count: c_int, _key: c_int) -> c_int {
     guard(
         || {
             match active_line() {
-                Some(line) => new_line(&line, ffi::point()),
+                Some(line) => new_line(&line, ffi::point(), false),
                 None => ffi::insert_text("\n"),
             }
             0
@@ -75,8 +108,10 @@ pub(super) extern "C" fn insert_newline(_count: c_int, _key: c_int) -> c_int {
 /// Inserts a newline at `point` as one undo step with what goes with it: the
 /// line left moves out when it starts with a closing word, and the new line
 /// gets its indentation. Neither happens when more input is already waiting
-/// (pasted text keeps its own spacing) or `INKLINE_INDENT` is 0.
-fn new_line(line: &str, point: usize) {
+/// (pasted text keeps its own spacing) or `INKLINE_INDENT` is 0. With
+/// `close_below`, the text after the cursor goes on a line of its own below
+/// the new one, as indented as the cursor's line.
+fn new_line(line: &str, point: usize, close_below: bool) {
     let step = indent_step();
     ffi::begin_undo_group();
     let mut indentation = String::new();
@@ -89,6 +124,17 @@ fn new_line(line: &str, point: usize) {
         }
     }
     ffi::insert_text(&format!("\n{indentation}"));
+    if close_below {
+        // The newline went in at `point`, so the cursor's line still ends
+        // there.
+        let text = ffi::line().unwrap_or_default();
+        let base = indent::indentation(&text[lines::line_start(&text, point)..point]);
+        let at = ffi::point();
+        let blanks = indent::indentation(&text[at..]).len();
+        ffi::delete_text(at, at + blanks);
+        ffi::insert_text(&format!("\n{base}"));
+        ffi::set_point(at);
+    }
     ffi::end_undo_group();
 }
 
