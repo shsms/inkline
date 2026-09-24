@@ -134,6 +134,27 @@ Example `init.el`:
 (keymap-global-set "C-x C-r" 'accept-as-is)
 ```
 
+A command is a Lisp function bound to a key with `keymap-global-set`:
+
+```elisp
+;; ~/.config/inkline/init.el
+(defun upcase-line ()
+  (interactive)
+  (let ((text (upcase (buffer-string))))
+    (erase-buffer)
+    (insert text)))
+(keymap-global-set "C-x u" 'upcase-line)
+
+(defun confirm-clear ()
+  (interactive)
+  (when (y-or-n-p "Clear the line? ")
+    (erase-buffer)))
+(keymap-global-set "C-x k" 'confirm-clear)
+```
+
+`C-x u` now upper-cases the whole line; `C-x k` asks under the line and
+clears it on `y`.
+
 Every variable, function and command inkline adds to Lisp is listed in
 [`docs/lisp.md`](docs/lisp.md).
 
@@ -258,7 +279,8 @@ entry of its own, so a commented block comes back one line at a time.
 - `inkline on` / `inkline off`: switch highlighting, suggestions, the syntax
   underline and the multi-line commands; while off, the multi-line keys do
   what readline's own commands do. Pairing is only controlled by its
-  bindings.
+  bindings. Lisp commands still run while inkline is off; a message they
+  show goes on a row of its own above the prompt.
 - `inkline status`: two lines — whether inkline is on, then `init.el`'s
   status: loaded, not found, skipped (with why), failed (with the error), or
   not read (because the shell is not interactive with line editing on, or
@@ -276,8 +298,10 @@ entry of its own, so a commented block comes back one line at a time.
 - `inkline keys`: one line for each key inkline has bound and what it runs,
   then one line for each layout key left alone because it no longer had
   readline's default, and what has it instead.
-- `enable -d inkline`: remove the builtin. Bound keys keep working and behave
-  like readline's own commands; `enable -f` loads inkline again. A second
+- `enable -d inkline`: remove the builtin. Keys bound to inkline's commands
+  keep working and behave like readline's own commands; a key bound to a
+  Lisp command runs what it had before inkline first bound it, or rings the
+  bell when it had nothing. `enable -f` loads inkline again. A second
   `enable -f` in the same shell only switches inkline back on: it does not
   read `init.el` again and does not bind the default layout again; use
   `inkline reload` for that.
@@ -339,6 +363,28 @@ line.
   bash as it is.
 - vi mode is not covered: `keymap-global-set` and the default layout only
   bind in the emacs keymap.
+- Readline commands that look at the command run before them — `yank-pop`,
+  `yank-last-arg` pressed again, a history search that goes on from the last
+  one — see a Lisp command as that command, not what it ran with
+  `call-interactively`; inside a Lisp command, they see the key pressed
+  before it. So `M-y` after a Lisp command that yanked rings the bell.
+- `kill-region` adds its text to the previous kill, as readline's own kill
+  commands do, when the key pressed before the Lisp command killed text, or
+  the same command killed text before; Emacs does so only after a command
+  that killed.
+- After `enable -d inkline`, or after an internal error until `inkline on`,
+  a key bound to a Lisp command runs what it had before inkline first bound
+  it, or rings the bell when it had nothing.
+- A Lisp command that moves to another history entry with
+  `call-interactively`, such as `(call-interactively 'previous-history)`,
+  leaves an extra undo step on the line it left. Text and history are
+  kept, and a change the command made there stays. Back on that line, undo
+  works as usual until it reaches the point where the command started:
+  there one `C-_` only rings the bell, and the next goes on. `history`
+  marks that entry with `*`, as it does an edited one. A command that
+  moves away, comes back and then fails gets point and the mark put back,
+  and keeps the change it made before it moved away. Moving through
+  history with keys is not affected.
 - An endless loop in Lisp freezes the shell: there is no way yet to stop it
   with `C-c`. Closing the terminal window ends the shell. The next shell
   skips a looping `init.el` and says so; `bash --norc` starts a shell that
