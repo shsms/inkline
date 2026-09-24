@@ -71,7 +71,9 @@ fn a_second_enable_f_only_switches_on() {
 fn enter_is_accept_line_after_enable_d() {
     let mut sh = Shell::start(Options::default());
     sh.send("enable -d inkline\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
     sh.send("for x in a; do\r");
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
 }

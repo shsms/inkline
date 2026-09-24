@@ -197,7 +197,9 @@ fn type_before_a_signal(sh: &mut Shell) {
 /// Starts a short background job and waits for the next prompt.
 fn start_job(sh: &mut Shell) {
     sh.send("sleep 0.3 &\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 2);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 2 && cursor_row(s) == "$"
+    });
 }
 
 /// With `set -b`, bash prints a job's notice while waiting for a key, and the

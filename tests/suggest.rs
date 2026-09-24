@@ -117,7 +117,9 @@ fn erased_before_completion_listing() {
 fn kept_when_a_background_job_ends() {
     let mut sh = Shell::start(with_history(vec!["echo hello-world"]));
     sh.send("sleep 0.5 &\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 2);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 2 && cursor_row(s) == "$"
+    });
     sh.send("echo hel");
     sh.wait_for("the suggestion", |s| cursor_row(s) == "$ echo hello-world");
     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -221,7 +223,9 @@ fn scrolls_at_the_bottom_and_comes_back() {
         ..Options::default()
     });
     sh.send("\r\r\r\r\r\r");
-    sh.wait_for("the prompt on the last row", |s| s.cursor_position().0 == 5);
+    sh.wait_for("the prompt on the last row", |s| {
+        s.cursor_position().0 == 5 && cursor_row(s) == "$"
+    });
     sh.send("for x");
     sh.wait_for("the suggestion", |s| has_row(s, "done"));
     sh.send(" ");

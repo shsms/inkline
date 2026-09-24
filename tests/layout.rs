@@ -328,7 +328,9 @@ fn reload_keeps_a_later_bind() {
         ..Options::default()
     });
     sh.send("inkline reload\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
     sh.send("abc\x01\x06\x0b");
     sh.wait_for("kill-line", |s| cursor_row(s) == "$ a");
 }
@@ -347,7 +349,7 @@ fn reload_reads_init_el_again_and_forgets_old_bindings() {
     )
     .unwrap();
     sh.send("inkline reload; inkline eval inkline-indent\r");
-    sh.wait_for("the new value", |s| has_row(s, "2"));
+    sh.wait_for("the new value", |s| has_row(s, "2") && cursor_row(s) == "$");
     sh.send("abc\x18\x01X");
     let s = sh.settle();
     assert_eq!(cursor_row(&s), "$ abcX");
@@ -363,7 +365,9 @@ fn reload_takes_del_and_c_u_again() {
     });
     std::fs::write(home.path().join(".config/inkline/init.el"), "").unwrap();
     sh.send("inkline reload\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
     // readline hands DEL and C-u back to its own commands when the next line
     // starts, unless bind-tty-special-chars is off.
     sh.send("inkline keys | grep -E '^(DEL|C-u)'; echo done\r");

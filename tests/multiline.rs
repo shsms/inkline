@@ -430,7 +430,9 @@ fn plain_enter_in_read_e() {
 fn plain_enter_after_inkline_off() {
     let mut sh = Shell::start(Options::default());
     sh.send("inkline off\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
     sh.send("for x in a; do\r");
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
 }
@@ -448,7 +450,9 @@ fn inkline_indent_sets_the_step() {
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
     sh.send("inkline eval '(setq inkline-indent 0)' >/dev/null\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 3);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 3 && cursor_row(s) == "$"
+    });
     sh.send("for x in a; do\r");
     sh.wait_for("no indentation", |s| {
         let (row, col) = s.cursor_position();
@@ -691,7 +695,9 @@ fn ctrl_j_at_the_continuation_prompt_accepts() {
 fn ctrl_j_after_inkline_off_accepts() {
     let mut sh = Shell::start(Options::default());
     sh.send("inkline off\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
     sh.send(&format!("for x in a; do{CTRL_J}"));
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
 }
@@ -715,7 +721,9 @@ fn another_key_accepts_after_inkline_off() {
         ..Options::default()
     });
     sh.send("inkline off\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
     sh.send("for x in a; do\x18n");
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
 }

@@ -81,13 +81,17 @@ fn inkline_colors_overrides_defaults() {
 #[test]
 fn off_and_on() {
     let mut sh = typed(Options::default(), "inkline off\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
     sh.send("ls");
     let s = sh.settle();
     assert_eq!(cursor_row(&s), "$ ls");
     assert_eq!(fg(&s, "ls"), Color::Default);
     sh.send("\x15inkline on\r");
-    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 2);
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 2 && cursor_row(s) == "$"
+    });
     sh.send("ls");
     sh.wait_for("colours", |s| fg_is(s, "ls", Color::Idx(2)));
 }
