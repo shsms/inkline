@@ -53,7 +53,8 @@ bind '")": insert-close'
 bind '"]": insert-close'
 bind '"}": insert-close'
 bind '"\C-m": accept-or-newline'
-bind '"\e\C-m": insert-newline'
+bind '"\C-j": insert-newline'
+bind '"\e\C-m": accept-line'
 bind 'set bind-tty-special-chars off'
 bind '"\C-?": delete-pair'
 bind '"\e[A": previous-line-or-history'
@@ -421,6 +422,7 @@ pub fn count_bytes(haystack: &[u8], needle: &[u8]) -> usize {
 
 /// Keys, as a terminal sends them.
 pub const ENTER: &str = "\r";
+pub const CTRL_J: &str = "\n";
 /// Alt+Enter, or Esc then Enter.
 pub const ALT_ENTER: &str = "\x1b\r";
 pub const UP: &str = "\x1b[A";

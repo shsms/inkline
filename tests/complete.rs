@@ -9,7 +9,7 @@ use common::*;
 fn command_names_complete_on_a_later_line() {
     let mut sh = Shell::start(Options::default());
     sh.send("true");
-    sh.send(ALT_ENTER);
+    sh.send(CTRL_J);
     sh.send("histor\t");
     sh.wait_for("the completed name", |s| row_text(s, 1) == "history");
 }
@@ -21,7 +21,7 @@ fn programmable_completion_on_a_later_line() {
         ..Options::default()
     });
     sh.send("true");
-    sh.send(ALT_ENTER);
+    sh.send(CTRL_J);
     sh.send("mycmd al\t");
     sh.wait_for("the completed word", |s| row_text(s, 1) == "mycmd alpha");
 }

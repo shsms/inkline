@@ -85,7 +85,7 @@ fn an_empty_error_colour_turns_it_off() {
 #[test]
 fn not_on_a_continuation_line() {
     let mut sh = Shell::start(plain_underline());
-    sh.send("if true\n");
+    sh.send(&format!("if true{ALT_ENTER}"));
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
     sh.send("fi x");
     let s = quiet(&sh);

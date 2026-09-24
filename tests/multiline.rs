@@ -1,5 +1,6 @@
 //! Enter adds a line to an unfinished command and runs a finished one;
-//! M-Enter always adds a line.
+//! `C-j` adds a line even to a finished command, and Alt+Enter sends the
+//! command as it is.
 
 #[path = "support/common.rs"]
 mod common;
@@ -171,7 +172,7 @@ fn enter_on_the_closer_after_a_here_document_keeps_it_in_place() {
 }
 
 #[test]
-fn alt_enter_on_the_closer_keeps_it_in_place() {
+fn ctrl_j_on_the_closer_keeps_it_in_place() {
     let mut sh = Shell::start(Options::default());
     sh.send("if true; then\r");
     sh.wait_for("the first new line", |s| s.cursor_position() == (1, 4));
@@ -183,7 +184,7 @@ fn alt_enter_on_the_closer_keeps_it_in_place() {
     sh.wait_for("the word", |s| row_text(s, 2) == "        x");
     sh.send(TO_THE_CLOSER);
     sh.wait_for("the closer's line", |s| s.cursor_position() == (3, 5));
-    sh.send(ALT_ENTER);
+    sh.send(CTRL_J);
     sh.wait_for("the line after the closer", |s| {
         row_text(s, 3) == "    )" && s.cursor_position() == (4, 4)
     });
@@ -329,20 +330,31 @@ fn enter_after_an_unpaired_brace() {
     sh.wait_for("the output", |s| row_text(s, 4) == "hi");
 }
 
+/// `C-j` adds a line to a finished command too.
 #[test]
-fn alt_enter_always_adds_a_line() {
+fn ctrl_j_always_adds_a_line() {
     let mut sh = Shell::start(Options::default());
     sh.send("echo one");
-    sh.send(ALT_ENTER);
+    sh.send(CTRL_J);
     sh.wait_for("the new line", |s| s.cursor_position() == (1, 0));
     sh.send("echo two\r");
     sh.wait_for("both outputs", |s| has_row(s, "one") && has_row(s, "two"));
 }
 
+/// `C-j` indents the new line as Enter does.
 #[test]
-fn ctrl_j_sends_the_command_as_it_is() {
+fn ctrl_j_adds_an_indented_line() {
     let mut sh = Shell::start(Options::default());
-    sh.send("for x in a; do\n");
+    sh.send("for x in a; do\r");
+    sh.wait_for("the new line", |s| s.cursor_position() == (1, 4));
+    sh.send(&format!("echo $x{CTRL_J}"));
+    sh.wait_for("the next line", |s| s.cursor_position() == (2, 4));
+}
+
+#[test]
+fn alt_enter_sends_the_command_as_it_is() {
+    let mut sh = Shell::start(Options::default());
+    sh.send(&format!("for x in a; do{ALT_ENTER}"));
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
 }
 
@@ -372,7 +384,7 @@ fn pasted_text_keeps_its_own_indentation() {
 fn enter_at_the_continuation_prompt_accepts() {
     let mut sh = Shell::start(Options::default());
     // C-v keeps `'` from being paired.
-    sh.send("echo \x16'a\n");
+    sh.send(&format!("echo \x16'a{ALT_ENTER}"));
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
     sh.send("b'\r");
     sh.wait_for("the output", |s| has_row(s, "a") && has_row(s, "b"));
@@ -632,7 +644,7 @@ fn ctrl_c_with_keys_after_it_ending_in_insert_newline() {
     let mut sh = Shell::start(Options::default());
     sh.send("for x in a; do\r");
     sh.wait_for("the new line", |s| s.cursor_position() == (1, 4));
-    sh.send(&format!("\x03echo hi{ALT_ENTER}"));
+    sh.send(&format!("\x03echo hi{CTRL_J}"));
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
 }
 
@@ -640,7 +652,7 @@ fn ctrl_c_with_keys_after_it_ending_in_insert_newline() {
 fn alt_hash_comments_every_line() {
     let mut sh = Shell::start(Options::default());
     sh.send("echo a");
-    sh.send(ALT_ENTER);
+    sh.send(CTRL_J);
     sh.send("echo SHOULDNOTRUN");
     sh.send("\x1b#");
     let s = sh.wait_for("the next prompt", |s| {
@@ -650,50 +662,37 @@ fn alt_hash_comments_every_line() {
     assert!(!has_row(&s, "SHOULDNOTRUN"), "{}", dump(&s));
 }
 
-/// `C-j` adding lines and Alt+Enter sending the command as it is.
-const CTRL_J_ADDS_LINES: &str =
-    "bind '\"\\C-j\": insert-newline'\nbind '\"\\e\\C-m\": accept-line'\n";
-
 /// Where inkline adds no lines, `C-j` accepts the line.
 #[test]
 fn ctrl_j_in_read_e_finishes_the_read() {
-    let mut sh = Shell::start(Options {
-        rc: CTRL_J_ADDS_LINES.into(),
-        ..Options::default()
-    });
+    let mut sh = Shell::start(Options::default());
     sh.send("read -e v\r");
     sh.wait_for("read", |s| s.cursor_position() == (1, 0));
-    sh.send("for y in\n");
+    sh.send(&format!("for y in{CTRL_J}"));
     sh.send("echo \"[$v]\"\r");
     sh.wait_for("the value", |s| has_row(s, "[for y in]"));
 }
 
 #[test]
 fn ctrl_j_at_the_continuation_prompt_accepts() {
-    let mut sh = Shell::start(Options {
-        rc: CTRL_J_ADDS_LINES.into(),
-        ..Options::default()
-    });
+    let mut sh = Shell::start(Options::default());
     sh.send("for x in a b; do");
     sh.send(ALT_ENTER);
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
-    sh.send("echo $x\n");
+    sh.send(&format!("echo $x{CTRL_J}"));
     sh.wait_for("the next continuation prompt", |s| {
         s.cursor_position().0 == 2 && cursor_row(s) == ">"
     });
-    sh.send("done\n");
+    sh.send(&format!("done{CTRL_J}"));
     sh.wait_for("the output", |s| has_row(s, "a") && has_row(s, "b"));
 }
 
 #[test]
 fn ctrl_j_after_inkline_off_accepts() {
-    let mut sh = Shell::start(Options {
-        rc: CTRL_J_ADDS_LINES.into(),
-        ..Options::default()
-    });
+    let mut sh = Shell::start(Options::default());
     sh.send("inkline off\r");
     sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
-    sh.send("for x in a; do\n");
+    sh.send(&format!("for x in a; do{CTRL_J}"));
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
 }
 
@@ -701,7 +700,7 @@ fn ctrl_j_after_inkline_off_accepts() {
 #[test]
 fn a_macro_ending_in_ctrl_j_runs_its_command() {
     let mut sh = Shell::start(Options {
-        rc: format!("{CTRL_J_ADDS_LINES}bind '\"\\C-xr\": \"echo hi\\n\"'\n"),
+        rc: "bind '\"\\C-xr\": \"echo hi\\n\"'\n".into(),
         ..Options::default()
     });
     sh.send("\x18r");
@@ -719,4 +718,19 @@ fn another_key_accepts_after_inkline_off() {
     sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
     sh.send("for x in a; do\x18n");
     sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
+}
+
+/// The terminal turns an Enter typed while a command runs into `C-j`, so it
+/// adds a line to the next command, as in pasted text.
+#[test]
+fn enter_typed_while_a_command_runs_adds_a_line() {
+    let mut sh = Shell::start(Options::default());
+    // `started` shows only once readline has given the terminal back.
+    sh.send("echo started; sleep 0.5\r");
+    sh.wait_for("the command running", |s| row_text(s, 1) == "started");
+    sh.send("echo hi\r");
+    sh.wait_for("the next prompt", |s| row_text(s, 3) == "$ echo hi");
+    let s = sh.settle();
+    assert_eq!(s.cursor_position(), (4, 0), "{}", dump(&s));
+    assert!(!has_row(&s, "hi"), "{}", dump(&s));
 }

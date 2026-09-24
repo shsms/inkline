@@ -33,7 +33,8 @@ if enable -f ~/.local/lib/libinkline.so inkline; then
 
     # Multi-line commands.
     bind '"\C-m": accept-or-newline'          # Enter
-    bind '"\e\C-m": insert-newline'           # Alt+Enter
+    bind '"\C-j": insert-newline'             # add a line
+    bind '"\e\C-m": accept-line'              # Alt+Enter: send as it is
     bind '"\e[A": previous-line-or-history'   # Up
     bind '"\eOA": previous-line-or-history'
     bind '"\C-p": previous-line-or-history'
@@ -100,15 +101,21 @@ emacs bindings already cover, so this only matters if you changed them with
   `for` without `done`, a trailing `|` or `\`) adds a line to it, indented to
   match; a closing word such as `done` moves back out when you press Enter.
   Enter on a finished command runs it, even one with a syntax error, so bash
-  prints its usual message. Alt+Enter always adds a line; where Alt+Enter does
-  not reach the shell (Windows Terminal uses it for fullscreen, macOS
-  terminals need Option set as Meta), press Esc then Enter, or `C-v C-j`.
-  `C-j` sends a command to bash as it is. Up and Down move between the lines
-  and into history from the first and last line; a multi-line entry recalled
-  with `previous-line-or-history` opens on its first line, so the next Up goes
-  on through history. `C-a`, `C-e`, `C-k` and `C-u` act on the current line,
-  and `C-k` and `C-u` join lines at its edges. `M-#` comments out every line.
-  Pasted text keeps its own spacing.
+  prints its usual message. `C-j` adds a line, even to a finished command; where
+  inkline adds no lines, such as at bash's `> ` prompt, in `read -e` or while
+  inkline is off, it sends the line, as in plain bash. A `C-j` that readline
+  replays from a macro, such as the `\n` in `"\C-xr": "echo hi\n"` or one
+  recorded with `C-x (`, also runs the command. Alt+Enter sends the command to
+  bash as it is, finished or not; where Alt+Enter does not reach the shell
+  (Windows Terminal uses it for fullscreen, macOS terminals need Option set as
+  Meta), press Esc then Enter. An Enter typed while a command is still running
+  arrives as `C-j`, so it adds a line to the next command instead of running it,
+  like pasted text. Up and Down move between the lines and into history from the
+  first and last line; a multi-line entry recalled with
+  `previous-line-or-history` opens on its first line, so the next Up goes on
+  through history. `C-a`, `C-e`, `C-k` and `C-u` act on the current line, and
+  `C-k` and `C-u` join lines at its edges. `M-#` comments out every line. Pasted
+  text keeps its own spacing.
 - **Syntax errors.** A command bash would reject is underlined in wavy red
   when you pause typing, on the word bash would complain about. The word you
   are typing is never underlined.
@@ -215,8 +222,8 @@ entry of its own, so a commented block comes back one line at a time.
   now: an alias or `shopt` set earlier in the same block is not seen. An error
   inside `$(…)` is underlined as bash 5.2 reports it, also on bash 5.0, which
   checks it only when it runs the command. A few rare forms get a wrong
-  underline or keep Enter adding lines; `C-j` always sends the command to bash
-  as it is.
+  underline or keep Enter adding lines; Alt+Enter always sends the command to
+  bash as it is.
 - vi mode is not covered: the bindings above go into the emacs keymap.
 
 ## Testing

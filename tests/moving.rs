@@ -7,9 +7,9 @@ use common::*;
 
 const LOOP: &str = "for x in a\ndo echo $x\ndone";
 
-/// Types `lines` joined by M-Enter and waits for the cursor on the last.
+/// Types `lines` joined by `C-j` and waits for the cursor on the last.
 fn block(sh: &mut Shell, lines: &[&str]) {
-    sh.send(&lines.join(ALT_ENTER));
+    sh.send(&lines.join(CTRL_J));
     let last = lines.len() as u16 - 1;
     sh.wait_for("the block", |s| s.cursor_position().0 == last);
 }
