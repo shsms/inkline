@@ -204,6 +204,34 @@ impl Default for Checker {
     }
 }
 
+/// The word around `range` in `text`, for the underline: widened over the
+/// characters next to it up to a blank or an operator, and cut at the end of
+/// `text`. An operator such as `)` or `;;` stays as it is.
+pub fn word_around(text: &str, range: Range<usize>) -> Range<usize> {
+    let bytes = text.as_bytes();
+    let end = range.end.min(text.len());
+    let start = range.start.min(end);
+    let is_break = |b: u8| b.is_ascii_whitespace() || b";&|<>()".contains(&b);
+    if bytes[start..end].iter().all(|&b| is_break(b)) {
+        return start..end;
+    }
+    let start = bytes[..start]
+        .iter()
+        .rposition(|&b| is_break(b))
+        .map_or(0, |i| i + 1);
+    let end = bytes[end..]
+        .iter()
+        .position(|&b| is_break(b))
+        .map_or(text.len(), |i| end + i);
+    start..end
+}
+
+/// Whether a line starting after `before` is part of a here-document's body:
+/// `before` has a `<<` whose end line has not come yet.
+pub fn heredoc_open(before: &str) -> bool {
+    scan::scan(&format!("{before}\n")).open
+}
+
 fn walk<'a>(n: Node<'a>, f: &mut impl FnMut(Node<'a>)) {
     f(n);
     let mut c = n.walk();
@@ -811,6 +839,26 @@ fn analyse(tree: &Tree, src: &str, open_brace: bool) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_underline_covers_the_whole_word() {
+        assert_eq!(word_around("echo $x )", 8..9), 8..9);
+        assert_eq!(word_around("echo $x", 6..7), 5..7);
+        assert_eq!(word_around("echo a; fi", 8..10), 8..10);
+        assert_eq!(word_around("x;;y", 1..3), 1..3);
+        assert_eq!(word_around("ls ", 3..4), 3..3);
+        assert_eq!(word_around("echo 日本x", 11..12), 5..12);
+    }
+
+    #[test]
+    fn lines_inside_a_here_document() {
+        assert!(heredoc_open("cat <<EOF"));
+        assert!(heredoc_open("cat <<EOF\nhi"));
+        assert!(heredoc_open("cat <<-'END' | sort"));
+        assert!(!heredoc_open("cat <<EOF\nhi\nEOF"));
+        assert!(!heredoc_open("cat <<<x"));
+        assert!(!heredoc_open("echo hi"));
+    }
 
     /// One line of `tests/data/syntax-cases.txt`.
     struct Case {
