@@ -10,6 +10,9 @@ pub mod emacs;
 pub mod errors;
 pub mod init;
 pub mod keydesc;
+#[cfg(not(test))]
+pub mod keys;
+pub mod layout;
 pub mod lockout;
 pub mod settings;
 
@@ -56,6 +59,8 @@ fn new_context() -> TulispContext {
     errors::register(&mut ctx);
     emacs::register(&mut ctx);
     settings::register(&mut ctx);
+    #[cfg(not(test))]
+    keys::register(&mut ctx);
     #[cfg(not(test))]
     ctx.defun("getenv", |name: String| crate::ffi::shell_variable(&name));
     // Lets the end-to-end tests check what a panic in Lisp does.

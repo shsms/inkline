@@ -54,7 +54,7 @@ pub static mut inkline_struct: Builtin = Builtin {
     function: Some(inkline_builtin),
     flags: BUILTIN_ENABLED,
     long_doc: (&raw const LONG_DOC.0) as *const *const c_char,
-    short_doc: c"inkline [on|off|status|load FILE|eval EXPR]".as_ptr(),
+    short_doc: c"inkline [on|off|status|keys|load FILE|eval EXPR]".as_ptr(),
     handle: std::ptr::null_mut(),
 };
 
@@ -761,4 +761,197 @@ unsafe extern "C" {
 /// up readline and reads `init.el` for.
 pub fn line_editing_shell() -> bool {
     unsafe { interactive_shell != 0 && no_line_editing == 0 }
+}
+
+// ---- Keymaps ----
+
+// From readline's keymaps.h; the same in readline 8.0 and 8.3.
+const KEYMAP_SIZE: usize = 257;
+const ANYOTHERKEY: usize = KEYMAP_SIZE - 1;
+const ISFUNC: c_char = 0;
+const ISKMAP: c_char = 1;
+const ISMACR: c_char = 2;
+
+/// readline's `KEYMAP_ENTRY`. `function` is a command for ISFUNC, a keymap
+/// for ISKMAP and macro text for ISMACR.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct KeymapEntry {
+    kind: c_char,
+    function: *mut c_void,
+}
+
+/// readline's `FUNMAP`: a command and its name.
+#[repr(C)]
+struct FunmapEntry {
+    name: *const c_char,
+    function: Option<CommandFn>,
+}
+
+unsafe extern "C" {
+    static mut emacs_standard_keymap: [KeymapEntry; KEYMAP_SIZE];
+    /// A NULL-terminated array, or NULL before readline fills it.
+    static mut funmap: *mut *mut FunmapEntry;
+    fn rl_generic_bind(
+        kind: c_int,
+        keyseq: *const c_char,
+        data: *mut c_char,
+        map: *mut KeymapEntry,
+    ) -> c_int;
+    fn rl_named_function(name: *const c_char) -> Option<CommandFn>;
+}
+
+/// What a key sequence runs in the emacs keymap.
+#[derive(Clone, Debug)]
+pub enum Binding {
+    Unbound,
+    Command(CommandFn),
+    /// Text readline types in for the key.
+    Macro(Vec<u8>),
+}
+
+impl PartialEq for Binding {
+    fn eq(&self, other: &Binding) -> bool {
+        match (self, other) {
+            (Binding::Unbound, Binding::Unbound) => true,
+            (Binding::Command(f), Binding::Command(g)) => std::ptr::fn_addr_eq(*f, *g),
+            (Binding::Macro(a), Binding::Macro(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// A sequence's binding, and whether the sequence is also the start of
+/// longer ones (its binding is then the prefix keymap's "any other key").
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub prefix: bool,
+    pub binding: Binding,
+}
+
+/// The entry holding `seq`'s binding, and whether `seq` also starts longer
+/// sequences (the entry is then the prefix keymap's "any other key"). None
+/// when a key before the last is not a prefix.
+fn slot_of(seq: &[u8]) -> Option<(*mut KeymapEntry, bool)> {
+    let (&last, before) = seq.split_last()?;
+    let mut map = (&raw mut emacs_standard_keymap).cast::<KeymapEntry>();
+    for &b in before {
+        // SAFETY: `map` points to a readline keymap of KEYMAP_SIZE entries,
+        // and a byte is below KEYMAP_SIZE.
+        let entry = unsafe { *map.add(usize::from(b)) };
+        if entry.kind != ISKMAP || entry.function.is_null() {
+            return None;
+        }
+        map = entry.function.cast();
+    }
+    // SAFETY: `map` points to a readline keymap of KEYMAP_SIZE entries, a
+    // byte is below KEYMAP_SIZE, and an ISKMAP entry points to a keymap of
+    // KEYMAP_SIZE entries.
+    unsafe {
+        let entry = map.add(usize::from(last));
+        if (*entry).kind == ISKMAP && !(*entry).function.is_null() {
+            let sub: *mut KeymapEntry = (*entry).function.cast();
+            return Some((sub.add(ANYOTHERKEY), true));
+        }
+        Some((entry, false))
+    }
+}
+
+fn binding_of(entry: KeymapEntry) -> Binding {
+    match entry.kind {
+        ISFUNC if entry.function.is_null() => Binding::Unbound,
+        // SAFETY: a non-NULL ISFUNC entry holds a readline command.
+        ISFUNC => Binding::Command(unsafe {
+            std::mem::transmute::<*mut c_void, CommandFn>(entry.function)
+        }),
+        // SAFETY: a non-NULL ISMACR entry holds a NUL-terminated string.
+        ISMACR => unsafe { c_str(entry.function.cast()) }.map_or(Binding::Unbound, |text| {
+            Binding::Macro(text.to_bytes().to_vec())
+        }),
+        _ => Binding::Unbound,
+    }
+}
+
+/// What `seq` is bound to, or None when it cannot be reached.
+pub fn lookup(seq: &[u8]) -> Option<Found> {
+    let (slot, prefix) = slot_of(seq)?;
+    // SAFETY: `slot_of` returns an entry of a readline keymap.
+    let binding = binding_of(unsafe { *slot });
+    Some(Found { prefix, binding })
+}
+
+/// Binds the sequence (in readline's text form) to `f`. For a sequence that
+/// starts longer ones, readline binds the prefix keymap's "any other key".
+pub fn bind_command(seq_text: &str, f: CommandFn) -> bool {
+    let Ok(text) = CString::new(seq_text) else {
+        return false;
+    };
+    let map = (&raw mut emacs_standard_keymap).cast::<KeymapEntry>();
+    // SAFETY: `text` is a NUL-terminated string, `map` is readline's emacs
+    // keymap, and readline keeps an ISFUNC entry's data as a command.
+    unsafe { rl_generic_bind(c_int::from(ISFUNC), text.as_ptr(), f as *mut c_char, map) == 0 }
+}
+
+/// Puts `saved` back as `seq`'s binding, writing the keymap entry directly:
+/// readline's binding calls fill an empty "any other key" with a function
+/// that does nothing. The entry's current value must be a command, not macro
+/// text: it is overwritten, not freed.
+pub fn restore(seq: &[u8], saved: &Found) {
+    let Some((slot, _)) = slot_of(seq) else {
+        return;
+    };
+    let entry = match &saved.binding {
+        Binding::Unbound => KeymapEntry {
+            kind: ISFUNC,
+            function: std::ptr::null_mut(),
+        },
+        Binding::Command(f) => KeymapEntry {
+            kind: ISFUNC,
+            function: *f as *mut c_void,
+        },
+        Binding::Macro(text) => {
+            let Ok(text) = CString::new(text.clone()) else {
+                return;
+            };
+            // SAFETY: `text` is a NUL-terminated string. readline frees macro
+            // text with free(), so it must come from malloc, as strdup's does.
+            let copy = unsafe { libc::strdup(text.as_ptr()) };
+            if copy.is_null() {
+                return;
+            }
+            KeymapEntry {
+                kind: ISMACR,
+                function: copy.cast(),
+            }
+        }
+    };
+    // SAFETY: `slot_of` returns an entry of a readline keymap.
+    unsafe { *slot = entry };
+}
+
+/// The readline or inkline command called `name`. readline ignores case.
+pub fn named_command(name: &str) -> Option<CommandFn> {
+    let name = CString::new(name).ok()?;
+    // SAFETY: `name` is a NUL-terminated string.
+    unsafe { rl_named_function(name.as_ptr()) }
+}
+
+/// The name readline knows `f` by.
+pub fn command_name(f: CommandFn) -> Option<String> {
+    // SAFETY: `funmap` is NULL or a NULL-terminated array of valid entries,
+    // each with a NUL-terminated name that readline keeps.
+    unsafe {
+        let mut entry = funmap;
+        if entry.is_null() {
+            return None;
+        }
+        while !(*entry).is_null() {
+            let e = &**entry;
+            if e.function.is_some_and(|g| std::ptr::fn_addr_eq(g, f)) {
+                return c_str(e.name).map(|n| n.to_string_lossy().into_owned());
+            }
+            entry = entry.add(1);
+        }
+    }
+    None
 }

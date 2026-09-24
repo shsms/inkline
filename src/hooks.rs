@@ -186,10 +186,16 @@ fn run_builtin(args: &[String]) -> c_int {
             }
         })),
         ["load", file] => lisp_status(crate::lisp::load(file)),
+        ["keys"] => {
+            for line in crate::lisp::keys::lines() {
+                let _ = writeln!(std::io::stdout(), "{line}");
+            }
+            ffi::EXECUTION_SUCCESS
+        }
         _ => {
             let _ = writeln!(
                 std::io::stderr(),
-                "inkline: usage: inkline [on|off|status|load FILE|eval EXPR]"
+                "inkline: usage: inkline [on|off|status|keys|load FILE|eval EXPR]"
             );
             ffi::EX_USAGE
         }
