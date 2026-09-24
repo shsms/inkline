@@ -4,7 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use tulisp::{Error, TulispContext, TulispObject};
+use tulisp::{Error, Rest, TulispContext, TulispObject};
 use unicode_width::UnicodeWidthChar;
 
 /// A line being edited. Positions `point`, `mark`, `start` and `end` are
@@ -147,13 +147,12 @@ fn read<R>(f: impl FnOnce(&str, usize, usize, &dyn Buffer) -> R) -> Result<R, Er
     })
 }
 
-/// Runs `f` on the buffer to change it: an error when none is installed.
-/// Used by the functions that insert, delete or otherwise change the
-/// buffer's text.
-#[expect(dead_code, reason = "used by the functions that insert or delete text")]
+/// Runs `f` on the buffer to change it: an error when none is installed,
+/// or when the installed buffer is read-only.
 fn change<R>(f: impl FnOnce(&mut dyn Buffer) -> Result<R, String>) -> Result<R, Error> {
     CURRENT.with_borrow_mut(|slot| match slot {
-        Some(buf) => f(buf.as_mut()).map_err(Error::lisp_error),
+        Some(buf) if WRITABLE.get() => f(buf.as_mut()).map_err(Error::lisp_error),
+        Some(_) => Err(Error::lisp_error("the line cannot be changed here")),
         None => Err(Error::lisp_error("no line is being edited")),
     })
 }
@@ -406,6 +405,97 @@ fn move_point(delta: i64) -> Result<(), Error> {
     Ok(())
 }
 
+/// The validated byte range for two position args, in either order, and
+/// whether `b` comes before `a`: an error when either falls outside the
+/// text.
+fn range(a: &TulispObject, b: &TulispObject) -> Result<(usize, usize, bool), Error> {
+    let pa = position(a)?;
+    let pb = position(b)?;
+    let (start, end) = read(|text, _point, _mark, _buf| byte_range(text, pa, pb))??;
+    Ok((start, end, pb < pa))
+}
+
+/// `insert`'s combined text: strings as given, integers as one character
+/// each. A NUL character is an error, since the line being edited cannot
+/// hold one.
+fn insert_text(args: Rest<TulispObject>) -> Result<String, Error> {
+    let mut out = String::new();
+    for arg in args {
+        if arg.stringp() {
+            out.push_str(&arg.as_string()?);
+        } else {
+            let code = i64::try_from(&arg)?;
+            let c = u32::try_from(code)
+                .ok()
+                .and_then(char::from_u32)
+                .ok_or_else(|| Error::type_mismatch(format!("not a character: {code}")))?;
+            out.push(c);
+        }
+    }
+    if out.contains('\0') {
+        return Err(Error::invalid_argument(
+            "the line cannot contain a NUL character",
+        ));
+    }
+    Ok(out)
+}
+
+/// Where `pos` lands after an insert of `len` bytes at `at`: a position
+/// after `at` moves on by `len`; one at or before `at` stays, since Emacs's
+/// mark stays before inserted text.
+fn adjust_after_insert(pos: usize, at: usize, len: usize) -> usize {
+    if pos > at { pos + len } else { pos }
+}
+
+/// Where `pos` lands after deleting `start..end`: a position at or after
+/// `end` moves back by the deleted length; one inside the deleted range
+/// moves to `start`; one before `start` stays.
+fn adjust_after_delete(pos: usize, start: usize, end: usize) -> usize {
+    if pos >= end {
+        pos - (end - start)
+    } else if pos > start {
+        start
+    } else {
+        pos
+    }
+}
+
+/// Moves the mark and every `save-excursion` marker for an insert of `len`
+/// bytes at `at`. Point is not touched here: `Buffer::insert` leaves it
+/// after the inserted text itself.
+fn after_insert(at: usize, len: usize) {
+    CURRENT.with_borrow_mut(|slot| {
+        if let Some(buf) = slot {
+            let mark = adjust_after_insert(buf.mark(), at, len);
+            buf.set_mark(mark);
+        }
+    });
+    MARKERS.with_borrow_mut(|markers| {
+        for m in markers.iter_mut() {
+            *m = adjust_after_insert(*m, at, len);
+        }
+    });
+}
+
+/// Moves point, the mark and every `save-excursion` marker for a delete of
+/// `start..end`. `Buffer::delete` and `Buffer::kill` do not move point or
+/// mark themselves.
+fn after_delete(start: usize, end: usize) {
+    CURRENT.with_borrow_mut(|slot| {
+        if let Some(buf) = slot {
+            let point = adjust_after_delete(buf.point(), start, end);
+            let mark = adjust_after_delete(buf.mark(), start, end);
+            buf.set_point(point);
+            buf.set_mark(mark);
+        }
+    });
+    MARKERS.with_borrow_mut(|markers| {
+        for m in markers.iter_mut() {
+            *m = adjust_after_delete(*m, start, end);
+        }
+    });
+}
+
 pub fn register(ctx: &mut TulispContext) {
     ctx.defun("buffer-string", || -> Result<String, Error> {
         read(|text, _point, _mark, _buf| text.to_owned())
@@ -555,6 +645,71 @@ pub fn register(ctx: &mut TulispContext) {
         set_mark_to(byte);
         Ok(())
     });
+    ctx.defun("insert", |args: Rest<TulispObject>| -> Result<(), Error> {
+        let text = insert_text(args)?;
+        // An error when the line is not UTF-8.
+        read(|_text, _point, _mark, _buf| ())?;
+        let at = change(|buf| {
+            let at = buf.point();
+            buf.insert(&text)?;
+            Ok(at)
+        })?;
+        after_insert(at, text.len());
+        Ok(())
+    });
+    ctx.defun(
+        "delete-region",
+        |a: TulispObject, b: TulispObject| -> Result<(), Error> {
+            let (s, e, _) = range(&a, &b)?;
+            change(|buf| buf.delete(s, e))?;
+            after_delete(s, e);
+            Ok(())
+        },
+    );
+    ctx.defun(
+        "delete-char",
+        |n: i64, killflag: Option<TulispObject>| -> Result<(), Error> {
+            let (s, e) = read(
+                |text, point, _mark, _buf| -> Result<(usize, usize), Error> {
+                    match moved_pos(text, point, n) {
+                        Some(target) => byte_range(text, to_pos(text, point), target),
+                        None => Err(Error::out_of_range(format!("Args out of range: {n}"))),
+                    }
+                },
+            )??;
+            let killing = killflag.is_some_and(|v| !v.null());
+            if killing {
+                change(|buf| buf.kill(s, e, n < 0))?;
+            } else {
+                change(|buf| buf.delete(s, e))?;
+            }
+            after_delete(s, e);
+            Ok(())
+        },
+    );
+    ctx.defun("erase-buffer", || -> Result<(), Error> {
+        let (s, e) = read(|text, _point, _mark, _buf| (0usize, text.len()))?;
+        change(|buf| buf.delete(s, e))?;
+        after_delete(s, e);
+        Ok(())
+    });
+    ctx.defun(
+        "kill-region",
+        |a: TulispObject, b: TulispObject| -> Result<(), Error> {
+            let (s, e, backward) = range(&a, &b)?;
+            change(|buf| buf.kill(s, e, backward))?;
+            after_delete(s, e);
+            Ok(())
+        },
+    );
+    ctx.defun(
+        "copy-region-as-kill",
+        |a: TulispObject, b: TulispObject| -> Result<(), Error> {
+            let (s, e, backward) = range(&a, &b)?;
+            change(|buf| buf.copy(s, e, backward))?;
+            Ok(())
+        },
+    );
     ctx.defun("inkline--save-point", || -> Result<i64, Error> {
         let byte = read(|_text, point, _mark, _buf| point)?;
         Ok(MARKERS.with_borrow_mut(|m| {
@@ -811,6 +966,152 @@ mod tests {
             run("abc", 2, "(forward-line -9223372036854775808)"),
             r#"(-9223372036854775807 1 "abc")"#
         );
+    }
+
+    #[test]
+    fn deleting_moves_point_like_emacs() {
+        assert_eq!(
+            run("abcdef", 3, "(delete-region 2 4) (point)"),
+            r#"(2 2 "adef")"#
+        );
+        assert_eq!(
+            run("abcdef", 5, "(delete-region 4 2) (point)"),
+            r#"(3 3 "adef")"#
+        );
+        assert_eq!(run("abc", 3, "(delete-char -2) (point)"), r#"(1 1 "c")"#);
+        assert_eq!(
+            run("abc", 2, "(delete-char 5)"),
+            r#"((error args-out-of-range) 2 "abc")"#
+        );
+    }
+
+    #[test]
+    fn inserting_moves_point_and_mark_like_emacs() {
+        assert_eq!(
+            run("abcdef", 3, r#"(insert "XY") (point)"#),
+            r#"(5 5 "abXYcdef")"#
+        );
+        assert_eq!(
+            run("abc", 2, r#"(list (insert "x" ?y) (point))"#),
+            r#"((nil 4) 4 "axybc")"#
+        );
+        assert_eq!(
+            run(
+                "abcdef",
+                2,
+                r#"(set-mark 5) (goto-char 3) (insert "ZZ") (mark)"#
+            ),
+            r#"(7 5 "abZZcdef")"#
+        );
+        assert_eq!(
+            run(
+                "abcdef",
+                2,
+                "(set-mark 5) (delete-region 1 3) (list (mark) (point))"
+            ),
+            r#"((3 1) 1 "cdef")"#
+        );
+        // tulisp's `string` builds a string with a NUL here; `insert`
+        // raises its own error, `Error::invalid_argument`, which
+        // `condition-case` reports as `wrong-type-argument` (the table in
+        // tulisp's error_symbol has no separate symbol for it).
+        assert_eq!(
+            run("abc", 2, r#"(insert (string 0))"#),
+            r#"((error wrong-type-argument) 2 "abc")"#
+        );
+    }
+
+    #[test]
+    fn save_excursion_follows_the_text() {
+        assert_eq!(
+            run(
+                "abcdef",
+                3,
+                r#"(save-excursion (goto-char 1) (insert "XX"))"#
+            ),
+            r#"(nil 5 "XXabcdef")"#
+        );
+    }
+
+    #[test]
+    fn kills_and_erase() {
+        assert_eq!(
+            run("abcdef", 1, "(kill-region 2 4) (buffer-string)"),
+            r#"("adef" 1 "adef")"#
+        );
+        assert_eq!(run("abc", 2, "(erase-buffer) (point)"), r#"(1 1 "")"#);
+    }
+
+    #[test]
+    fn changing_needs_a_writable_line() {
+        let mut ctx = TulispContext::new();
+        crate::lisp::errors::register(&mut ctx);
+        register(&mut ctx);
+        let e = ctx.eval_string(r#"(insert "x")"#).unwrap_err();
+        assert_eq!(e.desc(), "no line is being edited");
+        let _installed = install(Box::new(TextBuffer {
+            text: "a".into(),
+            point: 1,
+            mark: 0,
+            kills: vec![],
+        }));
+        set_writable(false);
+        let e = ctx.eval_string(r#"(insert "x")"#).unwrap_err();
+        assert_eq!(e.desc(), "the line cannot be changed here");
+    }
+
+    /// A line that is not UTF-8, as readline's can be. Changing it is a
+    /// test failure.
+    struct NotUtf8;
+
+    impl Buffer for NotUtf8 {
+        fn text(&self) -> Result<String, String> {
+            Err("not UTF-8".into())
+        }
+        fn point(&self) -> usize {
+            0
+        }
+        fn mark(&self) -> usize {
+            0
+        }
+        fn set_point(&mut self, _byte: usize) {}
+        fn set_mark(&mut self, _byte: usize) {}
+        fn insert(&mut self, _text: &str) -> Result<(), String> {
+            Err("changed".into())
+        }
+        fn delete(&mut self, _start: usize, _end: usize) -> Result<(), String> {
+            Err("changed".into())
+        }
+        fn kill(&mut self, _start: usize, _end: usize, _backward: bool) -> Result<(), String> {
+            Err("changed".into())
+        }
+        fn copy(&mut self, _start: usize, _end: usize, _backward: bool) -> Result<(), String> {
+            Err("changed".into())
+        }
+        fn region_active(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_line_that_is_not_utf8_is_an_error() {
+        let mut ctx = TulispContext::new();
+        crate::lisp::errors::register(&mut ctx);
+        register(&mut ctx);
+        let _installed = install(Box::new(NotUtf8));
+        for program in [
+            r#"(insert "x")"#,
+            "(delete-region 1 1)",
+            "(erase-buffer)",
+            "(kill-region 1 1)",
+            "(copy-region-as-kill 1 1)",
+            "(delete-char 0)",
+            "(buffer-string)",
+            "(point)",
+        ] {
+            let e = ctx.eval_string(program).unwrap_err();
+            assert_eq!(e.desc(), "the line is not UTF-8", "{program}");
+        }
     }
 
     #[test]
