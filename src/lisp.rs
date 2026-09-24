@@ -20,6 +20,9 @@ thread_local! {
     static SLOT: RefCell<Option<TulispContext>> = const { RefCell::new(None) };
     /// Set once `start` has begun, even if it did not finish.
     static STARTED: Cell<bool> = const { Cell::new(false) };
+    /// Set when a panic went through `inkline eval` or `load`, until the next
+    /// `reload`.
+    static BROKEN: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Set while Lisp runs.
@@ -104,9 +107,25 @@ pub fn with_lisp<R>(f: impl FnOnce(&mut TulispContext) -> R) -> Result<R, Busy> 
     Ok(f(ctx))
 }
 
+/// `with_lisp` for `inkline eval` and `load`: a panic in `f` marks Lisp
+/// broken. A panic while reading `init.el` does not, as reading it again
+/// would only panic again.
+fn with_lisp_for_command<R>(f: impl FnOnce(&mut TulispContext) -> R) -> Result<R, Busy> {
+    struct MarkIfPanicking;
+    impl Drop for MarkIfPanicking {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                let _ = BROKEN.try_with(|b| b.set(true));
+            }
+        }
+    }
+    let _mark = MarkIfPanicking;
+    with_lisp(f)
+}
+
 /// `inkline eval EXPR`: the result as `prin1` prints it, or None for `nil`.
 pub fn eval(expr: &str) -> Result<Option<String>, String> {
-    let result = with_lisp(|ctx| {
+    let result = with_lisp_for_command(|ctx| {
         ctx.eval_string(expr)
             .map_err(|e| errors::describe(&e, ctx, None))
     })
@@ -116,12 +135,44 @@ pub fn eval(expr: &str) -> Result<Option<String>, String> {
 
 /// `inkline load FILE`.
 pub fn load(path: &str) -> Result<(), String> {
-    with_lisp(|ctx| {
+    with_lisp_for_command(|ctx| {
         ctx.eval_file(path)
             .map(drop)
             .map_err(|e| errors::describe(&e, ctx, Some(path)))
     })
     .map_err(|Busy| "busy running Lisp".to_owned())?
+}
+
+/// `inkline reload`: puts back the keys inkline still owns, starts a fresh
+/// interpreter, sets the layout's readline variables and binds the layout
+/// again, and reads `init.el` again. `Ok(false)` when `init.el` was skipped
+/// or failed; its problem is already printed.
+#[cfg(not(test))]
+pub fn reload() -> Result<bool, String> {
+    if SLOT.with_borrow(Option::is_none) && STARTED.get() {
+        return Err("busy running Lisp".into());
+    }
+    // Cleared first: a panic while reading `init.el` below must not make
+    // every later command reload again.
+    BROKEN.set(false);
+    keys::restore_all();
+    start();
+    let mut read_cleanly = true;
+    if crate::ffi::line_editing_shell() {
+        layout::prepare_readline();
+        layout::bind_defaults();
+        read_cleanly = init::read_again();
+    }
+    Ok(read_cleanly)
+}
+
+/// Runs `reload` if a panic went through `inkline eval` or `load` since the
+/// last `reload`.
+#[cfg(not(test))]
+pub fn start_again_if_broken() {
+    if BROKEN.get() {
+        let _ = reload();
+    }
 }
 
 #[cfg(test)]
@@ -153,7 +204,10 @@ mod tests {
     #[test]
     fn the_interpreter_comes_back_after_a_panic() {
         let _ = std::panic::catch_unwind(|| with_lisp(|_| panic!("boom")));
+        assert!(!BROKEN.get());
         assert_eq!(eval("(+ 2 2)"), Ok(Some("4".to_owned())));
+        let _ = std::panic::catch_unwind(|| eval("(inkline--panic)"));
+        assert!(BROKEN.get());
     }
 
     #[test]

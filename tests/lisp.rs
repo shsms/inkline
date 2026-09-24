@@ -552,3 +552,77 @@ fn a_panic_in_init_el_leaves_no_marker() {
         .collect();
     assert!(markers.is_empty(), "{markers:?}");
 }
+
+/// A panic in `inkline eval` makes the next `inkline eval` or `load` start
+/// a fresh interpreter and read `init.el` again.
+#[cfg(debug_assertions)]
+#[test]
+fn eval_and_load_after_a_panic_in_eval_reload_first() {
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("check.el");
+    std::fs::write(&file, "(unless (= x 1) (error \"not reloaded\"))\n").unwrap();
+    let mut sh = Shell::start(Options {
+        home: Some(home.path().to_owned()),
+        init_el: Some("(defvar x 1)\n".into()),
+        ..Options::default()
+    });
+    sh.send("inkline eval '(setq x 2)'; inkline eval '(inkline--panic)'; inkline eval x\r");
+    sh.wait_for("the value from init.el", |s| {
+        has_row(s, "2") && has_row(s, "1")
+    });
+    sh.send(&format!(
+        "inkline eval '(setq x 2)'; inkline eval '(inkline--panic)'; inkline load {}; echo rc=$?\r",
+        file.display()
+    ));
+    sh.wait_for("the load", |s| has_row(s, "rc=0") || has_row(s, "rc=1"));
+    sh.wait_for("reloaded", |s| has_row(s, "rc=0"));
+}
+
+/// A panic while reading `init.el` does not make `inkline eval` read it again.
+#[cfg(debug_assertions)]
+#[test]
+fn eval_after_a_panic_in_init_el_runs() {
+    let home = tempfile::tempdir().unwrap();
+    let mut sh = start_with_a_panicking_init_el(home.path());
+    sh.send("inkline eval '(+ 1 2)'\r");
+    sh.wait_for("the value", |s| has_row(s, "3"));
+}
+
+/// A reload after a panic in `inkline eval` that panics again in `init.el`
+/// is not tried again by the next command.
+#[cfg(debug_assertions)]
+#[test]
+fn a_reload_that_panics_is_not_repeated() {
+    let home = tempfile::tempdir().unwrap();
+    let mut sh = start_with_a_panicking_init_el(home.path());
+    sh.send("inkline eval '(inkline--panic)'; inkline eval '(+ 1 2)'; inkline eval '(+ 40 2)'\r");
+    sh.wait_for("the last value", |s| has_row(s, "42"));
+}
+
+#[test]
+fn reload_starts_a_fresh_interpreter() {
+    let out = bash_command()
+        .arg("-c")
+        .arg(format!(
+            "enable -f {} inkline; inkline eval '(progn (defvar x 1) x)'; inkline reload; inkline eval x; echo rc=$?",
+            so_path().display()
+        ))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\nrc=1\n");
+}
+
+#[test]
+fn reload_fails_when_init_el_fails() {
+    let home = tempfile::tempdir().unwrap();
+    let mut sh = Shell::start(Options {
+        home: Some(home.path().to_owned()),
+        init_el: Some(String::new()),
+        ..Options::default()
+    });
+    sh.send("inkline reload; echo rc=$?\r");
+    sh.wait_for("success", |s| has_row(s, "rc=0"));
+    std::fs::write(home.path().join(".config/inkline/init.el"), "(car 1 2)\n").unwrap();
+    sh.send("inkline reload; echo rc=$?\r");
+    sh.wait_for("failure", |s| has_row(s, "rc=1"));
+}

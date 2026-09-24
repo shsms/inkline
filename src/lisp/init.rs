@@ -147,7 +147,24 @@ pub fn read_at_start() {
         set_outcome(Outcome::NotRead("no HOME"));
         return;
     };
-    read(&path);
+    let _ = read(&path);
+}
+
+/// `inkline reload`: removes every stuck marker in the marker directory,
+/// then reads `init.el` again, so a stuck marker left by an earlier run does
+/// not stop it. False when `init.el` was there but was skipped or failed.
+#[cfg(not(test))]
+pub fn read_again() -> bool {
+    let Some(path) = path() else {
+        set_outcome(Outcome::NotRead("no HOME"));
+        return true;
+    };
+    if let Ok(Some(state)) = marker_dir() {
+        for m in stuck_markers(&state) {
+            let _ = std::fs::remove_file(m.path);
+        }
+    }
+    read(&path)
 }
 
 /// The directory for the markers, from bash's `HOME` and `XDG_STATE_HOME`,
@@ -185,8 +202,10 @@ fn stuck_markers(state: &Path) -> Vec<super::lockout::Marker> {
     )
 }
 
+/// Reads `init.el` at `path`. False when it was there but was skipped or
+/// failed.
 #[cfg(not(test))]
-fn read(path: &Path) {
+fn read(path: &Path) -> bool {
     use std::io::Write;
     let say = |line: String| {
         let _ = writeln!(std::io::stderr(), "inkline: {line}");
@@ -194,13 +213,14 @@ fn read(path: &Path) {
     let skip = |why: String| {
         say(format!("{}: not read: {why}", path.display()));
         set_outcome(Outcome::Skipped(path.to_owned(), why));
+        false
     };
     // The checks and the reading go to the file a link points at.
     let real = match std::fs::canonicalize(path) {
         Ok(real) => real,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             set_outcome(Outcome::NotFound(path.to_owned()));
-            return;
+            return true;
         }
         Err(e) => return skip(e.to_string()),
     };
@@ -227,7 +247,7 @@ fn read(path: &Path) {
                 path.to_owned(),
                 "did not finish in an earlier shell".into(),
             ));
-            return;
+            return false;
         }
         for m in stuck {
             let _ = std::fs::remove_file(m.path);
@@ -245,17 +265,20 @@ fn read(path: &Path) {
             .map_err(|e| super::errors::describe(&e, ctx, Some(&name)))
     });
     drop(marker);
-    match result {
-        Ok(Ok(())) => set_outcome(Outcome::Loaded(path.to_owned())),
+    let outcome = match result {
+        Ok(Ok(())) => Outcome::Loaded(path.to_owned()),
         Ok(Err(e)) => {
             say(e.clone());
-            set_outcome(Outcome::Failed(path.to_owned(), without_path(&name, &e)));
+            Outcome::Failed(path.to_owned(), without_path(&name, &e))
         }
-        Err(super::Busy) => set_outcome(Outcome::Skipped(path.to_owned(), "busy".into())),
-    }
+        Err(super::Busy) => Outcome::Skipped(path.to_owned(), "busy".into()),
+    };
+    let read_cleanly = matches!(outcome, Outcome::Loaded(_));
+    set_outcome(outcome);
     for problem in super::settings::problems() {
         say(problem);
     }
+    read_cleanly
 }
 
 /// Follows `path` one link at a time; the directory that holds each link

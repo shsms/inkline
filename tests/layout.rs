@@ -320,3 +320,60 @@ fn unset_after_binding_a_layout_key_again_puts_back_readline_s_binding() {
         has_row(s, "kill-line can be invoked via \"\\C-k\".")
     });
 }
+
+#[test]
+fn reload_keeps_a_later_bind() {
+    let mut sh = Shell::start(Options {
+        rc: "bind '\"\\C-k\": kill-line'\n".into(),
+        ..Options::default()
+    });
+    sh.send("inkline reload\r");
+    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    sh.send("abc\x01\x06\x0b");
+    sh.wait_for("kill-line", |s| cursor_row(s) == "$ a");
+}
+
+#[test]
+fn reload_reads_init_el_again_and_forgets_old_bindings() {
+    let home = tempfile::tempdir().unwrap();
+    let mut sh = Shell::start(Options {
+        home: Some(home.path().to_owned()),
+        init_el: Some("(keymap-global-set \"C-x C-a\" 'beginning-of-line)\n".into()),
+        ..Options::default()
+    });
+    std::fs::write(
+        home.path().join(".config/inkline/init.el"),
+        "(setq inkline-indent 2)\n",
+    )
+    .unwrap();
+    sh.send("inkline reload; inkline eval inkline-indent\r");
+    sh.wait_for("the new value", |s| has_row(s, "2"));
+    sh.send("abc\x18\x01X");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ abcX");
+}
+
+#[test]
+fn reload_takes_del_and_c_u_again() {
+    let home = tempfile::tempdir().unwrap();
+    let mut sh = Shell::start(Options {
+        home: Some(home.path().to_owned()),
+        init_el: Some("(inkline-unbind-defaults)\n".into()),
+        ..Options::default()
+    });
+    std::fs::write(home.path().join(".config/inkline/init.el"), "").unwrap();
+    sh.send("inkline reload\r");
+    sh.wait_for("the next prompt", |s| s.cursor_position().0 == 1);
+    // readline hands DEL and C-u back to its own commands when the next line
+    // starts, unless bind-tty-special-chars is off.
+    sh.send("inkline keys | grep -E '^(DEL|C-u)'; echo done\r");
+    let s = sh.wait_for("done", |s| has_row(s, "done"));
+    let listed = |key: &str, command: &str| {
+        (0..s.size().0).any(|r| {
+            let row = row_text(&s, r);
+            row.starts_with(key) && row.ends_with(command)
+        })
+    };
+    assert!(listed("DEL", "delete-pair"), "{}", dump(&s));
+    assert!(listed("C-u", "kill-to-line-start"), "{}", dump(&s));
+}

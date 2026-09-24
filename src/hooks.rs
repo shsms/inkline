@@ -174,6 +174,7 @@ fn run_builtin(args: &[String]) -> c_int {
             }
         }
         ["on"] => {
+            crate::lisp::start_again_if_broken();
             enable();
             ffi::EXECUTION_SUCCESS
         }
@@ -181,22 +182,36 @@ fn run_builtin(args: &[String]) -> c_int {
             disable();
             ffi::EXECUTION_SUCCESS
         }
-        ["eval", expr] => lisp_status(crate::lisp::eval(expr).map(|value| {
-            if let Some(text) = value {
-                let _ = writeln!(std::io::stdout(), "{text}");
-            }
-        })),
-        ["load", file] => lisp_status(crate::lisp::load(file)),
+        ["eval", expr] => {
+            crate::lisp::start_again_if_broken();
+            lisp_status(crate::lisp::eval(expr).map(|value| {
+                if let Some(text) = value {
+                    let _ = writeln!(std::io::stdout(), "{text}");
+                }
+            }))
+        }
+        ["load", file] => {
+            crate::lisp::start_again_if_broken();
+            lisp_status(crate::lisp::load(file))
+        }
         ["keys"] => {
             for line in crate::lisp::keys::lines() {
                 let _ = writeln!(std::io::stdout(), "{line}");
             }
             ffi::EXECUTION_SUCCESS
         }
+        ["reload"] => match crate::lisp::reload() {
+            Ok(true) => ffi::EXECUTION_SUCCESS,
+            Ok(false) => ffi::EXECUTION_FAILURE,
+            Err(e) => {
+                let _ = writeln!(std::io::stderr(), "inkline: {e}");
+                ffi::EXECUTION_FAILURE
+            }
+        },
         _ => {
             let _ = writeln!(
                 std::io::stderr(),
-                "inkline: usage: inkline [on|off|status|keys|load FILE|eval EXPR]"
+                "inkline: usage: inkline [on|off|status|keys|load FILE|eval EXPR|reload]"
             );
             ffi::EX_USAGE
         }
