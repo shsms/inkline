@@ -23,8 +23,8 @@ thread_local! {
     static SLOT: RefCell<Option<TulispContext>> = const { RefCell::new(None) };
     /// Set once `start` has begun, even if it did not finish.
     static STARTED: Cell<bool> = const { Cell::new(false) };
-    /// Set when a panic went through `inkline eval` or `load`, until the next
-    /// `reload`.
+    /// Set when a panic went through `inkline eval`, `load` or a Lisp
+    /// command, until the next `reload`.
     static BROKEN: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -113,10 +113,11 @@ pub fn with_lisp<R>(f: impl FnOnce(&mut TulispContext) -> R) -> Result<R, Busy> 
     Ok(f(ctx))
 }
 
-/// `with_lisp` for `inkline eval` and `load`: a panic in `f` marks Lisp
-/// broken. A panic while reading `init.el` does not, as reading it again
-/// would only panic again.
-fn with_lisp_for_command<R>(f: impl FnOnce(&mut TulispContext) -> R) -> Result<R, Busy> {
+/// `with_lisp` for `inkline eval`, `load` and Lisp commands: a panic in
+/// `f` marks Lisp broken, so the next `inkline on`, `eval` or `load`
+/// starts a fresh interpreter. A panic while reading `init.el` does not,
+/// as reading it again would only panic again.
+pub fn with_lisp_marking_panics<R>(f: impl FnOnce(&mut TulispContext) -> R) -> Result<R, Busy> {
     struct MarkIfPanicking;
     impl Drop for MarkIfPanicking {
         fn drop(&mut self) {
@@ -131,7 +132,7 @@ fn with_lisp_for_command<R>(f: impl FnOnce(&mut TulispContext) -> R) -> Result<R
 
 /// `inkline eval EXPR`: the result as `prin1` prints it, or None for `nil`.
 pub fn eval(expr: &str) -> Result<Option<String>, String> {
-    let result = with_lisp_for_command(|ctx| {
+    let result = with_lisp_marking_panics(|ctx| {
         ctx.eval_string(expr)
             .map_err(|e| errors::describe(&e, ctx, None))
     })
@@ -141,7 +142,7 @@ pub fn eval(expr: &str) -> Result<Option<String>, String> {
 
 /// `inkline load FILE`.
 pub fn load(path: &str) -> Result<(), String> {
-    with_lisp_for_command(|ctx| {
+    with_lisp_marking_panics(|ctx| {
         ctx.eval_file(path)
             .map(drop)
             .map_err(|e| errors::describe(&e, ctx, Some(path)))
@@ -172,8 +173,8 @@ pub fn reload() -> Result<bool, String> {
     Ok(read_cleanly)
 }
 
-/// Runs `reload` if a panic went through `inkline eval` or `load` since the
-/// last `reload`.
+/// Runs `reload` if a panic went through `inkline eval`, `load` or a Lisp
+/// command since the last `reload`.
 #[cfg(not(test))]
 pub fn start_again_if_broken() {
     if BROKEN.get() {

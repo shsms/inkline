@@ -827,6 +827,180 @@ fn c_c_in_a_key_a_readline_command_runs_leaves_lisp_working() {
     sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
 }
 
+#[test]
+fn lisp_keys_fall_back_after_enable_d() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            "(defun my-ret () (call-interactively 'accept-line))\n(keymap-global-set \"RET\" 'my-ret)\n"
+                .into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("enable -d inkline\r");
+    sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
+    sh.send("echo ok\r");
+    sh.wait_for("the command ran", |s| has_row(s, "ok"));
+}
+
+/// Saved macro text is typed in; a key that had nothing rings the bell.
+#[test]
+fn lisp_keys_fall_back_to_macro_text_after_enable_d() {
+    let mut sh = Shell::start(Options {
+        before_inkline: "bind '\"\\C-xm\": \"hello\"'\n".into(),
+        init_el: Some(
+            "(keymap-global-set \"C-x m\" (lambda () (insert \"M\")))\n(keymap-global-set \"C-x j\" (lambda () (insert \"J\")))\n"
+                .into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("\x18m");
+    sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ M");
+    sh.send("\x15enable -d inkline\r");
+    sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
+    sh.send("\x18j\x18m");
+    sh.wait_for("the macro text", |s| cursor_row(s) == "$ hello");
+}
+
+/// After an internal error, Lisp command keys run what they had before,
+/// until `inkline on`.
+#[cfg(debug_assertions)]
+#[test]
+fn lisp_keys_fall_back_after_a_panic() {
+    let mut sh = Shell::start(Options {
+        init_el: Some("(keymap-global-set \"C-a\" (lambda () (insert \"L\")))\n".into()),
+        ..Options::default()
+    });
+    sh.send("inkline eval '(inkline--panic)'\r");
+    sh.wait_for("the panic", |s| {
+        has_row(s, "inkline: internal error, turned off") && cursor_row(s) == "$"
+    });
+    sh.send("xy\x01Q");
+    sh.wait_for("beginning-of-line", |s| cursor_row(s) == "$ Qxy");
+    sh.send("\x05\x15inkline on\r");
+    sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
+    sh.send("xy\x01");
+    sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ xyL");
+}
+
+#[test]
+fn lisp_commands_run_while_inkline_is_off() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(INIT.into()),
+        ..Options::default()
+    });
+    sh.send("inkline off\r");
+    sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
+    sh.send("abc\x18u");
+    sh.wait_for("upcased", |s| cursor_row(s) == "$ ABC");
+}
+
+#[test]
+fn this_and_last_command() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            "(defun who () (insert (format \"%s/%s\" this-command last-command)))\n(keymap-global-set \"C-x w\" 'who)\n(keymap-global-set \"C-x l\" (lambda () (insert (format \"%s\" this-command))))\n"
+                .into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("a\x18w");
+    sh.wait_for("names", |s| cursor_row(s) == "$ awho/self-insert");
+    sh.send("\x18w");
+    sh.wait_for("a Lisp command", |s| {
+        cursor_row(s) == "$ awho/self-insertwho/who"
+    });
+    sh.send("\x15\x18l\x18w");
+    sh.wait_for("a lambda", |s| cursor_row(s) == "$ nilwho/nil");
+    sh.send("\x15");
+    sh.wait_for("an empty line", |s| cursor_row(s) == "$");
+    sh.send("inkline eval '(list this-command last-command)'\r");
+    sh.wait_for("unbound again", |s| has_row(s, "(nil nil)"));
+}
+
+/// 300 lambdas under a prefix readline leaves free: slots run out at 256.
+/// `C-x z l`, bound last, also starts the longer `C-x z l l`: readline runs
+/// both in the same keymap entry.
+const MANY: &str = r#"
+(let ((i 0))
+  (while (< i 300)
+    (keymap-global-set
+      (concat "C-x z " (char-to-string (+ 97 (/ i 26))) " " (char-to-string (+ 97 (% i 26))))
+      (let ((n i)) (lambda () (insert (number-to-string n)))))
+    (setq i (1+ i))))
+(keymap-global-set "C-x z l" (lambda () (insert "P")))
+(defun late () (insert "late"))
+(keymap-global-set "C-x y" 'late)
+(keymap-global-set "C-a" (lambda () (insert "A")))
+"#;
+
+#[test]
+fn more_than_256_lisp_commands() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(MANY.into()),
+        ..Options::default()
+    });
+    sh.wait_for("the notice", |s| {
+        has_row(
+            s,
+            "inkline: late: more than 256 Lisp commands; bind cannot find this one",
+        )
+    });
+    sh.send("\x18zln");
+    sh.wait_for("the 300th", |s| cursor_row(s) == "$ 299");
+    sh.send("\x15\x18zaa");
+    sh.wait_for("the first", |s| cursor_row(s) == "$ 0");
+    sh.send("\x15\x18zll\x18zl \x18y\x01");
+    sh.wait_for("the prefix and a named command", |s| {
+        cursor_row(s) == "$ 297P lateA"
+    });
+    sh.send("\x15bind -p | grep -q '\"\\\\C-a\": inkline-lisp-key' && echo shown\r");
+    sh.wait_for("bind shows the shared function", |s| has_row(s, "shown"));
+}
+
+#[test]
+fn lisp_keys_past_256_fall_back_after_enable_d() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(MANY.into()),
+        ..Options::default()
+    });
+    sh.send("enable -d inkline\r");
+    sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
+    sh.send("xy\x01Q");
+    sh.wait_for("beginning-of-line", |s| cursor_row(s) == "$ Qxy");
+}
+
+/// A lambda's readline function is free again once no key runs the lambda:
+/// after `inkline reload` binds 200 new lambdas in place of the 200 old
+/// ones, a named command still gets a function of its own.
+#[test]
+fn reload_frees_the_functions_of_lambdas() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"
+(let ((i 0))
+  (while (< i 200)
+    (keymap-global-set
+      (concat "C-x z " (char-to-string (+ 97 (/ i 26))) " " (char-to-string (+ 97 (% i 26))))
+      (let ((n i)) (lambda () (insert (number-to-string n)))))
+    (setq i (1+ i))))
+"#
+            .into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("inkline reload\r");
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 1 && cursor_row(s) == "$"
+    });
+    sh.send(
+        "inkline eval '(progn (defun late () (insert \"late\")) \
+         (keymap-global-set \"C-x y\" (quote late)) nil)'; bind -l | grep -cx late\r",
+    );
+    sh.wait_for("the count", |s| cursor_row(s) == "$" && has_row(s, "1"));
+    let s = sh.settle();
+    assert!(!has_row(&s, "more than 256"), "{}", dump(&s));
+}
+
 /// A readline command inside `save-excursion` does not move its saved
 /// point: when the command shortened the line, point comes back at the
 /// end of the line, or at the start of the character the saved point is
@@ -886,6 +1060,33 @@ fn a_shell_error_in_a_readline_command_run_from_lisp_gives_a_new_prompt() {
     sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
     sh.send("\x15inkline eval '(+ 40 2)'\r");
     sh.wait_for("Lisp still runs", |s| has_row(s, "42"));
+}
+
+/// After an internal error in a Lisp command, the command's change is
+/// taken back, and `inkline on` starts a fresh interpreter.
+#[cfg(debug_assertions)]
+#[test]
+fn a_panic_in_a_command_takes_its_change_back() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            "(keymap-global-set \"C-x p\" (lambda () (insert \"zz\") (inkline--panic)))\n".into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("inkline eval '(setq marker 5)'\r");
+    sh.wait_for("the next prompt", |s| {
+        has_row(s, "5") && cursor_row(s) == "$"
+    });
+    sh.send("ab\x18p");
+    sh.wait_for("the panic", |s| {
+        has_row(s, "inkline: internal error, turned off")
+    });
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ ab", "{}", dump(&s));
+    sh.send("\x15inkline on\r");
+    sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
+    sh.send("inkline eval '(condition-case nil marker (error \"fresh\"))'\r");
+    sh.wait_for("a fresh interpreter", |s| has_row(s, "\"fresh\""));
 }
 
 /// Shell code that a Lisp command runs while inkline is off can switch

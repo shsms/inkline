@@ -1,6 +1,7 @@
 //! Lisp commands: Lisp functions bound to keys. Each gets one of 256
-//! readline functions, its slot, and runs with readline's line as the
-//! buffer, as one undo step.
+//! readline functions, its slot, or past those, shares one that finds the
+//! command by its key. A command runs with readline's line as the buffer,
+//! as one undo step.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_int, c_void};
@@ -14,11 +15,13 @@ use crate::ffi;
 
 use super::errors::QUIT;
 
-/// How many Lisp commands can have keys at once.
-const SLOT_COUNT: usize = 256;
+/// How many Lisp commands have a readline function of their own.
+pub const SLOT_COUNT: usize = 256;
 
 extern "C" fn slot<const N: usize>(count: c_int, key: c_int) -> c_int {
-    crate::hooks::run_lisp_command(N, count, key)
+    crate::hooks::run_lisp_key(Some(N), count, key, || {
+        run(slot_command(N).as_ref(), count, key)
+    })
 }
 
 macro_rules! row {
@@ -45,8 +48,9 @@ macro_rules! row {
 }
 
 /// One readline function per Lisp command, so each knows which it is:
-/// readline passes a command no name.
-pub const SLOTS: [[ffi::CommandFn; 16]; 16] = [
+/// readline passes a command no name. A `static`, so each function has one
+/// address that keymaps and `rl_last_func` can be compared with.
+static SLOTS: [[ffi::CommandFn; 16]; 16] = [
     row!(0),
     row!(1),
     row!(2),
@@ -71,8 +75,21 @@ pub fn slot_function(n: usize) -> ffi::CommandFn {
 }
 
 /// The slot `f` is the readline function of, if it is one.
-pub fn slot_index(f: ffi::CommandFn) -> Option<usize> {
+fn slot_index(f: ffi::CommandFn) -> Option<usize> {
     (0..SLOT_COUNT).find(|&n| std::ptr::fn_addr_eq(slot_function(n), f))
+}
+
+extern "C" fn lisp_key(count: c_int, key: c_int) -> c_int {
+    crate::hooks::run_lisp_key(None, count, key, || run_shared(count, key))
+}
+
+/// `inkline-lisp-key`: the readline function of the keys of Lisp commands
+/// that got no slot. It finds the command by the key readline runs it for.
+pub static SHARED: ffi::CommandFn = lisp_key;
+
+/// Whether `f` is a slot's function or `SHARED`.
+pub fn is_lisp_key_function(f: ffi::CommandFn) -> bool {
+    std::ptr::fn_addr_eq(f, SHARED) || slot_index(f).is_some()
 }
 
 /// A Lisp function bound to a key.
@@ -125,6 +142,8 @@ thread_local! {
     static UNDO_GROUP: Cell<Option<Group>> = const { Cell::new(None) };
     /// While a Lisp command runs from a key: that key, as readline gave it.
     static KEY: Cell<c_int> = const { Cell::new(0) };
+    /// The name of the Lisp command `SHARED` last ran, `None` for a lambda.
+    static SHARED_LAST: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// What `object`, given to `keymap-global-set`, binds a key to.
@@ -154,10 +173,10 @@ pub fn resolve(ctx: &TulispContext, object: &TulispObject) -> Result<Command, St
     }
 }
 
-/// The slot for `command`: the one it already has, or a free one. A named
-/// command that gets its first slot is also added to readline's commands
-/// under its name, so `bind` finds it.
-pub fn assign_slot(command: &LispCommand) -> Result<usize, String> {
+/// The slot for `command`: the one it already has, or a free one. None when
+/// all are taken. A named command that gets its first slot is also added to
+/// readline's commands under its name, so `bind` finds it.
+pub fn assign_slot(command: &LispCommand) -> Option<usize> {
     let same = |used: &LispCommand| match (used, command) {
         (LispCommand::Named(a), LispCommand::Named(b)) => a == b,
         (LispCommand::Lambda(a), LispCommand::Lambda(b)) => a.eq(b),
@@ -165,7 +184,7 @@ pub fn assign_slot(command: &LispCommand) -> Result<usize, String> {
     };
     let (n, new) = SLOT_USE.with_borrow_mut(|slots| {
         if let Some(n) = slots.iter().position(|s| s.as_ref().is_some_and(same)) {
-            return Ok((n, false));
+            return Some((n, false));
         }
         let n = match slots.iter().position(Option::is_none) {
             Some(n) => n,
@@ -173,14 +192,10 @@ pub fn assign_slot(command: &LispCommand) -> Result<usize, String> {
                 slots.push(None);
                 slots.len() - 1
             }
-            None => {
-                return Err(format!(
-                    "no more than {SLOT_COUNT} Lisp commands can have keys"
-                ));
-            }
+            None => return None,
         };
         slots[n] = Some(command.clone());
-        Ok((n, true))
+        Some((n, true))
     })?;
     if new
         && let LispCommand::Named(name) = command
@@ -190,7 +205,7 @@ pub fn assign_slot(command: &LispCommand) -> Result<usize, String> {
             "{name}: readline already has a command of this name; bind finds readline's"
         ));
     }
-    Ok(n)
+    Some(n)
 }
 
 /// Frees the slots of lambdas no key in `used` runs.
@@ -290,10 +305,16 @@ enum Failure {
 /// Tells `before_change` a Lisp command runs, and `call-interactively` its
 /// key. What they held before, for a command further up the stack, comes
 /// back afterwards. On drop, closes a group still open, so readline's
-/// groups stay balanced even after a panic.
+/// groups stay balanced even after a panic; after a panic, as after an
+/// error, the command's change on the line is also taken back, and point
+/// and mark go back, unless the command moved to another history line.
 struct Running {
     outer: Option<Group>,
     outer_key: c_int,
+    /// Point, mark and history line from before the command.
+    point: usize,
+    mark: usize,
+    history: c_int,
 }
 
 impl Running {
@@ -301,6 +322,9 @@ impl Running {
         Running {
             outer: UNDO_GROUP.replace(Some(Group::Closed)),
             outer_key: KEY.replace(key),
+            point: ffi::point(),
+            mark: ffi::mark(),
+            history: ffi::history_position(),
         }
     }
 
@@ -316,27 +340,65 @@ impl Running {
 impl Drop for Running {
     fn drop(&mut self) {
         KEY.set(self.outer_key);
-        if let Some(Group::Open { .. }) = UNDO_GROUP.replace(self.outer) {
-            ffi::end_undo_group();
+        let panicking = std::thread::panicking();
+        match UNDO_GROUP.replace(self.outer) {
+            Some(Group::Open { history, .. }) if ffi::history_position() == history => {
+                ffi::end_undo_group();
+                if panicking && history == self.history {
+                    ffi::do_undo();
+                }
+            }
+            Some(Group::Open { .. }) => ffi::forget_undo_group(),
+            _ => {}
+        }
+        if panicking && ffi::history_position() == self.history {
+            let end = ffi::line_bytes().len();
+            ffi::set_point(self.point.min(end));
+            ffi::set_mark(self.mark.min(end));
         }
     }
 }
 
-/// Runs the Lisp command of `slot` for its key, as one undo step. On an
-/// error or `quit`, the line, point and mark go back to what they were,
-/// unless the command moved to another history line. A readline `undo` the
-/// command called stays done, since readline cannot redo.
-pub fn run(slot: usize, count: c_int, key: c_int) -> c_int {
-    let Some(command) = SLOT_USE.with_borrow(|s| s.get(slot).cloned().flatten()) else {
+/// The Lisp command of `slot`.
+fn slot_command(slot: usize) -> Option<LispCommand> {
+    SLOT_USE.with_borrow(|s| s.get(slot).cloned().flatten())
+}
+
+/// Runs the Lisp command of the key `SHARED` runs for, and notes it for
+/// `last-command`.
+fn run_shared(count: c_int, key: c_int) -> c_int {
+    let command = ffi::running_key().and_then(super::keys::shared_command);
+    let result = run(command.as_ref(), count, key);
+    SHARED_LAST.set(command.as_ref().and_then(|c| c.name().map(str::to_owned)));
+    result
+}
+
+/// The name of the command `f` runs, for `last-command`: a Lisp command's
+/// name (`None` for a lambda), or the name readline knows `f` by.
+fn command_symbol_of(f: ffi::CommandFn) -> Option<String> {
+    if std::ptr::fn_addr_eq(f, SHARED) {
+        return SHARED_LAST.with_borrow(Clone::clone);
+    }
+    match slot_index(f) {
+        Some(n) => slot_command(n)?.name().map(str::to_owned),
+        None => ffi::command_name(f),
+    }
+}
+
+/// Runs `command` for its key, as one undo step; rings the bell for none.
+/// On an error or `quit`, the line, point and mark go back to what they
+/// were, unless the command moved to another history line. A readline
+/// `undo` the command called stays done, since readline cannot redo.
+fn run(command: Option<&LispCommand>, count: c_int, key: c_int) -> c_int {
+    let Some(command) = command else {
         ffi::ding();
         return 0;
     };
-    let point = ffi::point();
-    let mark = ffi::mark();
-    let history = ffi::history_position();
     let prefix = ffi::explicit_count().then_some(count);
     let running = Running::start(key);
-    let result = crate::lisp::with_lisp(|ctx| call(ctx, &command, prefix));
+    let (point, mark, history) = (running.point, running.mark, running.history);
+    let last = ffi::last_command().and_then(command_symbol_of);
+    let result = crate::lisp::with_lisp_marking_panics(|ctx| call(ctx, command, prefix, last));
     let group = running.finish();
     let Ok(result) = result else {
         ffi::ding();
@@ -381,29 +443,45 @@ pub fn run(slot: usize, count: c_int, key: c_int) -> c_int {
     0
 }
 
-/// Calls `command` with the line installed as the buffer and
-/// `current-prefix-arg` set to `prefix`.
+/// Calls `command` with the line installed as the buffer,
+/// `current-prefix-arg` set to `prefix`, `this-command` to its name and
+/// `last-command` to `last`.
 fn call(
     ctx: &mut TulispContext,
     command: &LispCommand,
     prefix: Option<c_int>,
+    last: Option<String>,
 ) -> Result<(), Failure> {
-    let function = match command {
-        LispCommand::Named(name) => ctx.intern(name),
-        LispCommand::Lambda(f) => f.clone(),
+    let (function, name) = match command {
+        LispCommand::Named(name) => (ctx.intern(name), ctx.intern(name)),
+        LispCommand::Lambda(f) => (f.clone(), TulispObject::nil()),
     };
-    let arg = ctx.intern("current-prefix-arg");
-    let value = prefix.map_or_else(TulispObject::nil, |n| TulispObject::from(i64::from(n)));
-    arg.set_scope(value)
-        .map_err(|e| Failure::Error(errors::describe(&e, ctx, None)))?;
-    /// Takes `current-prefix-arg`'s binding off again on every path.
-    struct Unbind(TulispObject);
+    let last = last.map_or_else(TulispObject::nil, |n| ctx.intern(&n));
+    let values = [
+        (
+            "current-prefix-arg",
+            prefix.map_or_else(TulispObject::nil, |n| TulispObject::from(i64::from(n))),
+        ),
+        ("this-command", name),
+        ("last-command", last),
+    ];
+    /// Takes the variables' bindings off again on every path.
+    struct Unbind(Vec<TulispObject>);
     impl Drop for Unbind {
         fn drop(&mut self) {
-            let _ = self.0.unset();
+            for variable in &self.0 {
+                let _ = variable.unset();
+            }
         }
     }
-    let _unbind = Unbind(arg);
+    let mut unbind = Unbind(Vec::new());
+    for (variable, value) in values {
+        let variable = ctx.intern(variable);
+        variable
+            .set_scope(value)
+            .map_err(|e| Failure::Error(errors::describe(&e, ctx, None)))?;
+        unbind.0.push(variable);
+    }
     let _installed = buffer::install(Box::new(ReadlineBuffer));
     ctx.funcall(&function, ()).map(drop).map_err(|e| {
         if let ErrorKind::Throw(thrown) = e.kind()
@@ -477,7 +555,7 @@ fn call_interactively(
 }
 
 /// Runs the readline command `f` with `ffi::call_command`. A jump to
-/// bash's top level that it stopped is noted for `run_lisp_command` to make.
+/// bash's top level that it stopped is noted for `run_lisp_key` to make.
 fn call_command(f: ffi::CommandFn, count: c_int, key: c_int) -> Result<c_int, ffi::Jumped> {
     let result = crate::hooks::in_readline_command(|| ffi::call_command(f, count, key));
     if let Err(ffi::Jumped::Shell(value)) = result {
@@ -648,8 +726,11 @@ pub fn register(ctx: &mut TulispContext) {
             Ok(value)
         },
     );
-    ctx.eval_prelude("<inkline-commands>", "(defvar current-prefix-arg nil)")
-        .expect("inkline's own Lisp compiles");
+    ctx.eval_prelude(
+        "<inkline-commands>",
+        "(defvar current-prefix-arg nil)\n(defvar this-command nil)\n(defvar last-command nil)",
+    )
+    .expect("inkline's own Lisp compiles");
     let own = READLINE_NAMES
         .iter()
         .filter_map(|&name| ctx.intern(name).get().ok().map(|f| (name, f)))

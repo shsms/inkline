@@ -90,18 +90,18 @@ thread_local! {
     /// The message to show under the line until the next key. Kept apart
     /// from `State` so Lisp can set it while it runs.
     static MESSAGE: RefCell<Option<String>> = const { RefCell::new(None) };
-    /// Set when `C-c` came while Lisp was reading a key; `run_lisp_command`
+    /// Set when `C-c` came while Lisp was reading a key; `run_lisp_key`
     /// hands it on to readline and bash once the command has returned.
     static INTERRUPTED_IN_LISP: Cell<bool> = const { Cell::new(false) };
     /// Set when another signal interrupted inkline's wait for a key while
     /// Lisp was reading one: the signal, as `ffi::Wait::Signal` gives it.
-    /// Readline handles it once the key is read; `run_lisp_command` runs
-    /// bash's part (traps, `read -e -t` timing out in bash 5.0) once the
-    /// command has returned.
+    /// Readline handles it once the key is read; `run_lisp_key` runs bash's
+    /// part (traps, `read -e -t` timing out in bash 5.0) once the command
+    /// has returned.
     static SIGNAL_IN_LISP: Cell<Option<c_int>> = const { Cell::new(None) };
     /// Set when shell code that a readline command run from Lisp ran jumped
-    /// to bash's top level: the value it jumped with. `run_lisp_command`
-    /// makes the jump once Lisp has stopped.
+    /// to bash's top level: the value it jumped with. `run_lisp_key` makes
+    /// the jump once Lisp has stopped.
     static SHELL_JUMP: Cell<Option<c_int>> = const { Cell::new(None) };
     /// Set once readline reads a line of its own (`read -e` in shell code)
     /// under a readline command that Lisp runs, until that command returns.
@@ -111,6 +111,8 @@ thread_local! {
     /// Those keys and the ones after them go to the interrupted line, as
     /// with readline's own reader.
     static KEYS_AFTER_C_C: Cell<bool> = const { Cell::new(false) };
+    /// Set when a panic turned inkline off, until `enable -f` or `inkline on`.
+    static PANICKED: Cell<bool> = const { Cell::new(false) };
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
         lexer: Lexer::new(),
@@ -137,6 +139,7 @@ fn originals() -> Originals {
 pub fn load() {
     guard(
         || {
+            PANICKED.set(false);
             // Readline has no way to remove a command, and the library stays
             // loaded (see build.rs), so the commands are registered once per
             // process.
@@ -169,6 +172,7 @@ pub fn load() {
                 ffi::add_command(c"kill-to-line-start", multiline::kill_to_line_start);
                 ffi::add_command(c"comment-lines", multiline::comment_lines);
                 ffi::add_command(c"accept-as-is", accept_as_is);
+                ffi::add_command(c"inkline-lisp-key", crate::lisp::commands::SHARED);
             });
             crate::lisp::start_for_shell();
             STATE.with_borrow_mut(|s| s.unloaded = false);
@@ -208,6 +212,7 @@ fn run_builtin(args: &[String]) -> c_int {
             }
         }
         ["on"] => {
+            PANICKED.set(false);
             crate::lisp::start_again_if_broken();
             enable();
             ffi::EXECUTION_SUCCESS
@@ -328,28 +333,52 @@ extern "C" fn accept_as_is(count: c_int, key: c_int) -> c_int {
     )
 }
 
-/// The readline function of a Lisp command's key, `slot` telling which
-/// command. Holds no borrow of `STATE` while Lisp runs. inkline's key
-/// reader is in place while the command runs, also when inkline is off,
-/// so a `C-c` while the command reads a key waits for Lisp to stop. When
-/// inkline's drawing function is not in place (inkline is off), the
-/// command's message is printed once it returns. A `C-c` that came while
-/// the command ran, or bash's part of another signal that came while it
-/// read a key, is handled last, as it is after inkline's wait for a key,
-/// and then a jump to bash's top level that shell code run from Lisp made;
-/// only once Lisp has stopped running, so not when this command's key was
-/// run by a readline command that Lisp called.
-pub fn run_lisp_command(slot: usize, count: c_int, key: c_int) -> c_int {
+/// Whether a panic turned inkline off since the last `enable -f` or
+/// `inkline on`.
+fn panicked() -> bool {
+    PANICKED.try_with(Cell::get).unwrap_or(true)
+}
+
+/// Runs a Lisp command's key with `run`. After `enable -d` or a panic, the
+/// key instead runs what it had before inkline bound it (`slot` as for
+/// `keys::saved_binding`). Holds no borrow of `STATE` while Lisp runs.
+/// inkline's key reader is in place while the command runs, also when
+/// inkline is off, so a `C-c` while the command reads a key waits for
+/// Lisp to stop. When inkline's drawing function is not in place (inkline
+/// is off), the command's message is printed once it returns. A `C-c`
+/// that came while the command ran, or bash's part of another signal that
+/// came while it read a key, is handled last, as it is after inkline's
+/// wait for a key, and then a jump to bash's top level that shell code
+/// run from Lisp made; only once Lisp has stopped running, so not when
+/// this command's key was run by a readline command that Lisp called.
+pub fn run_lisp_key(
+    slot: Option<usize>,
+    count: c_int,
+    key: c_int,
+    run: impl FnOnce() -> c_int,
+) -> c_int {
+    // Unreadable state counts as unloaded.
+    let unloaded = STATE
+        .try_with(|s| s.try_borrow().map(|s| s.unloaded))
+        .map_or(true, |s| s.unwrap_or(true));
+    if unloaded || panicked() {
+        return run_saved_binding(slot, count, key);
+    }
     use_own_key_reader();
     let result = guard(
         || {
-            let result = crate::lisp::commands::run(slot, count, key);
+            let result = run();
             if !drawing() {
                 print_message_above();
             }
             result
         },
-        || 0,
+        // The panic's notice ended on a new row: readline draws the line
+        // again under it.
+        || {
+            ffi::on_new_line();
+            0
+        },
     );
     if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
         // Shell code the command ran may have switched inkline on or off;
@@ -395,7 +424,7 @@ pub fn in_readline_command<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Notes a jump to bash's top level with `value` that shell code run from
-/// Lisp made, for `run_lisp_command` to make once Lisp has stopped.
+/// Lisp made, for `run_lisp_key` to make once Lisp has stopped.
 pub fn note_shell_jump(value: c_int) {
     SHELL_JUMP.set(Some(value));
 }
@@ -429,6 +458,25 @@ fn is_on() -> bool {
     STATE
         .try_with(|s| s.try_borrow().map_or(true, |s| s.enabled))
         .unwrap_or(true)
+}
+
+/// Runs what this key had before inkline first bound it: the saved
+/// command or macro text, or the bell when nothing was saved. The saved
+/// command runs last, with nothing in this frame to drop, as readline may
+/// jump from it back to its top level.
+fn run_saved_binding(slot: Option<usize>, count: c_int, key: c_int) -> c_int {
+    use crate::lisp::keys::{self, Fallback};
+    match guard(|| keys::saved_binding(slot), || Fallback::Nothing) {
+        Fallback::Command(f) => ffi::run_command(f, count, key),
+        Fallback::Macro(text) => {
+            ffi::push_macro_input(text);
+            0
+        }
+        Fallback::Nothing => {
+            ffi::ding();
+            0
+        }
+    }
 }
 
 /// Whether inkline's drawing function is in place.
@@ -483,6 +531,7 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(result) => result,
         Err(_) => {
+            let _ = PANICKED.try_with(|p| p.set(true));
             disable();
             on_panic()
         }
@@ -506,12 +555,12 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
 /// While Lisp runs (a Lisp command reading a key), bash must not jump from a
 /// signal to a new prompt: that would skip the Lisp and Rust frames. A
 /// `C-c` then comes back as `C-g`, and is handed on once the command has
-/// returned (see `run_lisp_command`); readline handles other signals after
-/// the key, and bash's part of them waits for the command too. A line of
-/// its own that shell code run from Lisp reads (`read -e`) gets its signals
-/// as usual, from its first key until the readline command that ran the
-/// shell code returns: bash's jump from there stops at `ffi::call_command`
-/// (see `in_readline_command`).
+/// returned (see `run_lisp_key`); readline handles other signals after the
+/// key, and bash's part of them waits for the command too. A line of its
+/// own that shell code run from Lisp reads (`read -e`) gets its signals as
+/// usual, from its first key until the readline command that ran the shell
+/// code returns: bash's jump from there stops at `ffi::call_command` (see
+/// `in_readline_command`).
 ///
 /// A signal that came before the wait (while readline redrew the line or ran
 /// a command) did not interrupt it, and is acted on before the wait, unless a

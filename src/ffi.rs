@@ -1066,6 +1066,15 @@ pub fn jump_to_shell_top_level(value: c_int) -> ! {
     unsafe { jump_to_top_level(value) }
 }
 
+/// Runs the readline command `f` as readline runs a key's command. A jump
+/// back to readline's top level from `f` is not stopped: the caller's frames
+/// must hold nothing to drop.
+pub fn run_command(f: CommandFn, count: c_int, key: c_int) -> c_int {
+    // SAFETY: `f` is a readline command; readline calls such commands with
+    // any count and key.
+    unsafe { f(count, key) }
+}
+
 /// readline's `copy-region-as-kill`, to run with `call_command`.
 pub fn copy_region_command() -> CommandFn {
     rl_copy_region_to_kill
@@ -1103,6 +1112,15 @@ pub fn replace_explicit_count(explicit: bool) -> bool {
         rl_explicit_arg = c_int::from(explicit);
         old != 0
     }
+}
+
+/// Tells readline the cursor is at the start of a new row, below a
+/// prompt and line that are no longer to be drawn over, so its next
+/// redisplay draws them in full there.
+pub fn on_new_line() {
+    // SAFETY: rl_on_new_line only resets readline's idea of what is on
+    // screen.
+    unsafe { rl_on_new_line() };
 }
 
 unsafe extern "C" {
@@ -1206,10 +1224,9 @@ pub struct Found {
     pub binding: Binding,
 }
 
-/// The entry holding `seq`'s binding, and whether `seq` also starts longer
-/// sequences (the entry is then the prefix keymap's "any other key"). None
-/// when a key before the last is not a prefix.
-fn slot_of(seq: &[u8]) -> Option<(*mut KeymapEntry, bool)> {
+/// The keymap holding `seq`'s last key, and that key. None when a key
+/// before the last is not a prefix.
+fn keymap_of(seq: &[u8]) -> Option<(*mut KeymapEntry, u8)> {
     let (&last, before) = seq.split_last()?;
     let mut map = (&raw mut emacs_standard_keymap).cast::<KeymapEntry>();
     for &b in before {
@@ -1221,17 +1238,110 @@ fn slot_of(seq: &[u8]) -> Option<(*mut KeymapEntry, bool)> {
         }
         map = entry.function.cast();
     }
+    Some((map, last))
+}
+
+/// The prefix keymap `entry` holds, if it holds one.
+///
+/// # Safety
+///
+/// `entry` must point to an entry of a readline keymap.
+unsafe fn sub_keymap(entry: *const KeymapEntry) -> Option<*mut KeymapEntry> {
+    // SAFETY: the caller's promise; an ISKMAP entry points to a keymap of
+    // KEYMAP_SIZE entries or is NULL.
+    unsafe {
+        ((*entry).kind == ISKMAP && !(*entry).function.is_null()).then(|| (*entry).function.cast())
+    }
+}
+
+/// The entry holding `seq`'s binding, and whether `seq` also starts longer
+/// sequences (the entry is then the prefix keymap's "any other key"). None
+/// when a key before the last is not a prefix.
+fn slot_of(seq: &[u8]) -> Option<(*mut KeymapEntry, bool)> {
+    let (map, last) = keymap_of(seq)?;
     // SAFETY: `map` points to a readline keymap of KEYMAP_SIZE entries, a
-    // byte is below KEYMAP_SIZE, and an ISKMAP entry points to a keymap of
-    // KEYMAP_SIZE entries.
+    // byte is below KEYMAP_SIZE, and a prefix keymap has KEYMAP_SIZE
+    // entries too.
     unsafe {
         let entry = map.add(usize::from(last));
-        if (*entry).kind == ISKMAP && !(*entry).function.is_null() {
-            let sub: *mut KeymapEntry = (*entry).function.cast();
-            return Some((sub.add(ANYOTHERKEY), true));
+        match sub_keymap(entry) {
+            Some(sub) => Some((sub.add(ANYOTHERKEY), true)),
+            None => Some((entry, false)),
         }
-        Some((entry, false))
     }
+}
+
+/// The keymap address and key readline gives in `rl_executing_keymap` and
+/// `rl_executing_key` while `seq`'s command runs. For a sequence that also
+/// starts longer ones, readline runs the prefix keymap's "any other key" as
+/// if it were bound to the last key in that prefix keymap, so it is that
+/// keymap and the last key. None when a key before the last is not a
+/// prefix.
+pub fn entry_position(seq: &[u8]) -> Option<(usize, u8)> {
+    let (map, last) = keymap_of(seq)?;
+    // SAFETY: `map` points to a readline keymap of KEYMAP_SIZE entries, and
+    // a byte is below KEYMAP_SIZE.
+    let sub = unsafe { sub_keymap(map.add(usize::from(last))) };
+    Some((sub.unwrap_or(map) as usize, last))
+}
+
+unsafe extern "C" {
+    static mut rl_executing_keymap: *mut KeymapEntry;
+    static mut rl_executing_key: c_int;
+    /// While a command runs: the keymap its key is in, or for a prefix
+    /// keymap's "any other key", the keymap the prefix is in.
+    static mut _rl_dispatching_keymap: *mut KeymapEntry;
+    fn rl_push_macro_input(text: *mut c_char);
+}
+
+/// The key whose command readline is running.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RunningKey {
+    /// As `entry_position` gives it.
+    pub position: (usize, u8),
+    /// Whether it runs as a prefix keymap's "any other key".
+    pub prefix: bool,
+}
+
+/// The key whose command readline is running, as readline tells it. None
+/// when readline has run no key.
+pub fn running_key() -> Option<RunningKey> {
+    // SAFETY: these are plain values readline sets before it runs a key's
+    // command; they are only read here.
+    unsafe {
+        let map = rl_executing_keymap;
+        let key = u8::try_from(rl_executing_key).ok()?;
+        if map.is_null() {
+            return None;
+        }
+        Some(RunningKey {
+            position: (map as usize, key),
+            prefix: _rl_dispatching_keymap != map,
+        })
+    }
+}
+
+/// Macro text in memory from `malloc`, which readline frees once it is done
+/// with it: for `push_macro_input`, or a keymap entry. Neither `Copy` nor
+/// `Clone`, so it is handed over at most once; one dropped without being
+/// handed over is never freed.
+pub struct MacroText(*mut c_char);
+
+/// A copy of `text` to hand to readline. None when `text` holds a NUL byte
+/// or memory runs out.
+pub fn macro_text(text: &[u8]) -> Option<MacroText> {
+    let text = CString::new(text).ok()?;
+    // SAFETY: `text` is a NUL-terminated string; strdup's copy comes from
+    // malloc.
+    let copy = unsafe { libc::strdup(text.as_ptr()) };
+    (!copy.is_null()).then_some(MacroText(copy))
+}
+
+/// Has readline read `text` as typed keys next, as for a key bound to macro
+/// text. readline frees `text` once it has read it all.
+pub fn push_macro_input(text: MacroText) {
+    // SAFETY: `text` comes from malloc, and readline takes it over.
+    unsafe { rl_push_macro_input(text.0) };
 }
 
 fn binding_of(entry: KeymapEntry) -> Binding {
@@ -1287,15 +1397,9 @@ pub fn restore(seq: &[u8], saved: &Found) {
             function: *f as *mut c_void,
         },
         Binding::Macro(text) => {
-            let Ok(text) = CString::new(text.clone()) else {
+            let Some(MacroText(copy)) = macro_text(text) else {
                 return;
             };
-            // SAFETY: `text` is a NUL-terminated string. readline frees macro
-            // text with free(), so it must come from malloc, as strdup's does.
-            let copy = unsafe { libc::strdup(text.as_ptr()) };
-            if copy.is_null() {
-                return;
-            }
             KeymapEntry {
                 kind: ISMACR,
                 function: copy.cast(),

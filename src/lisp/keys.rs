@@ -5,10 +5,19 @@ use std::cell::RefCell;
 
 use tulisp::{Error, TulispContext, TulispObject};
 
-use super::commands::{self, Command};
+use super::commands::{self, Command, LispCommand};
 use super::keydesc;
 use super::layout::Group;
 use crate::ffi;
+
+/// The Lisp command a sequence runs.
+#[derive(Clone)]
+pub enum LispKey {
+    /// Through the slot's readline function.
+    Slot(usize),
+    /// Through `commands::SHARED`, which finds it here.
+    Shared(LispCommand),
+}
 
 /// A sequence inkline bound.
 struct Bound {
@@ -17,6 +26,7 @@ struct Bound {
     key: String,
     command: String,
     function: ffi::CommandFn,
+    lisp: Option<LispKey>,
     /// The layout group, for keys the default layout bound.
     group: Option<Group>,
     /// What the sequence had before inkline first bound it.
@@ -53,32 +63,111 @@ fn sequences(desc: &str) -> Result<Vec<Vec<u8>>, String> {
 }
 
 /// `keymap-global-set`: binds `desc` to a readline or inkline command, or to
-/// a Lisp command through its slot.
+/// a Lisp command through its slot, or past the slots, through
+/// `commands::SHARED`.
 fn global_set(ctx: &TulispContext, desc: &str, command: &TulispObject) -> Result<(), String> {
     let seqs = sequences(desc)?;
-    let (name, function) = match commands::resolve(ctx, command)? {
-        Command::Readline(f, name) => (name, f),
+    let (name, function, lisp) = match commands::resolve(ctx, command)? {
+        Command::Readline(f, name) => (name, f, None),
         Command::Lisp(lisp) => {
-            let n = commands::assign_slot(&lisp)?;
             let name = lisp.name().unwrap_or("(lambda)").to_owned();
-            (name, commands::slot_function(n))
+            match commands::assign_slot(&lisp) {
+                Some(n) => (name, commands::slot_function(n), Some(LispKey::Slot(n))),
+                None => {
+                    if let LispCommand::Named(name) = &lisp
+                        && !shares(name)
+                    {
+                        commands::notice(&format!(
+                            "{name}: more than {} Lisp commands; bind cannot find this one",
+                            commands::SLOT_COUNT
+                        ));
+                    }
+                    (name, commands::SHARED, Some(LispKey::Shared(lisp)))
+                }
+            }
         }
     };
     let result = seqs
         .iter()
-        .try_for_each(|seq| bind_seq(seq, desc, &name, function, None));
+        .try_for_each(|seq| bind_seq(seq, desc, &name, function, lisp.clone(), None));
     free_lambda_slots();
     result
+}
+
+/// Whether a key runs the named Lisp command `name` through
+/// `commands::SHARED`.
+fn shares(name: &str) -> bool {
+    TABLE.with_borrow(|t| {
+        t.iter()
+            .any(|b| matches!(&b.lisp, Some(LispKey::Shared(LispCommand::Named(n))) if n == name))
+    })
 }
 
 /// Frees the slots of lambdas no key in the table runs any more.
 fn free_lambda_slots() {
     let used: Vec<usize> = TABLE.with_borrow(|t| {
         t.iter()
-            .filter_map(|b| commands::slot_index(b.function))
+            .filter_map(|b| match b.lisp {
+                Some(LispKey::Slot(n)) => Some(n),
+                _ => None,
+            })
             .collect()
     });
     commands::free_unused_lambda_slots(&used);
+}
+
+/// Whether `b` is the sequence readline runs `running` for.
+fn runs_at(b: &Bound, running: ffi::RunningKey) -> bool {
+    ffi::entry_position(&b.seq) == Some(running.position)
+        && ffi::lookup(&b.seq).is_some_and(|f| f.prefix == running.prefix)
+}
+
+/// The Lisp command of the key `commands::SHARED` runs for.
+pub fn shared_command(running: ffi::RunningKey) -> Option<LispCommand> {
+    TABLE.with_borrow(|t| {
+        t.iter().find_map(|b| match &b.lisp {
+            Some(LispKey::Shared(command)) if runs_at(b, running) => Some(command.clone()),
+            _ => None,
+        })
+    })
+}
+
+/// What a Lisp command's key runs when Lisp cannot run.
+pub enum Fallback {
+    Command(ffi::CommandFn),
+    Macro(ffi::MacroText),
+    Nothing,
+}
+
+/// What the key being run had before inkline first bound it to the Lisp
+/// command of slot `slot` (or of `commands::SHARED`, for None). Macro text
+/// comes as a copy for `ffi::push_macro_input`. A saved Lisp command's
+/// function would only lead back here, so it gives `Nothing`.
+pub fn saved_binding(slot: Option<usize>) -> Fallback {
+    let Some(running) = ffi::running_key() else {
+        return Fallback::Nothing;
+    };
+    let saved = TABLE.with_borrow(|t| {
+        t.iter()
+            .find(|b| {
+                let lisp = match (&b.lisp, slot) {
+                    (Some(LispKey::Slot(n)), Some(slot)) => *n == slot,
+                    (Some(LispKey::Shared(_)), None) => true,
+                    _ => false,
+                };
+                lisp && runs_at(b, running)
+            })
+            .map(|b| b.saved.binding.clone())
+    });
+    match saved {
+        Some(ffi::Binding::Command(f)) if !commands::is_lisp_key_function(f) => {
+            Fallback::Command(f)
+        }
+        Some(ffi::Binding::Macro(text)) => {
+            ffi::macro_text(&text).map_or(Fallback::Nothing, Fallback::Macro)
+        }
+        Some(ffi::Binding::Command(_) | ffi::Binding::Unbound) | None => Fallback::Nothing,
+    }
 }
 
 /// Binds one sequence of `desc`. A sequence bound again while it still runs
@@ -88,6 +177,7 @@ pub fn bind_seq(
     desc: &str,
     command: &str,
     function: ffi::CommandFn,
+    lisp: Option<LispKey>,
     group: Option<Group>,
 ) -> Result<(), String> {
     let saved = TABLE.with_borrow(|t| {
@@ -114,6 +204,7 @@ pub fn bind_seq(
             key: desc.to_owned(),
             command: command.to_owned(),
             function,
+            lisp,
             group,
             saved,
         });

@@ -171,7 +171,7 @@ mod bash {
                 };
                 match command.and_then(|c| ffi::named_command(c).map(|f| (c, f))) {
                     Some((c, f)) => {
-                        let _ = keys::bind_seq(&seq, entry.key, c, f, Some(entry.group));
+                        let _ = keys::bind_seq(&seq, entry.key, c, f, None, Some(entry.group));
                     }
                     None => keys::note_left_alone(LeftAlone {
                         key: entry.key.to_owned(),
