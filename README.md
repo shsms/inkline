@@ -1,15 +1,21 @@
 # inkline
 
 Syntax highlighting, history suggestions and bracket/quote pairing for bash,
-without replacing readline. Every key and `inputrc` setting keeps working
-exactly as before: inkline only changes how the line is drawn and adds new
-readline commands for you to bind.
+without replacing readline. inkline binds its own layout of keys when it
+loads, but only on a key that still has readline's default binding for it —
+`inputrc`, and your own `bind` lines after `enable -f`, win.
+`(inkline-unbind-defaults)` in `init.el` gives every key in the layout back
+to readline.
 
-It is a bash loadable builtin written in Rust, for bash 5.0 and later.
+It is a bash loadable builtin written in Rust, for bash 5.0 and later,
+configured with `init.el`, a small Emacs Lisp file (see "Configuration"
+below).
 
 ## Building
 
-Needs a Rust toolchain and a C compiler (for tree-sitter).
+Needs a Rust toolchain and a C compiler (for tree-sitter). Until tulisp has
+its own release, it also needs tulisp checked out next to inkline, as
+`../tulisp`.
 
 ```sh
 cargo build --release
@@ -22,67 +28,114 @@ cp target/release/libinkline.so ~/.local/lib/
 Add to `~/.bashrc`:
 
 ```bash
-if enable -f ~/.local/lib/libinkline.so inkline; then
-    # Suggestions: C-f / Right take a character, M-f a word, C-e / End all of
-    # it. Without a suggestion these keys do what they always do.
-    bind '"\C-f": accept-suggestion-char'
-    bind '"\e[C": accept-suggestion-char'     # Right arrow
-    bind '"\ef": accept-suggestion-word'
-    bind '"\C-e": accept-suggestion'
-    bind '"\e[F": accept-suggestion'          # End; some terminals send \eOF or \e[4~
-
-    # Multi-line commands.
-    bind '"\C-m": accept-or-newline'          # Enter
-    bind '"\C-j": insert-newline'             # add a line
-    bind '"\e\C-m": accept-line'              # Alt+Enter: send as it is
-    bind '"\e[A": previous-line-or-history'   # Up
-    bind '"\eOA": previous-line-or-history'
-    bind '"\C-p": previous-line-or-history'
-    bind '"\e[B": next-line-or-history'       # Down
-    bind '"\eOB": next-line-or-history'
-    bind '"\C-n": next-line-or-history'
-    bind '"\C-a": line-start'
-    bind '"\e[H": line-start'                 # Home; some terminals send \eOH or \e[1~
-    bind '"\C-k": kill-to-line-end'
-    bind '"\C-u": kill-to-line-start'
-    bind '"\e#": comment-lines'
-    bind 'set bind-tty-special-chars off'     # see below
-
-    # Pairing (optional).
-    bind '"(": insert-pair'
-    bind '"[": insert-pair'
-    bind '"{": insert-pair'
-    bind '"\"": insert-pair'
-    bind "\"'\": insert-pair"
-    bind '"`": insert-pair'
-    bind '")": insert-close'
-    bind '"]": insert-close'
-    bind '"}": insert-close'
-    bind '"\C-?": delete-pair'                # Backspace
-
-    bind 'set enable-bracketed-paste on'      # needed on bash 5.0 only
-fi
+enable -f ~/.local/lib/libinkline.so inkline
 
 # Keep multi-line commands whole in history (see "History" below).
 shopt -s lithist
 HISTTIMEFORMAT=
 ```
 
-Put the bindings in `.bashrc`, inside the `if`, not in `~/.inputrc`. When
-readline reads a binding to a command it does not know, it binds the key to
-nothing: if inkline did not load, Enter would stop working.
+That is all `.bashrc` needs. On load, inkline binds its own layout of keys —
+the table below — but only on a key that still has readline's default
+binding for it, so it never undoes a change you already made. Put any `bind`
+lines of your own after `enable -f`; they run after inkline's and win.
 
-If Up in your `inputrc` searches history (`history-search-backward`), bind Up
-and Down to `previous-line-or-search` and `next-line-or-search` instead: they
-move between lines the same way, and search past the first or last line.
+| Group | Key | Command | Default it needs |
+|---|---|---|---|
+| suggestions | `C-f`, `<right>` | `accept-suggestion-char` | `forward-char` |
+| suggestions | `M-f` | `accept-suggestion-word` | `forward-word` |
+| suggestions | `C-e`, `<end>` | `accept-suggestion` | `end-of-line` |
+| multi-line | `RET` | `accept-or-newline` | `accept-line` |
+| multi-line | `C-j` | `insert-newline` | `accept-line` |
+| multi-line | `M-RET` | `accept-as-is` | unbound or `vi-editing-mode` |
+| multi-line | `<up>`, `C-p` | `previous-line-or-history` | `previous-history` |
+| multi-line | `<down>`, `C-n` | `next-line-or-history` | `next-history` |
+| multi-line | `C-a`, `<home>` | `line-start` | `beginning-of-line` |
+| multi-line | `C-k` | `kill-to-line-end` | `kill-line` |
+| multi-line | `C-u` | `kill-to-line-start` | `unix-line-discard` |
+| multi-line | `M-#` | `comment-lines` | `insert-comment` |
+| pairing | `(` `[` `{` `"` `'` `` ` `` | `insert-pair` | `self-insert` |
+| pairing | `)` `]` `}` | `insert-close` | `self-insert` |
+| pairing | `DEL` | `delete-pair` | `backward-delete-char` |
+
+`<right>`, `<end>`, `<home>`, `<up>` and `<down>` are also taken when they are
+unbound (many terminals send sequences for them that plain bash never binds
+on its own); `M-RET` is taken when it is unbound or bound to
+`vi-editing-mode`. If `inputrc` binds `<up>`/`<down>` to
+`history-search-backward`/`history-search-forward`, inkline binds
+`previous-line-or-search`/`next-line-or-search` there instead: they move
+between lines the same way, and search past the first or last line.
+
+Turn part of the layout off in `init.el`:
+
+```elisp
+;; ~/.config/inkline/init.el
+(inkline-unbind-defaults '(pairing))   ; no bracket pairing
+```
+
+`(inkline-unbind-defaults)` with no argument gives back the whole layout; a
+single group name also works, as `(inkline-unbind-defaults 'pairing)`.
 
 `C-u` and Backspace need `bind-tty-special-chars off`: otherwise readline binds
 the terminal's kill and erase characters back to `unix-line-discard` and
-`backward-delete-char` every time it sets up the terminal. With it off,
-readline also stops binding the terminal's kill, word-erase and literal-next
-characters for you. Those default to `C-u`, `C-w` and `C-v`, which bash's
-emacs bindings already cover, so this only matters if you changed them with
-`stty`.
+`backward-delete-char` every time it sets up the terminal. inkline turns it off
+the first time it loads in a shell and on `inkline reload`, along with
+`enable-bracketed-paste on` on readline 8.0, and again whenever Lisp binds
+`DEL`, `C-h`, `C-u`, `C-v` or `C-w`; `inkline-unbind-defaults` turns it back on
+once inkline binds none of them, even when `inputrc` turned it off. `inputrc`
+can still turn `bind-tty-special-chars` back on, but only when inkline is the
+first thing to set readline up — that is, only when nothing runs `bind` before
+`enable -f` in `.bashrc`. When it can, an `inputrc` that turns
+`bind-tty-special-chars` back on makes readline rebind Backspace and `C-u` to
+the terminal's erase and kill characters on every line, undoing `delete-pair`
+and `kill-to-line-start`. With it off, readline also stops binding the
+terminal's kill, word-erase and literal-next characters for you. Those default
+to `C-u`, `C-w` and `C-v`, which bash's emacs bindings already cover, so this
+only matters if you changed them with `stty`.
+
+## Configuration
+
+inkline reads `$XDG_CONFIG_HOME/inkline/init.el` if `XDG_CONFIG_HOME` is set
+to an absolute path, else `~/.config/inkline/init.el`, once when it loads in
+an interactive shell with line editing on (`bash --noediting -i` reads
+nothing). It is read only when it is a regular file, it and its
+directory belong to you (or to root), and neither is writable by group or
+others; otherwise inkline prints one line saying why it was skipped (a
+missing file prints nothing). When `init.el` is a link, as dotfile managers
+make it, the file it points at, that file's directory and the directory
+holding each link on the way from `init.el` to that file must pass these
+checks too. Directories higher up, and links to directories, are not
+checked.
+
+tulisp reads the whole file, then compiles all of it, then runs it. A parse
+error, such as a missing `)`, means nothing in the file runs or is defined. A
+compile error, such as a known function called with the wrong number of
+arguments, means nothing runs, but the functions defined above the mistake
+exist. A runtime error stops the file at that form: the forms above it have
+run, and every function the file defines exists, even ones below it. Either
+way inkline prints one line; it does not undo what already ran.
+
+Before reading `init.el`, inkline leaves a marker in `$XDG_STATE_HOME/inkline`
+(or `~/.local/state/inkline`), and removes it as soon as `init.el` has been
+read. If a shell's `init.el` never finishes — an endless loop, for example —
+its marker stays. A later shell that finds it, once the stuck shell has ended
+or the marker is more than 10 seconds old, skips `init.el` until the file
+changes, and says so; fix the file, then run `inkline reload`. The marker
+directory gets the same owner and permission checks as `init.el`'s
+directory. If it fails them, inkline prints one line saying so and reads
+`init.el` without markers, so a looping `init.el` is not skipped.
+
+Example `init.el`:
+
+```elisp
+;; ~/.config/inkline/init.el
+(setq inkline-indent 2)
+(setq inkline-colors '((command . "32") (string . "33")))
+(keymap-global-set "C-x C-r" 'accept-as-is)
+```
+
+Every variable, function and command inkline adds to Lisp is listed in
+[`docs/lisp.md`](docs/lisp.md).
 
 ## What it does
 
@@ -105,8 +158,9 @@ emacs bindings already cover, so this only matters if you changed them with
   inkline adds no lines, such as at bash's `> ` prompt, in `read -e` or while
   inkline is off, it sends the line, as in plain bash. A `C-j` that readline
   replays from a macro, such as the `\n` in `"\C-xr": "echo hi\n"` or one
-  recorded with `C-x (`, also runs the command. Alt+Enter sends the command to
-  bash as it is, finished or not; where Alt+Enter does not reach the shell
+  recorded with `C-x (`, also runs the command. `M-RET` (Alt+Enter) runs
+  `accept-as-is`, which sends the command to bash as it is, finished or not;
+  where Alt+Enter does not reach the shell
   (Windows Terminal uses it for fullscreen, macOS terminals need Option set as
   Meta), press Esc then Enter. An Enter typed while a command is still running
   arrives as `C-j`, so it adds a line to the next command instead of running it,
@@ -131,33 +185,52 @@ draw in turn.
 
 ## Colours
 
-Set `INKLINE_COLORS` in the same format as `LS_COLORS`. Any SGR codes work,
-including 256-colour and truecolor. List only what you want to change; changes
-apply immediately.
+Set `inkline-colors` in `init.el`, either as an alist of `(NAME . "SGR")`
+pairs or as a string in `LS_COLORS`'s format. Any SGR codes work, including
+256-colour and truecolor. List only what you want to change; a change applies
+from the next key.
 
-```bash
-INKLINE_COLORS='command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90'
+```elisp
+(setq inkline-colors '((command . "32") (unknown . "31") (keyword . "35")
+                        (option . "36") (string . "33") (variable . "34")
+                        (operator . "1") (comment . "2") (suggestion . "90")))
 ```
+
+or, in the old string format:
+
+```elisp
+(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90")
+```
+
+In the alist form, a name can be a symbol or a string, and the first entry
+for a name wins. `""` means no colour for that name, and turns the underline
+off for `error`.
 
 `error` sets the syntax-error underline. By default it is a plain underline
 (`4`) followed by a wavy red one (`4:3`, then `58:5:1`), so terminals that do
-not know the wavy form still underline. `error=4` gives a plain underline, and
-an empty `error=` turns it off. Sub-parameters with `:` are allowed in any
-value.
+not know the wavy form still underline. `error=4` (or `(error . "4")`) gives a
+plain underline, and `error=` (or `(error . "")`) turns it off.
+Sub-parameters with `:` are allowed in any value.
 
 ## Settings
 
-Plain shell variables, read each time they are used:
+Lisp variables, set in `init.el` with `setq` and read each time they are
+used, so a change takes effect on the next key. A value of the wrong type or
+out of range is reported once, and the default is used until the value
+changes.
 
-- `INKLINE_INDENT`: spaces per indentation step, 0 to 16, 4 by default and
-  for any other value; `0` turns off both indenting new lines and moving
-  closing words back out, and a closer put on its own line keeps its line's
+- `inkline-indent`: spaces per indentation step, an integer from 0 to 16, 4
+  by default; `0` turns off both indenting new lines and moving closing
+  words back out, and a closer put on its own line keeps its line's
   indentation.
-- `INKLINE_HISTORY_CURSOR`: where `previous-line-or-history` leaves the cursor
-  in a multi-line entry it recalls: `start` (the default) or `end`, where
-  readline puts it.
-- `INKLINE_SUGGESTION_LINES`: the most lines of a multi-line suggestion to
-  show, 5 by default.
+- `inkline-history-cursor`: where `previous-line-or-history` leaves the
+  cursor in a multi-line entry it recalls: the symbol `start` (the default)
+  or `end`, where readline puts it.
+- `inkline-suggestion-lines`: the most lines of a multi-line suggestion to
+  show, an integer of at least 1, 5 by default.
+
+See [`docs/lisp.md`](docs/lisp.md) for every setting, function and command
+inkline adds to Lisp.
 
 ## History
 
@@ -186,9 +259,49 @@ entry of its own, so a commented block comes back one line at a time.
   underline and the multi-line commands; while off, the multi-line keys do
   what readline's own commands do. Pairing is only controlled by its
   bindings.
-- `inkline status`: show whether inkline is on.
+- `inkline status`: two lines — whether inkline is on, then `init.el`'s
+  status: loaded, not found, skipped (with why), failed (with the error), or
+  not read (because the shell is not interactive with line editing on, or
+  has no usable `HOME`).
+- `inkline load FILE`: read and run a file of Lisp. An error is printed to
+  stderr and the command exits 1.
+- `inkline eval EXPR`: run one Lisp expression, given as a single argument;
+  prints its value with `prin1` unless the value is `nil`. An error is
+  printed to stderr and the command exits 1.
+- `inkline reload`: start a fresh interpreter — unbind the keys inkline or
+  `init.el` bound, bind the default layout again (by the same rules as at
+  load), and read `init.el` again. A `bind` you ran yourself is left alone.
+  If `init.el` is skipped or has an error, the reason is printed and the
+  command exits 1.
+- `inkline keys`: one line for each key inkline has bound and what it runs,
+  then one line for each layout key left alone because it no longer had
+  readline's default, and what has it instead.
 - `enable -d inkline`: remove the builtin. Bound keys keep working and behave
-  like readline's own commands; `enable -f` loads inkline again.
+  like readline's own commands; `enable -f` loads inkline again. A second
+  `enable -f` in the same shell only switches inkline back on: it does not
+  read `init.el` again and does not bind the default layout again; use
+  `inkline reload` for that.
+
+## Upgrading
+
+If you set inkline up before this version: delete the old `bind` block from
+`.bashrc`. inkline's layout now binds those keys itself, with the same
+commands except `M-RET`: the block bound it to readline's `accept-line`, the
+layout binds it to `accept-as-is`. The block runs after `init.el`, so it
+would also bind again any key that `init.el` gives back or binds to
+something else. Move any `INKLINE_COLORS`, `INKLINE_INDENT`,
+`INKLINE_HISTORY_CURSOR` or `INKLINE_SUGGESTION_LINES` value into `init.el`,
+as `inkline-colors`, `inkline-indent`, `inkline-history-cursor` and
+`inkline-suggestion-lines`. Until you do, inkline still starts, but prints
+one line per variable still set and does not read any of them.
+
+The layout binds every group, pairing included, even if you never bound it
+before. Enter now runs `accept-or-newline`, so Enter on an unfinished command
+adds a line. Give back the groups you do not want in `init.el`, for example
+`(inkline-unbind-defaults '(pairing))` or `(inkline-unbind-defaults
+'(multi-line))`. `inkline status` now prints a second line, about
+`init.el`; a script that checks its output should read only the first
+line.
 
 ## Limitations
 
@@ -224,7 +337,24 @@ entry of its own, so a commented block comes back one line at a time.
   checks it only when it runs the command. A few rare forms get a wrong
   underline or keep Enter adding lines; Alt+Enter always sends the command to
   bash as it is.
-- vi mode is not covered: the bindings above go into the emacs keymap.
+- vi mode is not covered: `keymap-global-set` and the default layout only
+  bind in the emacs keymap.
+- An endless loop in Lisp freezes the shell: there is no way yet to stop it
+  with `C-c`. Closing the terminal window ends the shell. The next shell
+  skips a looping `init.el` and says so; `bash --norc` starts a shell that
+  does not read `.bashrc`, and so does not load inkline, giving you a shell
+  to fix `init.el` in.
+- A tool that drives an interactive bash by sending the keys it wants typed,
+  followed by `\n`, adds a line instead of running the command: the default
+  layout binds Enter to `accept-or-newline`, and `\n` is `C-j`, which always
+  adds a line. Send `\r` instead, start bash with `--norc`, or turn
+  multi-line editing off with `(inkline-unbind-defaults '(multi-line))`.
+- A key bound with `keymap-global-set` that starts a longer sequence, such as
+  `C-x` or `ESC`, runs only after readline's `keyseq-timeout` has passed, or
+  as soon as a key arrives that does not continue the sequence.
+- Lisp can crash bash by recursing too deep: printing a list nested about
+  15,000 levels deep, dropping one nested about 85,000 levels deep (with
+  bash's usual 8 MB stack), or calling `equal` on two circular lists.
 
 ## Testing
 
