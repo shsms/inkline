@@ -369,6 +369,29 @@ fn on_line(
     )
 }
 
+/// Like readline's `insert-comment`, for every line: puts `comment-begin`
+/// (`#`) in front of each line and accepts the command, so none of it runs.
+/// With a count it takes the comment off instead when every line has it.
+pub(super) extern "C" fn comment_lines(count: c_int, key: c_int) -> c_int {
+    guard(
+        || {
+            let Some(line) = active_line().filter(|l| l.contains('\n')) else {
+                return ffi::insert_comment(count, key);
+            };
+            let begin = ffi::variable(c"comment-begin").unwrap_or_else(|| "#".to_owned());
+            let commented = lines::comment(&line, &begin, ffi::explicit_count());
+            ffi::begin_undo_group();
+            ffi::delete_text(0, line.len());
+            ffi::set_point(0);
+            ffi::insert_text(&commented);
+            ffi::end_undo_group();
+            super::repaint_now();
+            ffi::accept_line(1, c_int::from(b'\n'))
+        },
+        || ffi::insert_comment(count, key),
+    )
+}
+
 /// Puts the cursor at the start of a multi-line history entry just recalled,
 /// so the next Up leaves it at once. `INKLINE_HISTORY_CURSOR=end`, readline's
 /// `history-preserve-point` and an entry taller than the screen keep

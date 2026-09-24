@@ -626,3 +626,17 @@ fn ctrl_c_with_keys_after_it() {
     sh.send("\x03echo hi\r");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
 }
+
+#[test]
+fn alt_hash_comments_every_line() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("echo a");
+    sh.send(ALT_ENTER);
+    sh.send("echo SHOULDNOTRUN");
+    sh.send("\x1b#");
+    let s = sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 == 2 && cursor_row(s) == "$"
+    });
+    assert!(has_row(&s, "#echo SHOULDNOTRUN"), "{}", dump(&s));
+    assert!(!has_row(&s, "SHOULDNOTRUN"), "{}", dump(&s));
+}

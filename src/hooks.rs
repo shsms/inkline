@@ -137,6 +137,7 @@ pub fn load() {
                 ffi::add_command(c"line-end", multiline::line_end);
                 ffi::add_command(c"kill-to-line-end", multiline::kill_to_line_end);
                 ffi::add_command(c"kill-to-line-start", multiline::kill_to_line_start);
+                ffi::add_command(c"comment-lines", multiline::comment_lines);
             });
             STATE.with_borrow_mut(|s| s.unloaded = false);
             enable();

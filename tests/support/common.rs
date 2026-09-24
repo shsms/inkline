@@ -68,6 +68,7 @@ bind '"\eOH": line-start'
 bind '"\e[1~": line-start'
 bind '"\C-k": kill-to-line-end'
 bind '"\C-u": kill-to-line-start'
+bind '"\e#": comment-lines'
 "#;
 
 pub struct Options {

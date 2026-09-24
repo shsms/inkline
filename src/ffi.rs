@@ -169,6 +169,11 @@ pub fn variable_on(name: &CStr) -> bool {
     unsafe { c_str(rl_variable_value(name.as_ptr())) }.is_some_and(|v| v.to_bytes() == b"on")
 }
 
+/// The value of the readline variable `name`, such as `comment-begin`.
+pub fn variable(name: &CStr) -> Option<String> {
+    unsafe { c_str(rl_variable_value(name.as_ptr())) }.map(|v| v.to_string_lossy().into_owned())
+}
+
 unsafe extern "C" {
     fn rl_get_termcap(cap: *const c_char) -> *mut c_char;
     static mut _rl_echoing_p: c_int;
@@ -701,4 +706,13 @@ pub fn unix_line_discard(count: c_int, key: c_int) -> c_int {
 /// when `from < to` and before it otherwise. The cursor does not move.
 pub fn kill_text(from: usize, to: usize) {
     unsafe { rl_kill_text(from as c_int, to as c_int) };
+}
+
+unsafe extern "C" {
+    fn rl_insert_comment(count: c_int, key: c_int) -> c_int;
+}
+
+/// readline's `insert-comment`.
+pub fn insert_comment(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_insert_comment(count, key) }
 }
