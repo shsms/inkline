@@ -208,3 +208,50 @@ fn line_filled_in_by_read_i_is_coloured() {
         cursor_row(s) == "ls -l" && fg_is(s, "ls", Color::Idx(2)) && fg_is(s, "-l", Color::Idx(6))
     });
 }
+
+/// Newlines and tabs typed with `C-v` are drawn where readline draws them.
+#[test]
+fn newlines_and_tabs_match_plain_bash() {
+    let keys = format!(
+        "for x in a b; do{LITERAL_NEWLINE}{LITERAL_TAB}echo \"日本 $x\"{LITERAL_NEWLINE}done"
+    );
+    let opts = || Options {
+        cols: 30,
+        ..Options::default()
+    };
+    let with = typed(opts(), &keys);
+    let plain = typed(
+        Options {
+            inkline: false,
+            ..opts()
+        },
+        &keys,
+    );
+    let s = with.wait_for("colours on the last line", |s| {
+        fg_is(s, "done", Color::Idx(5))
+    });
+    assert_eq!(fg(&s, "echo"), Color::Idx(2));
+    wait_same(&with, &plain, "typing a multi-line command");
+}
+
+/// A long line wraps inside a multi-line command.
+#[test]
+fn wrapped_rows_inside_a_multi_line_command() {
+    let keys = format!("echo {}{LITERAL_NEWLINE}echo \"x\"", "a".repeat(30));
+    let opts = || Options {
+        cols: 20,
+        ..Options::default()
+    };
+    let with = typed(opts(), &keys);
+    let plain = typed(
+        Options {
+            inkline: false,
+            ..opts()
+        },
+        &keys,
+    );
+    with.wait_for("colours on the last line", |s| {
+        fg_is(s, "\"x\"", Color::Idx(3))
+    });
+    wait_same(&with, &plain, "typing a wrapped multi-line command");
+}

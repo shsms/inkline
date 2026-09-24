@@ -2,17 +2,14 @@
 //! suggestion after it.
 //!
 //! The output saves the cursor, moves to where the line starts, rewrites the
-//! same characters readline drew with colours, and restores the cursor. The
-//! suggestion is written at the restored cursor and followed by another
-//! restore. Nothing written can scroll the screen: only cells readline already
-//! drew are rewritten, and the suggestion stays on the cursor's row.
+//! same characters readline drew with colours, and restores the cursor.
 
 use std::io::Write;
 
 use unicode_width::UnicodeWidthChar;
 
 use crate::colors::Colors;
-use crate::lexer::Span;
+use crate::lexer::{Kind, Span};
 
 /// Everything `build` needs to repaint the line once.
 pub struct Repaint<'a> {
@@ -60,14 +57,17 @@ pub fn prompt_width(prompt: &[u8]) -> Option<usize> {
 }
 
 /// The bytes to write, or None when readline's own drawing should be left
-/// alone: control characters (drawn as `^X`), a cursor inside a character
-/// (readline works in bytes outside UTF-8 locales), or a line taller than the
-/// screen.
+/// alone: control characters other than a newline or a tab (drawn as `^X`), a
+/// cursor inside a character (readline works in bytes outside UTF-8 locales),
+/// or a line taller than the screen.
 pub fn build(repaint: &Repaint) -> Option<Output> {
     let cols = repaint.cols;
     if cols == 0
         || !repaint.line.is_char_boundary(repaint.point)
-        || repaint.line.chars().any(char::is_control)
+        || repaint
+            .line
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
     {
         return None;
     }
@@ -86,7 +86,7 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
     if start.1 > 0 {
         let _ = write!(out, "\x1b[{}C", start.1);
     }
-    paint_line(&mut out, repaint);
+    paint_line(&mut out, repaint, start);
     out.extend_from_slice(b"\x1b8");
 
     let mut suggestion_col = None;
@@ -112,39 +112,112 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
 }
 
 /// Row and column after `text`, starting `prompt_width` cells into the first
-/// row. A wide character that does not fit at the end of a row moves to the
-/// next one, and filling the last column moves to the next row, as readline
-/// does.
+/// row, where readline puts each character: see `advance`.
 fn position(prompt_width: usize, text: &str, cols: usize) -> (usize, usize) {
-    let (mut row, mut col) = (prompt_width / cols, prompt_width % cols);
-    for c in text.chars() {
-        let width = c.width().unwrap_or(0);
-        if col + width > cols {
-            row += 1;
-            col = 0;
-        }
-        col += width;
-        if col == cols {
-            row += 1;
-            col = 0;
-        }
-    }
-    (row, col)
+    let start = (prompt_width / cols, prompt_width % cols);
+    text.chars().fold(start, |at, c| advance(at, c, cols))
 }
 
-fn paint_line(out: &mut Vec<u8>, repaint: &Repaint) {
-    let mut at = 0;
-    for span in repaint.spans {
-        out.extend_from_slice(&repaint.line.as_bytes()[at..span.start]);
-        let _ = write!(
-            out,
-            "\x1b[{}m{}\x1b[0m",
-            repaint.colors.sgr(span.kind),
-            &repaint.line[span.start..span.end]
-        );
-        at = span.end;
+/// How many screen rows `text` takes after a prompt `prompt_width` columns
+/// wide.
+pub fn rows(prompt_width: usize, text: &str, cols: usize) -> usize {
+    if cols == 0 {
+        return 1;
     }
-    out.extend_from_slice(&repaint.line.as_bytes()[at..]);
+    position(prompt_width, text, cols).0 + 1
+}
+
+/// Where readline puts the next character after drawing `c` at `at`. A
+/// newline starts the next row. A tab takes the spaces up to the next
+/// multiple of 8 columns, continuing on the next row past the edge. A wide
+/// character that does not fit moves to the next row, and filling the last
+/// column moves to the next row.
+fn advance((row, col): (usize, usize), c: char, cols: usize) -> (usize, usize) {
+    match c {
+        '\n' => (row + 1, 0),
+        '\t' => (0..8 - col % 8).fold((row, col), |(r, c), _| step(r, c + 1, cols)),
+        _ => {
+            let width = c.width().unwrap_or(0);
+            let (row, col) = if col + width > cols {
+                (row + 1, 0)
+            } else {
+                (row, col)
+            };
+            step(row, col + width, cols)
+        }
+    }
+}
+
+/// `row`, `col`, or the start of the next row when `col` reached the edge.
+fn step(row: usize, col: usize, cols: usize) -> (usize, usize) {
+    if col == cols {
+        (row + 1, 0)
+    } else {
+        (row, col)
+    }
+}
+
+/// Writes the line in colour, starting at `start`, the screen position of its
+/// first character. Later rows are reached with explicit cursor moves, never
+/// by writing a newline, so each character lands where readline put it.
+fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
+    let cols = repaint.cols;
+    let mut at = start;
+    let mut cursor_row = start.0;
+    let mut style: Option<Kind> = None;
+    let mut spans = repaint.spans.iter().peekable();
+    for (i, c) in repaint.line.char_indices() {
+        while spans.next_if(|s| s.end <= i).is_some() {}
+        let want = spans.peek().filter(|s| s.start <= i).map(|s| s.kind);
+        if want != style {
+            if style.is_some() {
+                out.extend_from_slice(b"\x1b[0m");
+            }
+            if let Some(kind) = want {
+                let _ = write!(out, "\x1b[{}m", repaint.colors.sgr(kind));
+            }
+            style = want;
+        }
+        let next = advance(at, c, cols);
+        match c {
+            '\n' => {}
+            '\t' => {
+                let mut cell = at;
+                for _ in 0..8 - at.1 % 8 {
+                    move_down(out, &mut cursor_row, cell);
+                    out.push(b' ');
+                    cell = step(cell.0, cell.1 + 1, cols);
+                }
+            }
+            _ => {
+                let width = c.width().unwrap_or(0);
+                let cell = if at.1 + width > cols {
+                    (at.0 + 1, 0)
+                } else {
+                    at
+                };
+                move_down(out, &mut cursor_row, cell);
+                let mut buf = [0; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+        at = next;
+    }
+    if style.is_some() {
+        out.extend_from_slice(b"\x1b[0m");
+    }
+}
+
+/// Moves the terminal's cursor from row `*cursor_row` down to `cell`, when
+/// `cell` is on a later row.
+fn move_down(out: &mut Vec<u8>, cursor_row: &mut usize, (row, col): (usize, usize)) {
+    if row > *cursor_row {
+        let _ = write!(out, "\r\x1b[{}B", row - *cursor_row);
+        if col > 0 {
+            let _ = write!(out, "\x1b[{col}C");
+        }
+        *cursor_row = row;
+    }
 }
 
 /// The longest start of `text` that fits in `room` columns and has no control
@@ -338,7 +411,54 @@ mod tests {
     fn control_characters_are_left_to_readline() {
         let colors = Colors::default();
         assert!(build(&repaint("a\u{1}b", 3, &[], &colors)).is_none());
-        assert!(build(&repaint("a\tb", 3, &[], &colors)).is_none());
+        assert!(build(&repaint("a\u{1b}b", 3, &[], &colors)).is_none());
+    }
+
+    #[test]
+    fn a_newline_starts_the_next_row() {
+        let colors = Colors::default();
+        let out = build(&repaint("ls\necho", 7, &[], &colors)).unwrap();
+        assert_eq!(text(&out), "\x1b7\x1b[1A\r\x1b[2Cls\r\x1b[1Becho\x1b8");
+    }
+
+    #[test]
+    fn tabs_are_drawn_as_spaces() {
+        let colors = Colors::default();
+        // The prompt takes 2 columns: `a` ends at 3, the tab fills to 8.
+        let out = build(&repaint("a\tb", 3, &[], &colors)).unwrap();
+        assert_eq!(text(&out), "\x1b7\r\x1b[2Ca     b\x1b8");
+    }
+
+    #[test]
+    fn a_tab_past_the_edge_continues_on_the_next_row() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            cols: 10,
+            ..repaint("abcdef\tx", 8, &[], &colors)
+        })
+        .unwrap();
+        assert!(text(&out).contains("abcdef  \r\x1b[1B      x"));
+    }
+
+    #[test]
+    fn a_newline_after_a_full_row_leaves_a_blank_row() {
+        assert_eq!(position(2, "12345678\nx", 10), (2, 1));
+        assert_eq!(rows(2, "12345678\nx", 10), 3);
+        assert_eq!(rows(2, "ls", 10), 1);
+    }
+
+    #[test]
+    fn wrapped_rows_are_reached_with_explicit_moves() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            cols: 10,
+            ..repaint("echo 12345678", 13, &[], &colors)
+        })
+        .unwrap();
+        assert_eq!(
+            text(&out),
+            "\x1b7\x1b[1A\r\x1b[2Cecho 123\r\x1b[1B45678\x1b8"
+        );
     }
 
     #[test]
