@@ -56,6 +56,12 @@ bind '"\C-m": accept-or-newline'
 bind '"\e\C-m": insert-newline'
 bind 'set bind-tty-special-chars off'
 bind '"\C-?": delete-pair'
+bind '"\e[A": previous-line-or-history'
+bind '"\eOA": previous-line-or-history'
+bind '"\C-p": previous-line-or-history'
+bind '"\e[B": next-line-or-history'
+bind '"\eOB": next-line-or-history'
+bind '"\C-n": next-line-or-history'
 "#;
 
 pub struct Options {

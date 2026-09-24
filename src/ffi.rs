@@ -528,6 +528,44 @@ unsafe extern "C" {
     fn rl_forward_char(count: c_int, key: c_int) -> c_int;
     fn rl_forward_word(count: c_int, key: c_int) -> c_int;
     fn rl_end_of_line(count: c_int, key: c_int) -> c_int;
+    static mut rl_last_func: Option<CommandFn>;
+    fn rl_get_previous_history(count: c_int, key: c_int) -> c_int;
+    fn rl_get_next_history(count: c_int, key: c_int) -> c_int;
+    fn rl_history_search_backward(count: c_int, key: c_int) -> c_int;
+    fn rl_history_search_forward(count: c_int, key: c_int) -> c_int;
+}
+
+/// The command readline ran for the previous key.
+pub fn last_command() -> Option<CommandFn> {
+    unsafe { rl_last_func }
+}
+
+/// readline's `previous-history`.
+pub fn previous_history(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_get_previous_history(count, key) }
+}
+
+/// readline's `next-history`.
+pub fn next_history(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_get_next_history(count, key) }
+}
+
+/// readline's `history-search-backward`.
+pub fn history_search_backward(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_history_search_backward(count, key) }
+}
+
+/// readline's `history-search-forward`.
+pub fn history_search_forward(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_history_search_forward(count, key) }
+}
+
+/// Marks the history search about to run as a continuation of the last one:
+/// readline tells the two apart by checking whether `rl_last_func` is one of
+/// its own search functions, which it is not once a call reaches it through
+/// one of this crate's own commands.
+pub fn continue_history_search() {
+    unsafe { rl_last_func = Some(rl_history_search_backward) };
 }
 
 /// Registers a readline command under `name` without binding a key.  Readline

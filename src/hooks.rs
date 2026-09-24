@@ -57,6 +57,11 @@ struct State {
     paused_on: Option<String>,
     /// Set when a new error waits for a pause before it is underlined.
     wants_pause: bool,
+    /// The column a run of Up and Down keeps to.
+    goal_column: Option<usize>,
+    /// Whether the last vertical command that deferred to history did a
+    /// search, so a further one continues it instead of starting fresh.
+    search_continues: bool,
 }
 
 static REGISTER: Once = Once::new();
@@ -90,6 +95,8 @@ thread_local! {
         underlined: None,
         paused_on: None,
         wants_pause: false,
+        goal_column: None,
+        search_continues: false,
     });
 }
 
@@ -116,6 +123,16 @@ pub fn load() {
                 ffi::add_command(c"delete-pair", delete_pair);
                 ffi::add_command(c"accept-or-newline", multiline::accept_or_newline);
                 ffi::add_command(c"insert-newline", multiline::insert_newline);
+                ffi::add_command(
+                    c"previous-line-or-history",
+                    multiline::previous_line_or_history,
+                );
+                ffi::add_command(c"next-line-or-history", multiline::next_line_or_history);
+                ffi::add_command(
+                    c"previous-line-or-search",
+                    multiline::previous_line_or_search,
+                );
+                ffi::add_command(c"next-line-or-search", multiline::next_line_or_search);
             });
             STATE.with_borrow_mut(|s| s.unloaded = false);
             enable();
@@ -355,6 +372,8 @@ extern "C" fn pre_input() -> c_int {
                 s.underlined = None;
                 s.paused_on = None;
                 s.wants_pause = false;
+                s.goal_column = None;
+                s.search_continues = false;
             });
             draw();
             ffi::flush_out();

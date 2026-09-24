@@ -204,3 +204,130 @@ fn fits_on_screen(text: &str) -> bool {
     let (rows, cols) = ffi::screen_size();
     render::rows(prompt_width(), text, cols) <= rows
 }
+
+/// Where Up and Down go past the first or last line.
+#[derive(Clone, Copy)]
+enum Fallback {
+    History,
+    /// readline's history search for entries starting with the text before
+    /// the cursor.
+    Search,
+}
+
+pub(super) extern "C" fn previous_line_or_history(count: c_int, key: c_int) -> c_int {
+    vertical(count, key, true, Fallback::History)
+}
+
+pub(super) extern "C" fn next_line_or_history(count: c_int, key: c_int) -> c_int {
+    vertical(count, key, false, Fallback::History)
+}
+
+pub(super) extern "C" fn previous_line_or_search(count: c_int, key: c_int) -> c_int {
+    vertical(count, key, true, Fallback::Search)
+}
+
+pub(super) extern "C" fn next_line_or_search(count: c_int, key: c_int) -> c_int {
+    vertical(count, key, false, Fallback::Search)
+}
+
+/// Whether `f` is one of the Up and Down commands, so a run of them keeps
+/// its column.
+fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
+    let ours: [ffi::CommandFn; 4] = [
+        previous_line_or_history,
+        next_line_or_history,
+        previous_line_or_search,
+        next_line_or_search,
+    ];
+    f.is_some_and(|f| ours.iter().any(|&o| std::ptr::fn_addr_eq(o, f)))
+}
+
+/// Moves the cursor `count` lines up or down, keeping its column. Past the
+/// first or last line it runs `fallback` for the lines left over.
+///
+/// Readline's own history search decides whether to continue the last search
+/// or start a new one by checking `rl_last_func`, which after this command's
+/// own dispatch holds this command, never the search function it called
+/// directly; without `continuing_search` a run of `-or-search` presses would
+/// restart the search from the newest entry every time instead of moving
+/// through the matches. `search_continues` is only trusted when the last key
+/// ran one of these four commands, the same condition `goal_column` uses.
+fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
+    let (count, up) = if count < 0 {
+        (-count, !up)
+    } else {
+        (count, up)
+    };
+    let is_run = is_vertical(ffi::last_command());
+    let continuing_search =
+        is_run && STATE.with_borrow(|s| s.search_continues) && matches!(fallback, Fallback::Search);
+    let leave = move |n: c_int| {
+        STATE.with_borrow_mut(|s| s.search_continues = matches!(fallback, Fallback::Search));
+        if continuing_search {
+            ffi::continue_history_search();
+        }
+        match (up, fallback) {
+            (true, Fallback::History) => ffi::previous_history(n, key),
+            (false, Fallback::History) => ffi::next_history(n, key),
+            (true, Fallback::Search) => ffi::history_search_backward(n, key),
+            (false, Fallback::Search) => ffi::history_search_forward(n, key),
+        }
+    };
+    guard(
+        || {
+            let Some(line) = active_line() else {
+                return leave(count);
+            };
+            let prompt = prompt_width();
+            let mut point = ffi::point();
+            let goal = STATE.with_borrow_mut(|s| {
+                if !is_run {
+                    s.goal_column = None;
+                }
+                *s.goal_column
+                    .get_or_insert_with(|| lines::column(&line, point, prompt))
+            });
+            for moved in 0..count {
+                let next = if up {
+                    lines::up(&line, point, goal, prompt)
+                } else {
+                    lines::down(&line, point, goal, prompt)
+                };
+                let Some(next) = next else {
+                    let result = leave(count - moved);
+                    // With no older entry the line stays as it is, and so
+                    // does the cursor.
+                    if up
+                        && matches!(fallback, Fallback::History)
+                        && ffi::line().as_deref() != Some(line.as_str())
+                    {
+                        open_at_start();
+                    }
+                    return result;
+                };
+                point = next;
+            }
+            STATE.with_borrow_mut(|s| s.search_continues = false);
+            ffi::set_point(point);
+            0
+        },
+        || leave(count),
+    )
+}
+
+/// Puts the cursor at the start of a multi-line history entry just recalled,
+/// so the next Up leaves it at once. `INKLINE_HISTORY_CURSOR=end`, readline's
+/// `history-preserve-point` and an entry taller than the screen keep
+/// readline's placement.
+fn open_at_start() {
+    let Some(line) = ffi::line() else { return };
+    if !line.contains('\n')
+        || ffi::shell_variable("INKLINE_HISTORY_CURSOR").as_deref() == Some("end")
+        || ffi::variable_on(c"history-preserve-point")
+    {
+        return;
+    }
+    if fits_on_screen(&line) {
+        ffi::set_point(0);
+    }
+}
