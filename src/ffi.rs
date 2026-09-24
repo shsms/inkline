@@ -783,6 +783,144 @@ pub fn insert_comment(count: c_int, key: c_int) -> c_int {
     unsafe { rl_insert_comment(count, key) }
 }
 
+// ---- Lisp commands ----
+
+// readline's `enum undo_code` values (readline.h, the same in readline 8.0
+// and 8.3).
+const UNDO_BEGIN: c_int = 2;
+const UNDO_END: c_int = 3;
+
+/// readline's `UNDO_LIST` entry (readline.h, the same in readline 8.0 and
+/// 8.3). The list is newest first.
+#[repr(C)]
+struct UndoList {
+    next: *mut UndoList,
+    start: c_int,
+    end: c_int,
+    text: *mut c_char,
+    /// An `enum undo_code`, which C stores as an int.
+    what: c_int,
+}
+
+unsafe extern "C" {
+    static mut rl_mark: c_int;
+    static mut rl_undo_list: *mut UndoList;
+    fn rl_do_undo() -> c_int;
+    fn where_history() -> c_int;
+    fn rl_ding() -> c_int;
+    fn rl_crlf() -> c_int;
+    fn rl_on_new_line() -> c_int;
+}
+
+/// The mark, in bytes.
+pub fn mark() -> usize {
+    // SAFETY: rl_mark is a plain int readline keeps.
+    unsafe { rl_mark.max(0) as usize }
+}
+
+pub fn set_mark(mark: usize) {
+    // SAFETY: rl_mark is a plain int readline keeps.
+    unsafe { rl_mark = c_int::try_from(mark).unwrap_or(c_int::MAX) }
+}
+
+/// The bytes of the line being edited.
+pub fn line_bytes() -> Vec<u8> {
+    // SAFETY: readline keeps rl_end bytes of rl_line_buffer valid.
+    unsafe {
+        if rl_line_buffer.is_null() || rl_end <= 0 {
+            return Vec::new();
+        }
+        std::slice::from_raw_parts(rl_line_buffer as *const u8, rl_end as usize).to_vec()
+    }
+}
+
+/// The newest entry of the line's undo list, only to compare with a later
+/// one.
+pub fn undo_list_head() -> *const c_void {
+    // SAFETY: reads a pointer readline keeps; nothing is dereferenced.
+    unsafe { rl_undo_list.cast_const().cast() }
+}
+
+/// Removes the undo group just closed when nothing was changed inside it:
+/// an `UNDO_END` right after an `UNDO_BEGIN`, with `before` the entry that
+/// was newest when the group opened. `rl_do_undo` pops and frees the pair,
+/// and also points history entries that held the pair at what is left.
+/// Returns whether it removed them.
+pub fn drop_empty_undo_group(before: *const c_void) -> bool {
+    // SAFETY: rl_undo_list is NULL or a valid list readline keeps. Undoing
+    // an empty group changes no text.
+    unsafe {
+        let end = rl_undo_list;
+        if end.is_null() || (*end).what != UNDO_END {
+            return false;
+        }
+        let begin = (*end).next;
+        if begin.is_null()
+            || (*begin).what != UNDO_BEGIN
+            || (*begin).next.cast_const().cast() != before
+        {
+            return false;
+        }
+        rl_do_undo();
+    }
+    true
+}
+
+/// Undoes the newest change or group on the line.
+pub fn do_undo() {
+    // SAFETY: rl_do_undo works on readline's own list.
+    unsafe { rl_do_undo() };
+}
+
+/// The history entry being edited, as `where_history` gives it.
+pub fn history_position() -> c_int {
+    // SAFETY: where_history only reads history's state.
+    unsafe { where_history() }
+}
+
+/// Rings the bell, as readline's `bell-style` says.
+pub fn ding() {
+    // SAFETY: rl_ding only writes to the terminal.
+    unsafe { rl_ding() };
+}
+
+/// Adds `f` to readline's commands as `name`, so `bind` can find it. False,
+/// and nothing added, when readline already has a command of that name
+/// (readline ignores case). The name lives for the life of the process:
+/// readline keeps the pointer.
+pub fn add_named_command(name: &str, f: CommandFn) -> bool {
+    if named_command(name).is_some() {
+        return false;
+    }
+    let Ok(name) = CString::new(name) else {
+        return false;
+    };
+    let name: &'static CStr = Box::leak(name.into_boxed_c_str());
+    add_command(name, f);
+    true
+}
+
+unsafe extern "C" {
+    /// The row, counted from the prompt's first, of the line's last row on
+    /// screen.
+    static mut _rl_vis_botlin: c_int;
+    fn _rl_move_vert(to: c_int);
+}
+
+/// Moves to the start of a new row below the whole line, as readline does
+/// before listing completions, and tells readline the prompt and line are
+/// no longer on screen, so its next redisplay draws them in full there.
+pub fn new_line_for_message() {
+    // SAFETY: these only write to readline's output stream and reset its
+    // idea of what is on screen; _rl_vis_botlin is a plain int readline
+    // keeps, 0 once rl_on_new_line has run.
+    unsafe {
+        _rl_move_vert(_rl_vis_botlin);
+        rl_crlf();
+        rl_on_new_line();
+    }
+}
+
 // ---- The shell ----
 
 unsafe extern "C" {

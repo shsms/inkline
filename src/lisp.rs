@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tulisp::{TulispContext, TulispObject};
 
 pub mod buffer;
+#[cfg(not(test))]
+pub mod commands;
 pub mod emacs;
 pub mod errors;
 pub mod init;
@@ -66,6 +68,8 @@ fn new_context() -> TulispContext {
     errors::register(&mut ctx);
     emacs::register(&mut ctx);
     buffer::register(&mut ctx);
+    #[cfg(not(test))]
+    commands::register(&mut ctx);
     settings::register(&mut ctx);
     #[cfg(not(test))]
     keys::register(&mut ctx);

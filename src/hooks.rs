@@ -289,6 +289,21 @@ extern "C" fn accept_as_is(count: c_int, key: c_int) -> c_int {
     )
 }
 
+/// The readline function of a Lisp command's key, `slot` telling which
+/// command. Holds no borrow of `STATE` while Lisp runs.
+pub fn run_lisp_command(slot: usize, count: c_int, key: c_int) -> c_int {
+    guard(|| crate::lisp::commands::run(slot, count, key), || 0)
+}
+
+/// Shows `text` on a row of its own above the line, which readline draws
+/// again below it.
+pub fn show_message(text: &str) {
+    erase_suggestion();
+    ffi::new_line_for_message();
+    ffi::write_queued(text.as_bytes());
+    ffi::new_line_for_message();
+}
+
 /// Runs `f`. If it panics, turns inkline off and runs `on_panic` instead, so a
 /// bug never unwinds into readline and never kills the shell.
 fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {

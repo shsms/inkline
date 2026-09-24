@@ -5,6 +5,7 @@ use std::cell::RefCell;
 
 use tulisp::{Error, TulispContext, TulispObject};
 
+use super::commands::{self, Command};
 use super::keydesc;
 use super::layout::Group;
 use crate::ffi;
@@ -34,12 +35,9 @@ thread_local! {
     static LEFT_ALONE: RefCell<Vec<LeftAlone>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Binds every sequence of `desc` to the readline or inkline command
-/// `command`.
-pub fn bind(desc: &str, command: &str, group: Option<Group>) -> Result<(), String> {
+/// The sequences of `desc`, if inkline can bind them all.
+fn sequences(desc: &str) -> Result<Vec<Vec<u8>>, String> {
     let seqs = keydesc::parse(desc)?;
-    let function = ffi::named_command(command)
-        .ok_or_else(|| format!("{command}: not a readline or inkline command"))?;
     // readline would turn such a key into a prefix, and an unset could not
     // turn it back.
     let runs_a_command = |start: &[u8]| {
@@ -51,10 +49,36 @@ pub fn bind(desc: &str, command: &str, group: Option<Group>) -> Result<(), Strin
     {
         return Err(format!("{desc}: starts with a key that runs a command"));
     }
-    for seq in seqs {
-        bind_seq(&seq, desc, command, function, group)?;
-    }
-    Ok(())
+    Ok(seqs)
+}
+
+/// `keymap-global-set`: binds `desc` to a readline or inkline command, or to
+/// a Lisp command through its slot.
+fn global_set(ctx: &TulispContext, desc: &str, command: &TulispObject) -> Result<(), String> {
+    let seqs = sequences(desc)?;
+    let (name, function) = match commands::resolve(ctx, command)? {
+        Command::Readline(f, name) => (name, f),
+        Command::Lisp(lisp) => {
+            let n = commands::assign_slot(&lisp)?;
+            let name = lisp.name().unwrap_or("(lambda)").to_owned();
+            (name, commands::slot_function(n))
+        }
+    };
+    let result = seqs
+        .iter()
+        .try_for_each(|seq| bind_seq(seq, desc, &name, function, None));
+    free_lambda_slots();
+    result
+}
+
+/// Frees the slots of lambdas no key in the table runs any more.
+fn free_lambda_slots() {
+    let used: Vec<usize> = TABLE.with_borrow(|t| {
+        t.iter()
+            .filter_map(|b| commands::slot_index(b.function))
+            .collect()
+    });
+    commands::free_unused_lambda_slots(&used);
 }
 
 /// Binds one sequence of `desc`. A sequence bound again while it still runs
@@ -124,6 +148,7 @@ fn unset_where(pick: impl Fn(&Bound) -> bool) {
 pub fn unset(desc: &str) -> Result<(), String> {
     let seqs = keydesc::parse(desc)?;
     unset_where(|b| seqs.contains(&b.seq));
+    free_lambda_slots();
     Ok(())
 }
 
@@ -135,6 +160,7 @@ pub fn unset_groups(groups: &[Group]) {
 /// Puts back every sequence inkline still owns (for `reload`).
 pub fn restore_all() {
     unset_where(|_| true);
+    free_lambda_slots();
     LEFT_ALONE.with_borrow_mut(Vec::clear);
 }
 
@@ -196,13 +222,11 @@ fn describe(b: &ffi::Binding) -> String {
 pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "keymap-global-set",
-        |key: String, command: TulispObject| -> Result<TulispObject, Error> {
-            if !command.symbolp() {
-                return Err(Error::invalid_argument(format!(
-                    "{key}: the command must be a symbol naming a readline or inkline command"
-                )));
-            }
-            bind(&key, &command.to_string(), None).map_err(Error::invalid_argument)?;
+        |ctx: &mut TulispContext,
+         key: String,
+         command: TulispObject|
+         -> Result<TulispObject, Error> {
+            global_set(ctx, &key, &command).map_err(Error::invalid_argument)?;
             Ok(command)
         },
     );
