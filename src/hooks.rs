@@ -2,7 +2,7 @@
 //! readline calls, and the readline commands inkline adds.
 
 use std::cell::{Cell, RefCell};
-use std::ffi::c_int;
+use std::ffi::{c_char, c_int};
 use std::io::Write;
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -11,7 +11,7 @@ use std::sync::Once;
 use crate::colors::Colors;
 use crate::commands::{self, PathCache};
 use crate::ffi;
-use crate::lexer::Lexer;
+use crate::lexer::{Kind, Lexer};
 use crate::pairs::{self, Action};
 use crate::render::{self, Repaint};
 use crate::suggest;
@@ -80,6 +80,8 @@ thread_local! {
     static ORIGINALS: Cell<Originals> = Cell::default();
     /// Whether a synchronized update is open.
     static UPDATING: Cell<bool> = const { Cell::new(false) };
+    /// bash's completion function, which `complete` calls.
+    static COMPLETION: Cell<Option<ffi::CompletionFn>> = const { Cell::new(None) };
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
         lexer: Lexer::new(),
@@ -217,6 +219,7 @@ fn enable() {
 /// not depend on `STATE` being borrowable.
 fn disable() {
     let _ = catch_unwind(erase_suggestion);
+    unwrap_completion();
     end_update();
     ffi::flush_out();
     let enabled = STATE.try_with(|s| {
@@ -380,6 +383,7 @@ extern "C" fn pre_input() -> c_int {
                 s.goal_column = None;
                 s.search_continues = false;
             });
+            wrap_completion();
             draw();
             ffi::flush_out();
         },
@@ -710,4 +714,64 @@ extern "C" fn delete_pair(count: c_int, key: c_int) -> c_int {
         }
         deletes
     })
+}
+
+/// Puts `complete` in front of bash's completion function. Bash sets its
+/// function when it first sets up readline, which can be after inkline
+/// loads, so this runs at the start of each line.
+fn wrap_completion() {
+    let ours = complete as ffi::CompletionFn;
+    if let Some(f) = ffi::completion_function()
+        && !std::ptr::fn_addr_eq(f, ours)
+    {
+        COMPLETION.set(Some(f));
+        ffi::set_completion_function(Some(ours));
+    }
+}
+
+/// Puts bash's completion function back.
+fn unwrap_completion() {
+    let ours = complete as ffi::CompletionFn;
+    if ffi::completion_function().is_some_and(|f| std::ptr::fn_addr_eq(f, ours)) {
+        ffi::set_completion_function(COMPLETION.get());
+    }
+}
+
+/// bash's completion, with the command's newlines shown to it as `;`: bash
+/// only takes `;|&{(` and backquotes as the start of a new command, so on the
+/// lines after the first it would complete the wrong word. The newlines are
+/// back before readline inserts the match.
+extern "C" fn complete(text: *const c_char, start: c_int, end: c_int) -> *mut *mut c_char {
+    let Some(original) = COMPLETION.get() else {
+        return std::ptr::null_mut();
+    };
+    let hidden = guard(newlines_between_commands, Vec::new);
+    for &i in &hidden {
+        ffi::set_line_byte(i, b';');
+    }
+    let matches = ffi::call_completion(original, text, start, end);
+    for &i in &hidden {
+        ffi::set_line_byte(i, b'\n');
+    }
+    matches
+}
+
+/// Where the line's newlines are, outside strings and here-document bodies.
+fn newlines_between_commands() -> Vec<usize> {
+    if !STATE.with_borrow(|s| s.enabled && !s.unloaded) {
+        return Vec::new();
+    }
+    let Some(line) = ffi::line().filter(|l| l.contains('\n')) else {
+        return Vec::new();
+    };
+    let spans = STATE.with_borrow_mut(|s| s.lexer.spans(&line, |_| true));
+    line.match_indices('\n')
+        .map(|(i, _)| i)
+        .filter(|&i| {
+            !spans
+                .iter()
+                .any(|s| s.kind == Kind::String && s.start <= i && i < s.end)
+                && !syntax::quote_open(&line[..i])
+        })
+        .collect()
 }

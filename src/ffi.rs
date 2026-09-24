@@ -523,6 +523,32 @@ pub fn extglob() -> bool {
     unsafe { extended_glob != 0 }
 }
 
+pub fn completion_function() -> Option<CompletionFn> {
+    unsafe { rl_attempted_completion_function }
+}
+
+pub fn set_completion_function(f: Option<CompletionFn>) {
+    unsafe { rl_attempted_completion_function = f }
+}
+
+pub fn call_completion(
+    f: CompletionFn,
+    text: *const c_char,
+    start: c_int,
+    end: c_int,
+) -> *mut *mut c_char {
+    unsafe { f(text, start, end) }
+}
+
+/// Overwrites byte `index` of the line, if the line has one there.
+pub fn set_line_byte(index: usize, byte: u8) {
+    unsafe {
+        if !rl_line_buffer.is_null() && (index as c_int) < rl_end {
+            *rl_line_buffer.add(index) = byte as c_char;
+        }
+    }
+}
+
 // ---- Commands ----
 
 pub type CommandFn = unsafe extern "C" fn(c_int, c_int) -> c_int;
