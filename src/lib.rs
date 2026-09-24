@@ -5,6 +5,7 @@ pub mod colors;
 pub mod commands;
 pub mod indent;
 pub mod lexer;
+pub mod lines;
 pub mod pairs;
 pub mod render;
 pub mod suggest;
