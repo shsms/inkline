@@ -27,6 +27,10 @@ pub struct Repaint<'a> {
     pub suggestion_lines: usize,
     /// The bytes of `line` to underline as a syntax error.
     pub error: Option<Range<usize>>,
+    /// Sorted, not overlapping byte ranges of `line` drawn with the `script`
+    /// style added on top of their kind's colour (and alone on uncoloured
+    /// bytes).
+    pub script: &'a [Range<usize>],
     /// Text to show on the row after the line's last row. While it shows,
     /// a suggestion takes one row.
     pub message: Option<&'a str>,
@@ -209,14 +213,22 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
     let cols = repaint.cols;
     let mut at = start;
     let mut cursor_row = start.0;
-    let mut style: (Option<Kind>, bool) = (None, false);
+    let mut style: (Option<Kind>, bool, bool) = (None, false, false);
     let mut spans = repaint.spans.iter().peekable();
+    let mut script = repaint.script.iter().peekable();
+    let script_shown = !repaint.colors.script().is_empty();
     for (i, c) in repaint.line.char_indices() {
         while spans.next_if(|s| s.end <= i).is_some() {}
         let kind = spans.peek().filter(|s| s.start <= i).map(|s| s.kind);
-        let want = (kind, repaint.error.as_ref().is_some_and(|e| e.contains(&i)));
+        while script.next_if(|r| r.end <= i).is_some() {}
+        let in_script = script_shown && script.peek().is_some_and(|r| r.start <= i);
+        let want = (
+            kind,
+            repaint.error.as_ref().is_some_and(|e| e.contains(&i)),
+            in_script,
+        );
         if want != style {
-            if style != (None, false) {
+            if style != (None, false, false) {
                 out.extend_from_slice(b"\x1b[0m");
             }
             if let Some(kind) = want.0 {
@@ -224,6 +236,9 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
             }
             if want.1 {
                 out.extend_from_slice(repaint.colors.error().as_bytes());
+            }
+            if want.2 {
+                let _ = write!(out, "\x1b[{}m", repaint.colors.script());
             }
             style = want;
         }
@@ -252,7 +267,7 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
         }
         at = next;
     }
-    if style != (None, false) {
+    if style != (None, false, false) {
         out.extend_from_slice(b"\x1b[0m");
     }
 }
@@ -365,6 +380,7 @@ mod tests {
             suggestion: None,
             suggestion_lines: 5,
             error: None,
+            script: &[],
             message: None,
             rows: 24,
             cols: 80,
@@ -400,6 +416,49 @@ mod tests {
         })
         .unwrap();
         assert_eq!(text(&out), "\x1b7\r\x1b[2C\x1b[32m\x1b[4mfi\x1b[0m x\x1b8");
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn the_script_style_goes_on_top_of_the_colour() {
+        let colors = Colors::default();
+        let spans = [
+            Span {
+                start: 5,
+                end: 6,
+                kind: Kind::String,
+            },
+            Span {
+                start: 6,
+                end: 7,
+                kind: Kind::Variable,
+            },
+            Span {
+                start: 7,
+                end: 8,
+                kind: Kind::String,
+            },
+            Span {
+                start: 8,
+                end: 9,
+                kind: Kind::Number,
+            },
+            Span {
+                start: 9,
+                end: 10,
+                kind: Kind::String,
+            },
+        ];
+        let script = [6..9];
+        let out = build(&Repaint {
+            script: &script,
+            ..repaint("csvm 'a 1'", 10, &spans, &colors)
+        })
+        .unwrap();
+        assert_eq!(
+            text(&out),
+            "\x1b7\r\x1b[2Ccsvm \x1b[33m'\x1b[0m\x1b[34m\x1b[2ma\x1b[0m\x1b[33m\x1b[2m \x1b[0m\x1b[36m\x1b[2m1\x1b[0m\x1b[33m'\x1b[0m\x1b8"
+        );
     }
 
     #[test]

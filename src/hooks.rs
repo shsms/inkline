@@ -1116,6 +1116,7 @@ fn repaint_line() -> bool {
             suggestion: suggestion.as_deref(),
             suggestion_lines,
             error: error.clone(),
+            script: &[],
             message: message.as_deref(),
             rows,
             cols,

@@ -4,7 +4,7 @@
 
 use crate::lexer::Kind;
 
-pub const DEFAULT: &str = "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90";
+pub const DEFAULT: &str = "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2";
 
 /// The start of the syntax-error underline: a plain underline first, which
 /// every terminal shows, then a wavy one in red where the terminal supports
@@ -15,6 +15,9 @@ const DEFAULT_ERROR: &str = "\x1b[4m\x1b[4:3m\x1b[58:5:1m";
 pub struct Colors {
     kinds: [String; 10],
     suggestion: String,
+    /// The SGR codes of the `script` style, drawn on top of a part's colour;
+    /// empty means no style.
+    script: String,
     /// The bytes that start the syntax-error underline; empty when it is off.
     error: String,
 }
@@ -25,6 +28,7 @@ impl Colors {
         let mut colors = Colors {
             kinds: Default::default(),
             suggestion: String::new(),
+            script: String::new(),
             error: DEFAULT_ERROR.to_owned(),
         };
         colors.apply(DEFAULT);
@@ -56,6 +60,8 @@ impl Colors {
             }
             let slot = if name == "suggestion" {
                 &mut self.suggestion
+            } else if name == "script" {
+                &mut self.script
             } else if let Some(kind) = kind_named(name) {
                 &mut self.kinds[kind as usize]
             } else {
@@ -71,6 +77,10 @@ impl Colors {
 
     pub fn suggestion(&self) -> &str {
         &self.suggestion
+    }
+
+    pub fn script(&self) -> &str {
+        &self.script
     }
 
     pub fn error(&self) -> &str {
@@ -103,6 +113,7 @@ impl Colors {
                     }
                 }
                 "suggestion" => colors.suggestion = codes.clone(),
+                "script" => colors.script = codes.clone(),
                 _ => match kind_named(name) {
                     Some(kind) => colors.kinds[kind as usize] = codes.clone(),
                     None => return Err(format!("unknown colour name {name}")),
@@ -154,6 +165,8 @@ fn kind_named(name: &str) -> Option<Kind> {
         "variable" => Kind::Variable,
         "operator" => Kind::Operator,
         "comment" => Kind::Comment,
+        "number" => Kind::Number,
+        "function" => Kind::Function,
         _ => return None,
     })
 }
@@ -203,7 +216,18 @@ mod tests {
         assert_eq!(colors.sgr(Kind::Command), "32");
         assert_eq!(colors.sgr(Kind::Unknown), "31");
         assert_eq!(colors.sgr(Kind::Comment), "2");
+        assert_eq!(colors.sgr(Kind::Number), "36");
+        assert_eq!(colors.sgr(Kind::Function), "32");
         assert_eq!(colors.suggestion(), "90");
+        assert_eq!(colors.script(), "2");
+    }
+
+    #[test]
+    fn script_style_from_entries() {
+        let colors = Colors::from_entries(&entries(&[("script", "48;5;236")])).unwrap();
+        assert_eq!(colors.script(), "48;5;236");
+        let colors = Colors::from_entries(&entries(&[("script", "")])).unwrap();
+        assert_eq!(colors.script(), "");
     }
 
     #[test]
