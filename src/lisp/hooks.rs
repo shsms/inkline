@@ -153,6 +153,57 @@ thread_local! {
     static FIRST_LINE_STARTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// The smallest part where `new` differs from `old`, as the after-change hook's
+/// `(BEG END OLD-LEN)`: BEG and END are 1-based character positions in `new`,
+/// and OLD-LEN is how many characters the part had in `old`. When the change
+/// could be in more than one place, as when a space is typed before another
+/// space, the part is the one nearest the smaller of `old_point` and
+/// `new_point` (byte offsets). None when the two are the same.
+pub fn changed_part(
+    old: &str,
+    old_point: usize,
+    new: &str,
+    new_point: usize,
+) -> Option<(i64, i64, i64)> {
+    if old == new {
+        return None;
+    }
+    let (a, b) = (old.as_bytes(), new.as_bytes());
+    let shorter = a.len().min(b.len());
+    let mut prefix = a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    while !old.is_char_boundary(prefix) {
+        prefix -= 1;
+    }
+    let mut suffix = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(shorter)
+        .take_while(|(x, y)| x == y)
+        .count();
+    while !old.is_char_boundary(a.len() - suffix) {
+        suffix -= 1;
+    }
+    // A common start and end that overlap: the change could be in more than one
+    // place.
+    let (start, end) = if prefix + suffix <= shorter {
+        (prefix, suffix)
+    } else {
+        let mut start = old_point.min(new_point).clamp(shorter - suffix, prefix);
+        // A point inside a character (a locale that is not UTF-8) counts as
+        // that character's start.
+        while !old.is_char_boundary(start) {
+            start -= 1;
+        }
+        (start, shorter - start)
+    };
+    let chars = |s: &str| i64::try_from(s.chars().count()).unwrap_or(i64::MAX);
+    let beg = chars(&new[..start]) + 1;
+    let inserted = chars(&new[start..b.len() - end]);
+    let deleted = chars(&old[start..a.len() - end]);
+    Some((beg, beg + inserted, deleted))
+}
+
 /// Runs `inkline-line-start-functions` on readline's new line, in order, with
 /// their changes as one undo step. A function that fails has its own changes
 /// undone, the next one runs, and `inkline: NAME: TEXT` shows under the line. A
@@ -316,6 +367,42 @@ mod tests {
         let g = ctx.intern("g");
         remove(&h, &g);
         assert_eq!(eval(&mut ctx, "h"), "nil");
+    }
+
+    #[test]
+    fn changed_part_is_the_smallest_change() {
+        // Typing a space before an existing space: the new space is at 2.
+        assert_eq!(changed_part("a b", 1, "a  b", 2), Some((2, 3, 0)));
+        assert_eq!(changed_part("ab", 2, "abc", 3), Some((3, 4, 0)));
+        assert_eq!(changed_part("abc", 3, "ab", 2), Some((3, 3, 1)));
+        assert_eq!(
+            changed_part("gco ", 4, "git checkout ", 13),
+            Some((2, 13, 2))
+        );
+        assert_eq!(changed_part("abc", 1, "abc", 1), None);
+        // Characters, not bytes.
+        assert_eq!(changed_part("é", 2, "éx", 3), Some((2, 3, 0)));
+        assert_eq!(changed_part("aéb", 3, "ab", 1), Some((2, 2, 1)));
+        // The whole line replaced (history recall).
+        assert_eq!(changed_part("ls", 2, "echo", 4), Some((1, 5, 2)));
+        // A change after the cursor, and one before it.
+        assert_eq!(changed_part("abcX", 0, "abc", 0), Some((4, 4, 1)));
+        assert_eq!(changed_part("echo foo", 0, "echo bar", 8), Some((6, 9, 3)));
+        assert_eq!(changed_part("echo FOO", 4, "echo foo", 8), Some((6, 9, 3)));
+        assert_eq!(changed_part("a  b", 2, "a b", 1), Some((2, 2, 1)));
+        assert_eq!(changed_part("aaa", 3, "aaaa", 4), Some((4, 5, 0)));
+        // Characters that share their first or last byte.
+        assert_eq!(changed_part("aé", 0, "aè", 0), Some((2, 3, 1)));
+        assert_eq!(changed_part("éa", 0, "èa", 0), Some((1, 2, 1)));
+        assert_eq!(changed_part("é", 2, "è", 2), Some((1, 2, 1)));
+        assert_eq!(changed_part("é", 0, "ɩ", 0), Some((1, 2, 1)));
+        assert_eq!(changed_part("ééa", 4, "éèéa", 4), Some((2, 3, 0)));
+        assert_eq!(changed_part("xé", 0, "xéé", 0), Some((2, 3, 0)));
+        assert_eq!(changed_part("ééé", 0, "éé", 0), Some((1, 1, 1)));
+        // A point inside a character.
+        assert_eq!(changed_part("é", 1, "éé", 4), Some((1, 2, 0)));
+        assert_eq!(changed_part("éé", 3, "é", 1), Some((1, 1, 1)));
+        assert_eq!(changed_part("aé", 2, "aéé", 5), Some((2, 3, 0)));
     }
 
     #[test]
