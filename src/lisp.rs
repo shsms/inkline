@@ -115,7 +115,7 @@ pub fn with_lisp<R>(f: impl FnOnce(&mut TulispContext) -> R) -> Result<R, Busy> 
     Ok(f(ctx))
 }
 
-/// `with_lisp` for `inkline eval`, `load` and Lisp commands: a panic in
+/// `with_lisp` for `inkline eval`, `load`, Lisp commands and hooks: a panic in
 /// `f` marks Lisp broken, so the next `inkline on`, `eval` or `load`
 /// starts a fresh interpreter. A panic while reading `init.el` does not,
 /// as reading it again would only panic again.

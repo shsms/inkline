@@ -113,6 +113,10 @@ thread_local! {
     static KEYS_AFTER_C_C: Cell<bool> = const { Cell::new(false) };
     /// Set when a panic turned inkline off, until `enable -f` or `inkline on`.
     static PANICKED: Cell<bool> = const { Cell::new(false) };
+    /// The errors of accept functions that let the line run, for
+    /// `deprep_terminal` to print above the command's output. Kept only while
+    /// inkline is on, as `deprep_terminal` does not run while it is off.
+    static ACCEPT_ERRORS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
         lexer: Lexer::new(),
@@ -302,6 +306,7 @@ fn enable() {
 fn disable() {
     let _ = catch_unwind(erase_suggestion_and_message);
     let _ = MESSAGE.try_with(|m| m.replace(None));
+    let _ = ACCEPT_ERRORS.try_with(|e| e.try_borrow_mut().map(|mut e| e.clear()));
     unwrap_completion();
     end_update();
     ffi::flush_out();
@@ -325,12 +330,51 @@ fn disable() {
     }
 }
 
-/// Runs the line as it is.
+/// Runs the line as it is, even when unfinished, after the accept hook.
 extern "C" fn accept_as_is(count: c_int, key: c_int) -> c_int {
-    guard(
-        || ffi::accept_line(count, key),
-        || ffi::accept_line(count, key),
-    )
+    accept_line(count, key)
+}
+
+/// Runs the accept hook (`inkline-accept-functions`), then readline's
+/// `accept-line`, unless a function refused the line: it then stays for
+/// editing, with the refusal under it. A line the functions changed is drawn
+/// again first, so the screen shows the line that runs. While a `C-c` waits for
+/// bash, the line runs without the hook. After a panic, the line runs. What
+/// came in while Lisp ran is handed on last (`after_lisp`), outside `guard`:
+/// bash may jump from there to a new prompt.
+pub(super) fn accept_line(count: c_int, key: c_int) -> c_int {
+    use crate::lisp::hooks::{Accept, run_accept};
+    let runs = guard(
+        || {
+            // A `C-c` still waiting for bash makes it throw the line away, so
+            // the hook does not run for it.
+            if !hooks_allowed() || ffi::interrupted() {
+                return true;
+            }
+            before_lisp();
+            match run_accept(key) {
+                Accept::Refuse => false,
+                Accept::Run { errors, changed } => {
+                    if changed {
+                        repaint_now();
+                    }
+                    // An accept function may have turned inkline off.
+                    if is_on() {
+                        ACCEPT_ERRORS.set(errors);
+                    }
+                    true
+                }
+            }
+        },
+        || true,
+    );
+    let result = if runs {
+        ffi::accept_line(count, key)
+    } else {
+        0
+    };
+    after_lisp();
+    result
 }
 
 /// Whether a panic turned inkline off since the last `enable -f` or
@@ -430,7 +474,6 @@ pub fn after_lisp() {
 /// Whether the Lisp hooks may run now: at the main prompt while bash reads a
 /// command, while inkline is on, and while no Lisp runs. State that cannot be
 /// read counts as off.
-#[expect(dead_code, reason = "the hooks call it")]
 pub fn hooks_allowed() -> bool {
     ffi::reading_command()
         && !crate::lisp::RUNNING.load(Ordering::Relaxed)
@@ -527,11 +570,16 @@ pub fn show_message_now() {
 /// character other than a tab shows. Touches nothing but the message, so
 /// Lisp can call it while it runs.
 pub fn show_message(text: &str) {
+    let text = before_control(text);
+    MESSAGE.set(Some(text.to_owned()).filter(|t| !t.is_empty()));
+}
+
+/// `text` up to its first control character other than a tab.
+fn before_control(text: &str) -> &str {
     let end = text
         .find(|c: char| c.is_control() && c != '\t')
         .unwrap_or(text.len());
-    let text = &text[..end];
-    MESSAGE.set(Some(text.to_owned()).filter(|t| !t.is_empty()));
+    &text[..end]
 }
 
 /// Takes away the message `show_message` set.
@@ -794,9 +842,10 @@ extern "C" fn pre_input() -> c_int {
 /// there: one row up, or on the cursor's own row when the line exactly filled
 /// its last row and the suggestion started at column 0 of the next. Clearing to
 /// the end of the screen also clears the suggestion's other rows and the
-/// message, which is on the cursor's row or the row below it. Readline's own
-/// drawing function goes back in place, so a later terminal setup (such as
-/// after `TERM` changes) sees it.
+/// message, which is on the cursor's row or the row below it. The errors of
+/// accept functions that let the line run then go there, each on a row of its
+/// own, above the command's output. Readline's own drawing function goes back
+/// in place, so a later terminal setup (such as after `TERM` changes) sees it.
 extern "C" fn deprep_terminal() {
     guard(
         || {
@@ -809,6 +858,13 @@ extern "C" fn deprep_terminal() {
                     _ => "\r\x1b[J".to_string(),
                 };
                 ffi::write_queued(erase.as_bytes());
+            }
+            let errors = ACCEPT_ERRORS.take();
+            if ffi::line_done() {
+                for error in &errors {
+                    ffi::write_queued(before_control(error).as_bytes());
+                    ffi::write_queued(b"\r\n");
+                }
             }
             ffi::set_redisplay_function(originals().redisplay);
         },

@@ -24,17 +24,35 @@ fn prompt_width() -> usize {
     render::prompt_width(&ffi::display_prompt()).unwrap_or(0)
 }
 
+/// What Enter or `C-j` does once `guard` has returned.
+enum Then {
+    /// Nothing more: the key has done its work, with this result.
+    Done(c_int),
+    /// Run the line, after the accept hook (`super::accept_line`).
+    Accept,
+}
+
+/// Does what `then` says. `super::accept_line` is called after the key's
+/// `guard` has returned, as bash may jump from its end to a new prompt.
+fn finish(then: Then, count: c_int, key: c_int) -> c_int {
+    match then {
+        Then::Done(result) => result,
+        Then::Accept => super::accept_line(count, key),
+    }
+}
+
 /// Enter: adds a line to an unfinished command, and accepts any other.
 pub(super) extern "C" fn accept_or_newline(count: c_int, key: c_int) -> c_int {
-    guard(
+    let then = guard(
         || {
             // A C-c that came with more keys is still waiting for bash to act
-            // on it, which bash does once the line is accepted.
+            // on it, which bash does once the line is accepted. Bash throws
+            // that line away, so the accept hook does not run.
             if ffi::interrupted() {
-                return ffi::accept_line(count, key);
+                return Then::Done(ffi::accept_line(count, key));
             }
             let Some(line) = active_line() else {
-                return ffi::accept_line(count, key);
+                return Then::Accept;
             };
             let point = ffi::point();
             // With pairing, the closer typed with an opener already follows
@@ -51,27 +69,28 @@ pub(super) extern "C" fn accept_or_newline(count: c_int, key: c_int) -> c_int {
                 // Pasted text brings its own closer, which moves over this one.
                 let below = !ffi::input_waiting();
                 if !fits_more_rows(&line, point, if below { 2 } else { 1 }) {
-                    return ffi::accept_line(count, key);
+                    return Then::Accept;
                 }
                 new_line(&line, point, below);
-                return 0;
+                return Then::Done(0);
             }
             let status = STATE.with_borrow_mut(|s| status_of(s, &line));
             if status == Status::Unfinished {
                 if !fits_more_rows(&line, point, 1) {
-                    return ffi::accept_line(count, key);
+                    return Then::Accept;
                 }
                 new_line(&line, point, false);
-                return 0;
+                return Then::Done(0);
             }
             if !ffi::input_waiting() && move_out(&line, point).is_some() {
                 // Readline does not redraw before it accepts a line.
                 super::repaint_now();
             }
-            ffi::accept_line(count, key)
+            Then::Accept
         },
-        || ffi::accept_line(count, key),
-    )
+        || Then::Done(ffi::accept_line(count, key)),
+    );
+    finish(then, count, key)
 }
 
 /// Whether the cursor is between an opening bracket and its closer, such as
@@ -92,24 +111,26 @@ fn empty_pair(line: &str, point: usize) -> bool {
 /// waits for bash, where inkline adds no lines, and while readline replays
 /// a macro, so a `\n` in a macro runs the command.
 pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
-    guard(
+    let then = guard(
         || {
             // A C-c that came with more keys is still waiting for bash to act
-            // on it, which bash does once the line is accepted.
+            // on it, which bash does once the line is accepted. Bash throws
+            // that line away, so the accept hook does not run.
             if ffi::interrupted() {
-                return ffi::accept_line(count, key);
+                return Then::Done(ffi::accept_line(count, key));
             }
             if ffi::replaying_macro() {
-                return ffi::accept_line(count, key);
+                return Then::Accept;
             }
             let Some(line) = active_line() else {
-                return ffi::accept_line(count, key);
+                return Then::Accept;
             };
             new_line(&line, ffi::point(), false);
-            0
+            Then::Done(0)
         },
-        || ffi::accept_line(count, key),
-    )
+        || Then::Done(ffi::accept_line(count, key)),
+    );
+    finish(then, count, key)
 }
 
 /// Inserts a newline at `point` as one undo step with what goes with it: the

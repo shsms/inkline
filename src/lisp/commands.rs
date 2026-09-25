@@ -144,6 +144,8 @@ thread_local! {
     static KEY: Cell<c_int> = const { Cell::new(0) };
     /// The name of the Lisp command `SHARED` last ran, `None` for a lambda.
     static SHARED_LAST: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// While hook functions run (`in_hook`): the hook's name.
+    static IN_HOOK: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
 /// What `object`, given to `keymap-global-set`, binds a key to.
@@ -504,6 +506,23 @@ pub(crate) fn one_step<T>(
     result
 }
 
+/// Runs `f`, which runs the functions of the hook named `hook`. Meanwhile
+/// `call-interactively` refuses readline's undo commands: a hook's changes go
+/// in an undo group opened before its functions run, and readline's undo could
+/// take that group's start away or close it early. `y-or-n-p` refuses to ask in
+/// any hook but the accept hook. What was set before comes back afterwards,
+/// also after a panic.
+pub(crate) fn in_hook<R>(hook: &'static str, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<&'static str>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            IN_HOOK.set(self.0);
+        }
+    }
+    let _restore = Restore(IN_HOOK.replace(Some(hook)));
+    f()
+}
+
 /// Installs readline's line as the buffer, read-only unless `writable`.
 pub(crate) fn install_line(writable: bool) -> buffer::Installed {
     let installed = buffer::install(Box::new(ReadlineBuffer));
@@ -583,11 +602,14 @@ fn call_interactively(
             ctx.funcall(&function, ())
         }
         Command::Lisp(LispCommand::Lambda(function)) => ctx.funcall(&function, ()),
-        Command::Readline(f, _) => {
+        Command::Readline(f, name) => {
             // After a `C-c` or a jump to bash's top level, no more readline
             // commands run.
             if crate::hooks::lisp_must_stop() {
                 return Err(quit_error(ctx));
+            }
+            if IN_HOOK.get().is_some() && ffi::undo_command(f).is_some() {
+                return Err(Error::lisp_error(format!("{name} cannot run in a hook")));
             }
             // Undo works on whole steps: the command's changes so far become
             // one, and a later change opens a new one.
@@ -625,10 +647,18 @@ fn call_command(f: ffi::CommandFn, count: c_int, key: c_int) -> Result<c_int, ff
 /// `C-g`, `C-c` and a key typed ahead before it asks quit: a key typed
 /// before the question showed is not an answer, though macro text is.
 /// After a `C-c` or a jump to bash's top level, it quits without asking.
+/// It asks only in a command or in `inkline-accept-functions`.
 fn y_or_n_p(ctx: &mut TulispContext, prompt: &str) -> Result<TulispObject, Error> {
-    // `UNDO_GROUP` is set while a command runs.
-    if UNDO_GROUP.get().is_none() {
-        return Err(Error::lisp_error("y-or-n-p works only in a command"));
+    // `UNDO_GROUP` is set while a Lisp step runs (`one_step`).
+    if UNDO_GROUP.get().is_none()
+        || IN_HOOK
+            .get()
+            .is_some_and(|hook| hook != super::hooks::ACCEPT)
+    {
+        return Err(Error::lisp_error(format!(
+            "y-or-n-p works only in a command or in {}",
+            super::hooks::ACCEPT
+        )));
     }
     let question = format!("{prompt}(y or n) ");
     loop {

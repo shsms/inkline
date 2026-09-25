@@ -1,6 +1,14 @@
 //! Hooks: lists of Lisp functions inkline runs when a line is run, changed,
 //! started or needs a suggestion.
 
+#[cfg(not(test))]
+use std::ffi::c_int;
+
+#[cfg(not(test))]
+use super::commands::Failure;
+
+#[cfg(not(test))]
+use tulisp::FuncallArgs;
 use tulisp::{TulispContext, TulispObject};
 
 pub const ACCEPT: &str = "inkline-accept-functions";
@@ -95,6 +103,92 @@ pub fn function_name(function: &TulispObject) -> String {
     } else {
         "lambda".to_owned()
     }
+}
+
+/// What the accept hook says about the line about to run.
+#[cfg(not(test))]
+pub enum Accept {
+    /// Run the line. `errors` has a line for each function that failed, and
+    /// `changed` says whether the functions changed the line.
+    Run { errors: Vec<String>, changed: bool },
+    /// Keep the line for editing: a function refused it or quit.
+    Refuse,
+}
+
+/// Runs `inkline-accept-functions` on readline's line, in order. Each function
+/// is one undo step; one that fails has its own changes undone, and the next
+/// one runs. A `user-error`, a `quit`, or a `C-c` or a jump to bash's top level
+/// while a function ran refuses the line: every change of this run is undone,
+/// point goes back, and a `user-error`'s text shows under the line. A busy
+/// interpreter runs nothing.
+#[cfg(not(test))]
+pub fn run_accept(key: c_int) -> Accept {
+    let accept = super::with_lisp_marking_panics(|ctx| {
+        let mut errors = Vec::new();
+        let result = run_hook(ctx, ACCEPT, key, (), |function, failure| match failure {
+            Failure::Error(text) => {
+                errors.push(format!("inkline: {}: {text}", function_name(function)));
+                Ok(())
+            }
+            failure => Err(failure),
+        });
+        match result {
+            Ok(changed) => Accept::Run { errors, changed },
+            Err(Failure::Refused(text)) => {
+                crate::hooks::show_message(&text);
+                Accept::Refuse
+            }
+            Err(Failure::Quit | Failure::Error(_)) => Accept::Refuse,
+        }
+    });
+    accept.unwrap_or(Accept::Run {
+        errors: Vec::new(),
+        changed: false,
+    })
+}
+
+/// Runs the functions of the hook named `hook` on readline's line, in order,
+/// with `args` and `KEY` set to `key`, as one undo step; each function's
+/// changes are a step of their own inside it, undone when that function fails.
+/// `on_failure` gets each function that fails and its failure, and returns an
+/// error to end the run; a `C-c` or a jump to bash's top level while a function
+/// ran ends it with `Failure::Quit`. An ended run has all its changes undone
+/// and point back where it was. Otherwise, whether the line changed; false when
+/// the hook has no functions.
+#[cfg(not(test))]
+fn run_hook(
+    ctx: &mut TulispContext,
+    hook: &'static str,
+    key: c_int,
+    args: impl FuncallArgs + Clone,
+    mut on_failure: impl FnMut(&TulispObject, Failure) -> Result<(), Failure>,
+) -> Result<bool, Failure> {
+    use super::commands;
+    let hook_functions = functions(&ctx.intern(hook));
+    if hook_functions.is_empty() {
+        return Ok(false);
+    }
+    let before = crate::ffi::line_bytes();
+    let _line = commands::install_line(true);
+    commands::in_hook(hook, || {
+        commands::one_step(key, true, || {
+            for function in &hook_functions {
+                let result = commands::one_step(key, false, || {
+                    ctx.funcall(function, args.clone())
+                        .map(drop)
+                        .map_err(|e| commands::failure_of(ctx, &e))
+                });
+                if let Err(failure) = result {
+                    on_failure(function, failure)?;
+                }
+                if crate::hooks::lisp_must_stop() {
+                    return Err(Failure::Quit);
+                }
+            }
+            Ok(())
+        })
+    })?;
+    Ok(crate::ffi::line_bytes() != before)
 }
 
 #[cfg(test)]
