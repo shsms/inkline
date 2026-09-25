@@ -77,7 +77,7 @@ static REGISTER: Once = Once::new();
 const BEGIN_UPDATE: &[u8] = b"\x1b[?2026h";
 const END_UPDATE: &[u8] = b"\x1b[?2026l";
 
-/// How long typing must pause before a new syntax error is underlined.
+/// How long typing must pause before a new error is shown.
 const PAUSE_MS: c_int = 150;
 
 /// `C-g` as a key. While Lisp runs, a `C-c` comes back as this key.
@@ -756,7 +756,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             .flatten();
         match signal.unwrap_or_else(|| ffi::wait_for_input(stream, pause, &helpers)) {
             ffi::Wait::Ready | ffi::Wait::Error => break None,
-            // Typing paused with a new error on the line: underline it.
+            // Typing paused with a new error or notice on the line: show it.
             ffi::Wait::Paused => {
                 pause_began = None;
                 guard(
@@ -1185,12 +1185,17 @@ fn repaint_line() -> bool {
     // set it.
     let message = MESSAGE.with_borrow(Clone::clone);
     STATE.with_borrow_mut(|s| {
-        let error = error_to_underline(s, &line, point);
         let paths = &mut s.paths;
         let spans = s.lexer.spans(&line, |word| {
             !commands::is_plain(word) || commands::exists(word, &path, paths, ffi::known_to_bash)
         });
-        let painted = highlight::paint(line.len(), &spans, &found);
+        let mut painted = highlight::paint(line.len(), &spans, &found);
+        let (error, error_message) = error_to_underline(s, &line, point, painted.error.take());
+        // A message set with `show_message` (Lisp's, or why a helper was
+        // turned off) comes first; the error's message is only for this draw.
+        // Without a free row under the line it is not shown, so an error
+        // with no place on the line then shows nothing.
+        let message = message.or(error_message);
         let repaint = Repaint {
             prompt_width,
             line: &line,
@@ -1294,26 +1299,43 @@ fn status_of(s: &mut State, line: &str) -> Status {
     status
 }
 
-/// The bytes of `line` to underline as a syntax error. A new error waits for
-/// a pause in typing and asks `getc` for one; an error already underlined
-/// stays. The word the cursor is at the end of is being typed, so it is never
-/// underlined.
-fn error_to_underline(s: &mut State, line: &str, point: usize) -> Option<Range<usize>> {
+/// The error to show on `line`: the bytes to underline and the message to
+/// put under the line. Bash's syntax error comes first, with no message;
+/// without one, `helper`, the error a highlight helper sent (its bytes of
+/// the line, `None` when it has no place there, and its message). A new
+/// error waits for a pause in typing and asks `getc` for one; an error
+/// already underlined stays, and a helper's message with it, as long as the
+/// underline does. An error with no place shows its message while the line
+/// stays the one typing paused on. The word the cursor is at the end of is
+/// being typed, so an error there is not shown.
+fn error_to_underline(
+    s: &mut State,
+    line: &str,
+    point: usize,
+    helper: Option<(Option<Range<usize>>, String)>,
+) -> (Option<Range<usize>>, Option<String>) {
     if !ffi::reading_command() {
-        return None;
+        return (None, None);
     }
-    let Status::Wrong(range) = status_of(s, line) else {
-        return None;
+    let (place, message) = match status_of(s, line) {
+        Status::Wrong(range) => (Some(syntax::word_around(line, range)), None),
+        Status::Fine | Status::Unfinished => match helper {
+            Some((place, message)) => (place, Some(message)),
+            None => return (None, None),
+        },
     };
-    let word = syntax::word_around(line, range);
-    if word.is_empty() || word.end == point {
-        return None;
+    if place
+        .as_ref()
+        .is_some_and(|p| p.is_empty() || p.end == point)
+    {
+        return (None, None);
     }
-    if s.underlined.as_ref() == Some(&word) || s.paused_on.as_deref() == Some(line) {
-        Some(word)
+    let kept = place.is_some() && s.underlined == place;
+    if kept || s.paused_on.as_deref() == Some(line) {
+        (place, message)
     } else {
         s.wants_pause = true;
-        None
+        (None, None)
     }
 }
 

@@ -13,6 +13,18 @@ pub fn fake(mode: &str) -> String {
     )
 }
 
+/// An rc line for plain underlines, which the test terminal can see.
+const PLAIN_UNDERLINE: &str = "inkline eval '(setq inkline-colors \"error=4\")' >/dev/null\n";
+
+/// Whether `needle`, which must be ASCII, is on row `row` with every cell
+/// underlined.
+fn underlined_on_row(screen: &vt100::Screen, row: u16, needle: &str) -> bool {
+    let Some(col) = row_text(screen, row).find(needle) else {
+        return false;
+    };
+    (col..col + needle.len()).all(|c| screen.cell(row, c as u16).is_some_and(|c| c.underline()))
+}
+
 /// Runs `inkline status` from the prompt and waits for `want` among its rows
 /// and for the next prompt.
 fn status_row(sh: &mut Shell, want: &str) {
@@ -521,7 +533,7 @@ fn a_late_reply_waits_for_a_question_to_be_answered() {
 fn part_of_a_reply_does_not_hold_up_the_underline() {
     let mut sh = Shell::start(Options {
         init_el: Some(fake("split")),
-        rc: "inkline eval '(setq inkline-colors \"error=4\")' >/dev/null\n".into(),
+        rc: PLAIN_UNDERLINE.into(),
         ..Options::default()
     });
     // The first span comes during the pause; the rest 2 s later.
@@ -536,4 +548,119 @@ fn part_of_a_reply_does_not_hold_up_the_underline() {
         "took {took:?}"
     );
     sh.wait_for("the colours", |s| fg_is(s, "b", Color::Idx(4)));
+}
+
+#[test]
+fn an_error_is_underlined_after_the_pause_with_its_message() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("error")),
+        rc: PLAIN_UNDERLINE.into(),
+        ..Options::default()
+    });
+    sh.send("csvm 'bad a'");
+    // The message has `bad` too: the underline is looked for on the line.
+    sh.wait_for("the underline", |s| underlined_on_row(s, 0, "bad"));
+    sh.wait_for("the message", |s| has_row(s, "csvm: unknown command 'bad'"));
+}
+
+/// The message stays as long as the underline does: a change to the line
+/// that keeps the error's place keeps both.
+#[test]
+fn an_errors_message_stays_with_its_underline() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake_logging("error", &log)),
+        rc: PLAIN_UNDERLINE.into(),
+        ..Options::default()
+    });
+    sh.send("csvm 'bad a'");
+    sh.wait_for("the underline", |s| underlined_on_row(s, 0, "bad"));
+    sh.wait_for("the message", |s| has_row(s, "csvm: unknown command 'bad'"));
+    sh.send(" x");
+    wait_for_log(&log, "final:x");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ csvm 'bad a' x");
+    assert!(underlined_on_row(&s, 0, "bad"), "{}", dump(&s));
+    assert!(has_row(&s, "csvm: unknown command 'bad'"), "{}", dump(&s));
+}
+
+#[test]
+fn no_underline_while_typing_the_word() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("error")),
+        rc: PLAIN_UNDERLINE.into(),
+        ..Options::default()
+    });
+    sh.send("csvm 'x bad");
+    sh.wait_for("colours", |s| fg_is(s, "x", Color::Idx(2)));
+    let s = sh.settle();
+    assert!(!any_underlined(&s), "{}", dump(&s));
+}
+
+#[test]
+fn a_bash_error_wins() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("error")),
+        rc: PLAIN_UNDERLINE.into(),
+        ..Options::default()
+    });
+    sh.send("csvm 'bad a' | | x");
+    sh.wait_for("colours", |s| fg_is(s, "bad", Color::Idx(2)));
+    sh.wait_for("bash's underline", any_underlined);
+    let s = sh.settle();
+    assert!(!underlined(&s, "bad"), "{}", dump(&s));
+    assert!(!has_row(&s, "csvm: unknown command 'bad'"));
+}
+
+#[test]
+fn no_error_in_a_raw_argument() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("error")),
+        rc: PLAIN_UNDERLINE.into(),
+        ..Options::default()
+    });
+    sh.send("csvm \"bad $x\" y");
+    sh.wait_for("colours", |s| fg_is(s, "bad", Color::Idx(2)));
+    // Well past the pause.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let s = sh.settle();
+    assert!(!underlined_on_row(&s, 0, "bad"), "{}", dump(&s));
+    assert!(!has_row(&s, "csvm: unknown command 'bad'"), "{}", dump(&s));
+}
+
+#[test]
+fn an_error_with_no_place_shows_only_its_message() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("noplace")),
+        rc: PLAIN_UNDERLINE.into(),
+        ..Options::default()
+    });
+    sh.send("csvm 'a' x");
+    sh.wait_for("the message", |s| has_row(s, "csvm: no place"));
+    assert!(!any_underlined(&sh.settle()));
+}
+
+#[test]
+fn a_notice_comes_before_an_errors_message() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{}(inkline-highlight-arguments \"nosuch\" '(\"no-such-helper-xyz\"))\n",
+            fake("error")
+        )),
+        rc: PLAIN_UNDERLINE.into(),
+        ..Options::default()
+    });
+    sh.send("nosuch a; csvm 'bad a' x");
+    let notice = "inkline: highlight nosuch: off (not found)";
+    let error = "csvm: unknown command 'bad'";
+    let s = sh.wait_for("the notice", |s| has_row(s, notice));
+    assert!(underlined_on_row(&s, 0, "bad"), "{}", dump(&s));
+    let s = sh.settle();
+    assert!(!has_row(&s, error), "{}", dump(&s));
+    // A key that leaves the line as it is takes the notice away.
+    sh.send("\x02");
+    sh.wait_for("the error's message", |s| {
+        has_row(s, error) && !has_row(s, notice) && underlined_on_row(s, 0, "bad")
+    });
 }
