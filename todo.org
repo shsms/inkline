@@ -1,0 +1,23 @@
+#+TITLE: inkline — deferred work
+#+TODO: TODO | DONE WONTFIX
+
+* Features
+
+** TODO Colours during C-r reverse search
+
+While ~C-r~ (or ~C-s~) searches the history, the matched line is drawn
+by readline alone, without colours: ~normal_editing()~ in ~src/ffi.rs~
+treats ~RL_STATE_ISEARCH~ as busy, and inkline steps aside until the
+search ends. The matched line should be coloured like any other line,
+with the search prompt (~(reverse-i-search)`...':~) left as readline
+draws it. Worth also marking the matched text within the line.
+
+Things to check before starting:
+- readline redraws the whole prompt on every key of the search, with a
+  prompt of its own in place of the user's; the line may start on a
+  different column than usual.
+- no suggestion and no syntax underline while searching, only colours.
+- the non-incremental searches (~RL_STATE_NSEARCH~, ~RL_STATE_SEARCH~)
+  read their text as a line of their own, which should not be coloured
+  as a command.
+- bash 5.0, 5.2 and 5.3.
