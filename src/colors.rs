@@ -13,7 +13,7 @@ const DEFAULT_ERROR: &str = "\x1b[4m\x1b[4:3m\x1b[58:5:1m";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Colors {
-    kinds: [String; 8],
+    kinds: [String; 10],
     suggestion: String,
     /// The bytes that start the syntax-error underline; empty when it is off.
     error: String,

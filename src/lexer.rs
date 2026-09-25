@@ -16,6 +16,12 @@ pub enum Kind {
     Variable,
     Operator,
     Comment,
+    /// A numeric literal. Only a highlight helper produces this (never the
+    /// lexer itself).
+    Number,
+    /// A function name. Only a highlight helper produces this (never the
+    /// lexer itself).
+    Function,
 }
 
 /// A labelled piece of the line, as byte offsets.
