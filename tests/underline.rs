@@ -155,3 +155,25 @@ fn an_empty_substitution_from_pairing_is_not_underlined() {
     let s = quiet(&sh);
     assert!(!any_underlined(&s), "{}", dump(&s));
 }
+
+#[test]
+fn a_pause_waits_while_readline_asks_a_question() {
+    let mut sh = Shell::start(Options {
+        rc: "inkline eval '(setq inkline-colors \"error=4\")' >/dev/null\n\
+             complete -W 'a1 a2 a3' echo\n"
+            .into(),
+        inputrc: Some("set completion-query-items 2\nset show-all-if-ambiguous on\n".into()),
+        ..Options::default()
+    });
+    // The Tab comes before the pause for the error at `fi` is over.
+    sh.send("fi; echo a\t");
+    let question = "Display all 3 possibilities? (y or n)";
+    sh.wait_for("the question", |s| cursor_row(s) == question);
+    let s = quiet(&sh);
+    assert_eq!(cursor_row(&s), question, "{}", dump(&s));
+    assert!(!any_underlined(&s), "{}", dump(&s));
+    sh.send("n");
+    sh.wait_for("the underline", |s| {
+        cursor_row(s) == "$ fi; echo a" && underlined(s, "fi")
+    });
+}

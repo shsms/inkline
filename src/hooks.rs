@@ -712,14 +712,14 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         // Whether readline reads the key of the next command in plain
         // editing. While it waits for the answer to a question, a search's
         // keys or a count, the line is not drawn as it was, and a repaint
-        // would draw over what readline shows: helpers are not waited on
-        // then.
+        // would draw over what readline shows: a pause asked for then stays
+        // asked for, and helpers are not waited on.
         let plain_key = guard(
             || ffi::reading_command_key() && ffi::normal_editing(),
             || false,
         );
         let pause = guard(
-            || STATE.with_borrow_mut(|s| std::mem::take(&mut s.wants_pause)),
+            || plain_key && STATE.with_borrow_mut(|s| std::mem::take(&mut s.wants_pause)),
             || false,
         )
         .then(|| {
@@ -973,8 +973,11 @@ extern "C" fn deprep_terminal() {
                 crate::lisp::hooks::forget_line();
             }
             clear_message();
-            let (shown_at, message_rows) =
-                STATE.with_borrow_mut(|s| (s.shown_at.take(), s.message_rows.take()));
+            let (shown_at, message_rows) = STATE.with_borrow_mut(|s| {
+                // A pause asked for belongs to the line that ends.
+                s.wants_pause = false;
+                (s.shown_at.take(), s.message_rows.take())
+            });
             if (shown_at.is_some() || message_rows.is_some()) && ffi::line_done() {
                 let erase = match shown_at {
                     Some(col) if col > 0 => format!("\x1b[A\x1b[{}G\x1b[J\x1b[B\r", col + 1),
