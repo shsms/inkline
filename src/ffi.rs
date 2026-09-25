@@ -951,6 +951,27 @@ pub fn undo_list_head() -> *const c_void {
     unsafe { rl_undo_list.cast_const().cast() }
 }
 
+/// Whether the line's undo list holds an `UNDO_BEGIN` without its `UNDO_END`:
+/// an undo group still open. Not so once readline has freed the list, as it
+/// does on a `C-c`.
+pub fn undo_list_has_open_group() -> bool {
+    // SAFETY: rl_undo_list is NULL or a valid list readline keeps.
+    unsafe {
+        let mut ends = 0usize;
+        let mut entry = rl_undo_list;
+        while !entry.is_null() {
+            match (*entry).what {
+                UNDO_END => ends += 1,
+                UNDO_BEGIN if ends == 0 => return true,
+                UNDO_BEGIN => ends -= 1,
+                _ => {}
+            }
+            entry = (*entry).next;
+        }
+    }
+    false
+}
+
 /// Removes the undo group just closed when nothing was changed inside it:
 /// an `UNDO_END` right after an `UNDO_BEGIN`, with `before` the entry that
 /// was newest when the group opened. `rl_do_undo` pops and frees the pair,

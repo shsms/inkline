@@ -157,6 +157,34 @@ fn no_accept_hook_on_m_ret_while_a_c_c_waits() {
     assert!(!has_row(&s, "2"), "{}", dump(&s));
 }
 
+/// A `C-c` while an accept function computes ends the run: no later function
+/// runs, and bash throws the line away.
+#[test]
+fn c_c_while_an_accept_function_computes_ends_the_run() {
+    let mut sh = shell(
+        r#"(defvar started nil)
+           (defvar seen nil)
+           (add-hook 'inkline-accept-functions
+             (lambda () (when (equal (buffer-string) "echo one")
+                          (setq started t)
+                          (let ((i 0)) (while (< i 12000000) (setq i (1+ i)))))))
+           (add-hook 'inkline-accept-functions
+             (lambda () (when (equal (buffer-string) "echo one") (setq seen t))) t)"#,
+    );
+    sh.send("echo one\r");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(!has_row(&sh.screen(), "one"), "{}", dump(&sh.screen()));
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    let s = sh.settle();
+    assert!(!has_row(&s, "one"), "{}", dump(&s));
+    // 2 when the first function started and the second did not run.
+    sh.send("inkline eval '(if (and started (not seen)) 2 1)'\r");
+    sh.wait_for("the value", |s| has_row(s, "2") && cursor_row(s) == "$");
+}
+
 /// An accept function's shell code can turn inkline off. The errors of that run
 /// then never show, not even under a later line read once inkline is on again.
 #[test]
@@ -570,6 +598,123 @@ fn c_c_while_a_suggestion_function_computes_asks_no_more() {
     // 2 when the first function started and the second was not asked.
     sh.send("inkline eval '(if (and started (not seen)) 2 1)'\r");
     sh.wait_for("the value", |s| has_row(s, "2") && cursor_row(s) == "$");
+}
+
+/// Shell code for the tests below: `slow` takes about a second, and first
+/// writes a window title, which the tests wait for.
+const SLOW_RC: &str = r#"
+slow() { local i; printf '\e]0;slow\a' >/dev/tty; for ((i=0;i<800000;i++)); do :; done; }
+slowcomplete() { slow; COMPREPLY=(slowword); }
+complete -F slowcomplete slowcmd
+"#;
+
+/// `C-c` while an after-change function runs slow shell code with
+/// `shell-expand-line`: a new prompt at once, inkline stays on, and the hook
+/// runs on the next line.
+#[test]
+fn c_c_in_shell_code_an_after_change_function_runs() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"(add-hook 'inkline-after-change-functions
+                 (lambda (_b _e _l)
+                   (when (equal (buffer-string) "go")
+                     (erase-buffer) (insert "echo $(slow)")
+                     (call-interactively 'shell-expand-line)
+                     (insert "after"))))
+               (add-hook 'inkline-after-change-functions
+                 (lambda (_b _e _l) (message "seen %s" (buffer-string))) t)"#
+                .into(),
+        ),
+        rc: SLOW_RC.into(),
+        ..Options::default()
+    });
+    sh.take_output();
+    sh.send("go");
+    sh.wait_for_output("the slow shell code", b"\x1b]0;slow\x07");
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    let s = sh.settle();
+    assert!(!s.contents().contains("after"), "{}", dump(&s));
+    sh.send("ab");
+    sh.wait_for("the hook on the next line", |s| has_row(s, "seen ab"));
+    sh.send("\x15inkline status\r");
+    sh.wait_for("on", |s| has_row(s, "inkline: on"));
+}
+
+/// `C-c` while a line-start function runs slow shell code with
+/// `shell-expand-line`: a new prompt at once, inkline stays on, and the hook
+/// runs at the new prompt.
+#[test]
+fn c_c_in_shell_code_a_line_start_function_runs() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"(defvar go nil)
+               (defvar starts 0)
+               (add-hook 'inkline-line-start-functions
+                 (lambda ()
+                   (when go
+                     (setq go nil)
+                     (insert "echo $(slow)")
+                     (call-interactively 'shell-expand-line)
+                     (insert "after"))))
+               (add-hook 'inkline-line-start-functions
+                 (lambda () (message "start %d" (setq starts (1+ starts)))) t)"#
+                .into(),
+        ),
+        rc: SLOW_RC.into(),
+        ..Options::default()
+    });
+    sh.wait_for("the first line's hook", |s| has_row(s, "start 1"));
+    sh.send("inkline eval '(setq go t)'\r");
+    sh.wait_for_output("the slow shell code", b"\x1b]0;slow\x07");
+    let row = sh.screen().cursor_position().0;
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > row && cursor_row(s) == "$"
+    });
+    sh.wait_for("the hook at the new prompt", |s| has_row(s, "start 2"));
+    let s = sh.settle();
+    assert!(!s.contents().contains("after"), "{}", dump(&s));
+    sh.send("inkline status\r");
+    sh.wait_for("on", |s| has_row(s, "inkline: on"));
+}
+
+/// `C-c` while a line-start function runs a slow completion: readline handles
+/// it itself, and the line the completion changed is not drawn over its `^C`.
+#[test]
+fn c_c_in_completion_a_line_start_function_runs() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"(defvar go nil)
+               (add-hook 'inkline-line-start-functions
+                 (lambda ()
+                   (when go
+                     (setq go nil)
+                     (insert "slowcmd ")
+                     (call-interactively 'complete))))"#
+                .into(),
+        ),
+        rc: SLOW_RC.into(),
+        ..Options::default()
+    });
+    sh.send("inkline eval '(setq go t)'\r");
+    sh.wait_for_output("the slow completion", b"\x1b]0;slow\x07");
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 2 && cursor_row(s) == "$"
+    });
+    let s = sh.settle();
+    assert!(!s.contents().contains("slowword"), "{}", dump(&s));
+    if bash_version() < (5, 3) {
+        assert_eq!(
+            rows(&s),
+            ["$ inkline eval '(setq go t)'", "t", "$ slowcmd ^C", "$"],
+            "{}",
+            dump(&s)
+        );
+    }
 }
 
 /// No hook runs at bash's `>` prompt, where it asks for the rest of an

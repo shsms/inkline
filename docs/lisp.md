@@ -148,8 +148,8 @@ can find it too.
   runs directly, with the same `current-prefix-arg`, `this-command` and
   `last-command` already in effect — it does not get its own. A readline or
   inkline command runs with the key the calling Lisp command was run for;
-  after a `C-c` came while reading a key, or shell code jumped as above,
-  it raises `quit` instead of running.
+  after a `C-c` came (while reading a key, or while Lisp computed), or
+  shell code jumped as above, it raises `quit` instead of running.
 - `(message FORMAT &rest ARGS)` — formats `FORMAT` and `ARGS` as `format`
   does and shows the text under the line until the next key, replacing any
   message already showing; `(message nil)` clears it. Only the text up to

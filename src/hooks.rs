@@ -90,9 +90,15 @@ thread_local! {
     /// The message to show under the line until the next key. Kept apart
     /// from `State` so Lisp can set it while it runs.
     static MESSAGE: RefCell<Option<String>> = const { RefCell::new(None) };
-    /// Set when `C-c` came while Lisp was reading a key; `run_lisp_key`
-    /// hands it on to readline and bash once the command has returned.
+    /// Set when readline caught a `C-c` while Lisp ran and had not handled it:
+    /// while Lisp read a key, while it computed, or under a readline command
+    /// that Lisp ran. `after_lisp` hands it on to readline and bash once Lisp
+    /// has stopped.
     static INTERRUPTED_IN_LISP: Cell<bool> = const { Cell::new(false) };
+    /// Set when readline handled a `C-c` itself under a readline command that
+    /// Lisp ran, and passed it on to bash (bash's `interrupt_state`) without a
+    /// jump. `after_lisp` has bash act on it once Lisp has stopped.
+    static INTERRUPT_PASSED_ON: Cell<bool> = const { Cell::new(false) };
     /// Set when another signal interrupted inkline's wait for a key while
     /// Lisp was reading one: the signal, as `ffi::Wait::Signal` gives it.
     /// Readline handles it once the key is read; `after_lisp` runs bash's
@@ -435,13 +441,16 @@ pub fn before_lisp() {
     use_own_key_reader();
 }
 
-/// Hands on what came in while Lisp ran, once it has stopped: a `C-c` that
-/// came while it ran, or bash's part of another signal that came while it
-/// read a key, as after inkline's wait for a key, and then a jump to
-/// bash's top level that shell code run from Lisp made. Does nothing while
-/// Lisp still runs, as when a readline command that Lisp called ran this
-/// key. It may `longjmp` to bash's top level, so callers call it last,
-/// outside `guard`, with nothing in their frame to drop.
+/// Hands on to bash, once Lisp has stopped, what came in while it ran:
+///
+/// - a `C-c`, also one readline already passed on to bash;
+/// - bash's part of another signal that came while Lisp read a key, as after
+///   inkline's own wait for a key;
+/// - last, a jump to bash's top level that shell code run from Lisp made.
+///
+/// Does nothing while Lisp still runs, as when a readline command that Lisp
+/// called ran this key. It may `longjmp` to bash's top level, so callers call
+/// it last, outside `guard`, with nothing in their frame to drop.
 pub fn after_lisp() {
     if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
         // Shell code the command ran may have switched inkline on or off;
@@ -461,12 +470,14 @@ pub fn after_lisp() {
         if interrupted {
             ffi::release_interrupt();
         }
+        // Bash already has this one; only its signal hook has yet to run.
+        let passed_on = INTERRUPT_PASSED_ON.replace(false);
         match SIGNAL_IN_LISP.take() {
             Some(signal) => {
                 guard(|| before_signal(signal), || ());
                 ffi::handle_interrupted_wait();
             }
-            None if interrupted => ffi::handle_interrupted_wait(),
+            None if interrupted || passed_on => ffi::handle_interrupted_wait(),
             None => {}
         }
         if let Some(value) = jump {
@@ -505,11 +516,28 @@ pub fn note_shell_jump(value: c_int) {
     SHELL_JUMP.set(Some(value));
 }
 
+/// Notes a `C-c` that readline handled itself under a readline command run from
+/// Lisp, and passed on to bash without a jump, for `after_lisp` to have bash
+/// act on once Lisp has stopped.
+pub fn note_interrupt_passed_on() {
+    INTERRUPT_PASSED_ON.set(true);
+}
+
+/// Takes a `C-c` that readline caught while Lisp ran and has not handled, as
+/// `getc` takes one while Lisp reads a key: one that came while Lisp computed
+/// (taken before Lisp runs a readline command, and after each hook function),
+/// or one under a readline command run from Lisp that was not handled when the
+/// command returned (as in a command substitution that `shell-expand-line`
+/// runs).
+pub fn take_interrupt_in_lisp() {
+    take_interrupt(true);
+}
+
 /// Whether a `C-c` or a jump to bash's top level is waiting for Lisp to
-/// stop: the running Lisp command then quits, and no more readline
-/// commands or questions run from it.
+/// stop: the running Lisp command or hook function then quits, and no more
+/// readline commands or questions run from it.
 pub fn lisp_must_stop() -> bool {
-    INTERRUPTED_IN_LISP.get() || SHELL_JUMP.get().is_some()
+    INTERRUPTED_IN_LISP.get() || INTERRUPT_PASSED_ON.get() || SHELL_JUMP.get().is_some()
 }
 
 /// Puts inkline's key reader in place, and the one it replaces in

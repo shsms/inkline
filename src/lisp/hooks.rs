@@ -537,6 +537,7 @@ fn run_hook(
                 if let Err(failure) = result {
                     on_failure(function, failure)?;
                 }
+                crate::hooks::take_interrupt_in_lisp();
                 if crate::hooks::lisp_must_stop() {
                     return Err(Failure::Quit);
                 }

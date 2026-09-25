@@ -260,6 +260,10 @@ enum Group {
         before: *const c_void,
         history: c_int,
     },
+    /// Still counted open by readline, but readline freed the line's undo list,
+    /// its `UNDO_BEGIN` with it, as it does on a `C-c`: finishing it adds no
+    /// `UNDO_END` and undoes nothing.
+    Lost,
 }
 
 /// Opens the running step's undo group before a change, unless one is
@@ -284,17 +288,29 @@ fn before_change() {
 
 /// Closes the running step's undo group if it is open, and drops it
 /// when nothing changed inside it. The next change opens a new one. A
-/// group opened on another history line stays open there: the current
-/// line gets no `UNDO_END`.
+/// group opened on another history line stays open there, and a lost one
+/// has no start: the current line gets no `UNDO_END`.
 fn close_group() {
-    if let Some(Group::Open { before, history }) = UNDO_GROUP.get() {
-        if ffi::history_position() == history {
+    match UNDO_GROUP.get() {
+        Some(Group::Open { before, history }) if ffi::history_position() == history => {
             ffi::end_undo_group();
             ffi::drop_empty_undo_group(before);
-        } else {
-            ffi::forget_undo_group();
         }
-        UNDO_GROUP.set(Some(Group::Closed));
+        Some(Group::Open { .. } | Group::Lost) => ffi::forget_undo_group(),
+        Some(Group::Closed) | None => return,
+    }
+    UNDO_GROUP.set(Some(Group::Closed));
+}
+
+/// Marks the running step's undo group lost when readline freed the undo list
+/// it is on: the group is open on the current history line, but the line's undo
+/// list has no open group.
+fn lose_group_if_freed() {
+    if let Some(Group::Open { history, .. }) = UNDO_GROUP.get()
+        && history == ffi::history_position()
+        && !ffi::undo_list_has_open_group()
+    {
+        UNDO_GROUP.set(Some(Group::Lost));
     }
 }
 
@@ -367,7 +383,7 @@ impl Drop for Running {
                     ffi::do_undo();
                 }
             }
-            Some(Group::Open { .. }) => ffi::forget_undo_group(),
+            Some(Group::Open { .. } | Group::Lost) => ffi::forget_undo_group(),
             _ => {}
         }
         if panicking && ffi::history_position() == self.history {
@@ -447,16 +463,17 @@ fn run(command: Option<&LispCommand>, count: c_int, key: c_int) -> c_int {
     0
 }
 
-/// Runs `f` as one undo step, with `KEY` set to `key`: the changes it
-/// makes to the line go in one undo group of their own, opened at the
-/// first change and dropped if nothing changed. When `f` fails, the group
-/// is undone and point and mark go back to where they were, unless `f`
-/// moved to another history line: the group then stays open on the line
-/// left behind, and nothing is undone. A readline `undo` that `f` called
-/// stays done, since readline cannot redo. Afterwards point and mark are
-/// inside the line. `KEY` and the undo group of a step further up the
-/// stack come back afterwards, also after a panic, which takes the step
-/// back as an error does.
+/// Runs `f` as one undo step, with `KEY` set to `key`: the changes it makes to
+/// the line go in one undo group of their own, opened at the first change and
+/// dropped if nothing changed. When `f` fails, the group is undone and point
+/// and mark go back to where they were, unless `f` moved to another history
+/// line: the group then stays open on the line left behind, and nothing is
+/// undone. Nor is anything undone when a `C-c` made readline free the line's
+/// undo list (`Group::Lost`); bash then throws the line away. A readline `undo`
+/// that `f` called stays done, since readline cannot redo. Afterwards point and
+/// mark are inside the line. `KEY` and the undo group of a step further up the
+/// stack come back afterwards, also after a panic, which takes the step back as
+/// an error does.
 ///
 /// With `open_now`, the group opens before `f` runs instead of at the first
 /// change. A step `f` runs with `one_step` then opens its group inside this
@@ -480,8 +497,14 @@ pub(crate) fn one_step<T>(
     }
     let result = f();
     let group = running.finish();
+    let lost = matches!(group, Some(Group::Lost));
+    if lost {
+        // The freed list also held the start of a step further up the stack
+        // that is open on this line.
+        lose_group_if_freed();
+    }
     let here = ffi::history_position();
-    let undo = result.is_err() && here == history;
+    let undo = result.is_err() && here == history && !lost;
     match group {
         Some(Group::Open { before, history }) if history == here => {
             ffi::end_undo_group();
@@ -491,9 +514,9 @@ pub(crate) fn one_step<T>(
                 ffi::drop_empty_undo_group(before);
             }
         }
-        // The group stays open on the line left behind; readline's count of
-        // open groups must not stay raised.
-        Some(Group::Open { .. }) => ffi::forget_undo_group(),
+        // The group stays open on the line left behind, or lost its start;
+        // readline's count of open groups must not stay raised.
+        Some(Group::Open { .. } | Group::Lost) => ffi::forget_undo_group(),
         Some(Group::Closed) | None => {}
     }
     if undo {
@@ -604,8 +627,9 @@ fn call_interactively(
         }
         Command::Lisp(LispCommand::Lambda(function)) => ctx.funcall(&function, ()),
         Command::Readline(f, name) => {
-            // After a `C-c` or a jump to bash's top level, no more readline
-            // commands run.
+            // After a `C-c`, also one that came while Lisp computed, or a jump
+            // to bash's top level, no more readline commands run.
+            crate::hooks::take_interrupt_in_lisp();
             if crate::hooks::lisp_must_stop() {
                 return Err(quit_error(ctx));
             }
@@ -623,6 +647,7 @@ fn call_interactively(
             let outer = ffi::replace_explicit_count(count.is_some());
             let result = call_command(f, count.unwrap_or(1), KEY.get());
             ffi::replace_explicit_count(outer);
+            crate::hooks::take_interrupt_in_lisp();
             // A `C-c` while the command read a key, or a jump to bash's top
             // level, stops the Lisp command too.
             match result {
@@ -634,12 +659,22 @@ fn call_interactively(
 }
 
 /// Runs the readline command `f` with `ffi::call_command`. A jump to
-/// bash's top level that it stopped is noted for `run_lisp_key` to make.
+/// bash's top level that it stopped is noted for `after_lisp` to make.
 fn call_command(f: ffi::CommandFn, count: c_int, key: c_int) -> Result<c_int, ffi::Jumped> {
+    let interrupted = ffi::interrupted();
     let result = crate::hooks::in_readline_command(|| ffi::call_command(f, count, key));
     if let Err(ffi::Jumped::Shell(value)) = result {
         crate::hooks::note_shell_jump(value);
     }
+    // A `C-c` while the command ran stops Lisp as one while Lisp reads a key
+    // does. Readline may have handled it itself (as completion does) and passed
+    // it on to bash with no jump.
+    if !interrupted && ffi::interrupted() {
+        crate::hooks::note_interrupt_passed_on();
+    }
+    // Handling a `C-c` frees the line's undo list, and the step's open group
+    // with it; so does vi's first ESC.
+    lose_group_if_freed();
     result
 }
 
@@ -674,7 +709,11 @@ fn y_or_n_p(ctx: &mut TulispContext, prompt: &str) -> Result<TulispObject, Error
             return Err(quit_error(ctx));
         };
         // Below 0: no key could be read.
-        if key < 0 || key == crate::hooks::CTRL_G || key == crate::hooks::CTRL_C {
+        if key < 0
+            || key == crate::hooks::CTRL_G
+            || key == crate::hooks::CTRL_C
+            || crate::hooks::lisp_must_stop()
+        {
             return Err(quit_error(ctx));
         }
         match u8::try_from(key) {

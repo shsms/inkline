@@ -1229,6 +1229,52 @@ fn c_c_while_a_command_computes_gives_a_new_prompt() {
     assert!(!has_row(&s, "$ abdoneecho hi"), "{}", dump(&s));
 }
 
+/// A `C-c` while a Lisp command computes stops it before the next readline
+/// command it calls: that command does not run. Here `started` and `ran` write
+/// window titles, which show whether their expansion ran.
+#[test]
+fn c_c_while_a_command_computes_stops_the_next_readline_command() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"
+(keymap-global-set "C-x z"
+  (lambda ()
+    (call-interactively 'shell-expand-line)
+    (let ((i 0)) (while (< i 6000000) (setq i (1+ i))))
+    (insert "$(ran)")
+    (call-interactively 'shell-expand-line)))
+"#
+            .into(),
+        ),
+        rc: r#"
+started() { printf '\e]0;started\a' >/dev/tty; }
+ran() { printf '\e]0;ran\a' >/dev/tty; }
+"#
+        .into(),
+        ..Options::default()
+    });
+    sh.send("echo $(started");
+    sh.wait_for("the typing", |s| cursor_row(s) == "$ echo $(started)");
+    sh.take_output();
+    sh.send("\x18z");
+    sh.wait_for_output("the first expansion", b"\x1b]0;started\x07");
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    sh.settle();
+    let out = sh.take_output();
+    assert!(
+        find(&out, b"\x1b]0;ran\x07").is_none(),
+        "{:?}",
+        String::from_utf8_lossy(&out)
+    );
+    sh.send("echo ok\r");
+    sh.wait_for("the new line run", |s| {
+        has_row(s, "ok") && cursor_row(s) == "$"
+    });
+}
+
 /// `read -e` in shell code that a Lisp command runs reads a line of its
 /// own: a `C-c` there stops the shell code as it does without inkline,
 /// also in a search on that line, and once Lisp has returned, bash gives
@@ -1311,6 +1357,72 @@ fn a_question_after_a_timed_out_read_e_leaves_lisp_working() {
     });
     sh.send("ab\x18u");
     sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ AB");
+}
+
+/// Shell code for the slow readline commands below: `slow` takes about a
+/// second, and first writes a window title, which the tests wait for.
+const SLOW_RC: &str = r#"
+slow() { local i; printf '\e]0;slow\a' >/dev/tty; for ((i=0;i<800000;i++)); do :; done; }
+slowcomplete() { slow; COMPREPLY=(slowword); }
+complete -F slowcomplete slowcmd
+"#;
+
+/// Types `line`, then runs a Lisp command that calls the readline command
+/// `command`, which runs `slow`, and presses `C-c` while `slow` runs. The Lisp
+/// command stops, bash gives a new prompt and throws the line away, and
+/// inkline, Lisp and undo keep working.
+fn c_c_in_a_slow_readline_command_run_from_lisp(command: &str, line: &str) {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{INIT}(keymap-global-set \"C-x c\" \
+             (lambda () (insert \"pre \") (call-interactively '{command}) (insert \"after\")))"
+        )),
+        rc: SLOW_RC.into(),
+        ..Options::default()
+    });
+    sh.send(line);
+    sh.wait_for("the typing", |s| {
+        cursor_row(s) == format!("$ {line}").trim_end()
+    });
+    sh.take_output();
+    sh.send("\x18c");
+    sh.wait_for_output("the slow shell code", b"\x1b]0;slow\x07");
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    let s = sh.settle();
+    assert!(
+        !(0..s.size().0).any(|r| row_text(&s, r).contains("after")),
+        "{}",
+        dump(&s)
+    );
+    sh.send("echo ok\r");
+    sh.wait_for("the new line run", |s| {
+        has_row(s, "ok") && cursor_row(s) == "$"
+    });
+    sh.send("ab\x18u");
+    sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ AB");
+    sh.send("\x1f");
+    sh.wait_for("one undo", |s| cursor_row(s) == "$ ab");
+    sh.send("\x15inkline status\r");
+    sh.wait_for("on", |s| has_row(s, "inkline: on"));
+}
+
+/// Readline handles a `C-c` during completion itself and passes it on to bash.
+/// Bash 5.0 to 5.2 let the completion function finish, with no jump. Bash 5.3
+/// stops the function and jumps to its top level.
+#[test]
+fn c_c_in_slow_completion_run_from_lisp_gives_a_new_prompt() {
+    c_c_in_a_slow_readline_command_run_from_lisp("complete", "slowcmd ");
+}
+
+/// A `C-c` in a command substitution that `shell-expand-line` runs ends the
+/// substitution. Readline catches the `C-c`, but nothing handles it before the
+/// command returns.
+#[test]
+fn c_c_in_slow_expansion_run_from_lisp_gives_a_new_prompt() {
+    c_c_in_a_slow_readline_command_run_from_lisp("shell-expand-line", "echo $(slow)");
 }
 
 /// A question on a `read -e -t` line whose time runs out while it waits:
