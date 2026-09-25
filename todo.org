@@ -21,3 +21,24 @@ Things to check before starting:
   read their text as a line of their own, which should not be coloured
   as a command.
 - bash 5.0, 5.2 and 5.3.
+
+** TODO Show earlier accept errors when a later accept function refuses the line
+
+When one function in ~inkline-accept-functions~ fails and a later one
+refuses the line (~user-error~ or ~quit~), the line stays for editing
+and only the refusal shows under it. The earlier function's error is
+never shown: it would have been printed above the command's output,
+but the command does not run. Show those errors too, after the refusal
+text, joined with ~; ~ as the other hook messages are.
+
+* Code
+
+** TODO Write the "single function" check for hooks once
+
+A hook's value is either one function or a list of them. The check for
+"one function" is written twice: in Lisp as ~inkline--hook-single-p~
+(used by ~add-hook~ and ~remove-hook~) and in Rust as
+~is_single_function~ (used by ~functions~ and ~remove~), both in
+~src/lisp/hooks.rs~. Register the Rust function as
+~inkline--hook-single-p~ and drop the Lisp copy, so the two cannot
+drift apart.
