@@ -54,6 +54,19 @@ the parse tree by calling itself for each level; ~Lexer::spans~ does
 the same at about 16,000 levels. The overflow kills bash. Give both
 walks a cap on the depth they go to.
 
+** TODO A large request can hold up a redraw for a second
+
+inkline writes a request to a helper in one go. When the request is
+bigger than the socket can hold (about 180 KB for a socket pair on
+Linux), such as a long script pasted as one argument, and the helper
+reads slowly, the redraw waits for the helper to take the rest: up to
+a second per helper (~SEND_WAIT~ in ~src/helper/process.rs~), after
+which the helper is turned off (~request not read~). ~C-c~ ends the
+wait within 20 ms, and turns the helper off too. Instead, keep the
+part not sent yet and send the rest on later redraws, or while inkline
+waits for a key, waiting on the socket until it can be written to as
+well.
+
 * Code
 
 ** TODO Write the "single function" check for hooks once
