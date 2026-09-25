@@ -31,6 +31,21 @@ never shown: it would have been printed above the command's output,
 but the command does not run. Show those errors too, after the refusal
 text, joined with ~; ~ as the other hook messages are.
 
+* Bugs
+
+** TODO Keys typed ahead while inkline reload runs are sometimes lost
+
+Keys typed while ~inkline reload~ runs, before the next prompt shows,
+sometimes never reach the next line: they are dropped. It happens
+without highlight helpers too. ~reload_stops_helpers~ in
+~tests/helpers.rs~ waits for the next prompt before it types, to stay
+clear of it.
+
+Things to check: which step of the reload drops them (reading
+~init.el~ again, binding the layout again, or setting readline's
+variables), and whether something there sets the terminal up again in
+a way that throws away input not yet read.
+
 * Code
 
 ** TODO Write the "single function" check for hooks once
