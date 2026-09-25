@@ -5,6 +5,7 @@ pub mod args;
 pub mod colors;
 pub mod commands;
 pub mod helper;
+pub mod highlight;
 pub mod indent;
 pub mod lexer;
 pub mod lines;

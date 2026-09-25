@@ -200,7 +200,7 @@ impl Painter<'_> {
 }
 
 /// Turns per-byte labels into spans, joining neighbours with the same label.
-fn merge(labels: &[Option<Kind>]) -> Vec<Span> {
+pub fn merge(labels: &[Option<Kind>]) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
     for (i, label) in labels.iter().enumerate() {
         let Some(kind) = *label else { continue };
