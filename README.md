@@ -18,9 +18,7 @@ its own release, it also needs tulisp checked out next to inkline, as
 `../tulisp`.
 
 ```sh
-cargo build --release
-mkdir -p ~/.local/lib
-cp target/release/libinkline.so ~/.local/lib/
+make install    # builds and copies libinkline.so to ~/.local/lib
 ```
 
 ## Setup
@@ -405,12 +403,14 @@ line.
 ## Testing
 
 ```sh
-cargo test
-scripts/build-bash.sh 5.0      # needs libncurses-dev / ncurses-devel
-INKLINE_TEST_BASH=target/bash-5.0/bin/bash cargo test
-scripts/build-bash.sh 5.3
-INKLINE_TEST_BASH=target/bash-5.3/bin/bash cargo test
+make test       # with the system bash
+make test-all   # also with bash 5.0 and 5.3, built into target/ first
+make check      # fmt, clippy and the unit tests
 ```
+
+Building the older bashes needs libncurses-dev / ncurses-devel. To test
+with one bash, set `INKLINE_TEST_BASH`:
+`INKLINE_TEST_BASH=target/bash-5.0/bin/bash cargo test`.
 
 ## License
 
