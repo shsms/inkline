@@ -568,6 +568,12 @@ unsafe extern "C" {
     static mut _rl_caught_signal: c_int;
 }
 
+/// Whether readline caught a `SIGINT` that it has not handled yet.
+pub fn interrupt_caught() -> bool {
+    // SAFETY: as in `hold_interrupt`.
+    unsafe { (&raw const _rl_caught_signal).read_volatile() == libc::SIGINT }
+}
+
 /// Takes from readline a `SIGINT` it caught and has not handled yet, and
 /// returns whether there was one. Readline's key reader then does not
 /// handle it under the command reading the key (handling it frees the

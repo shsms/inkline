@@ -134,6 +134,20 @@ fn read_only_error() -> Error {
     Error::lisp_error("the line cannot be changed here")
 }
 
+/// An error naming `name` when the installed buffer is read-only: the line is
+/// read-only only while `inkline-suggestion-functions` runs, and those
+/// functions may not use the kill ring, run a command, read a key, show
+/// anything, or change key bindings or readline's variables.
+pub fn refuse_when_read_only(name: &str) -> Result<(), Error> {
+    if read_only() {
+        return Err(Error::lisp_error(format!(
+            "{name} is not allowed in {}",
+            super::hooks::SUGGESTION
+        )));
+    }
+    Ok(())
+}
+
 /// Runs `f` on the current buffer's text, point and mark (bytes). With no
 /// buffer installed, `f` sees an empty line with point and mark at 0. An
 /// error when the installed buffer's text is not valid UTF-8.
@@ -689,6 +703,10 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "delete-char",
         |n: i64, killflag: Option<TulispObject>| -> Result<(), Error> {
+            let killing = killflag.is_some_and(|v| !v.null());
+            if killing {
+                refuse_when_read_only("delete-char")?;
+            }
             let (s, e) = read(
                 |text, point, _mark, _buf| -> Result<(usize, usize), Error> {
                     match moved_pos(text, point, n) {
@@ -697,7 +715,6 @@ pub fn register(ctx: &mut TulispContext) {
                     }
                 },
             )??;
-            let killing = killflag.is_some_and(|v| !v.null());
             if killing {
                 change(|buf| buf.kill(s, e, n < 0))?;
             } else {
@@ -716,6 +733,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "kill-region",
         |a: TulispObject, b: TulispObject| -> Result<(), Error> {
+            refuse_when_read_only("kill-region")?;
             let (s, e, backward) = range(&a, &b)?;
             change(|buf| buf.kill(s, e, backward))?;
             after_delete(s, e);
@@ -725,6 +743,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "copy-region-as-kill",
         |a: TulispObject, b: TulispObject| -> Result<(), Error> {
+            refuse_when_read_only("copy-region-as-kill")?;
             let (s, e, backward) = range(&a, &b)?;
             change(|buf| buf.copy(s, e, backward))?;
             Ok(())
@@ -1081,6 +1100,18 @@ mod tests {
         for program in [r#"(insert "x")"#, "(goto-char 1)", "(set-mark 1)"] {
             let e = ctx.eval_string(program).unwrap_err();
             assert_eq!(e.desc(), "the line cannot be changed here", "{program}");
+        }
+        for (program, name) in [
+            ("(kill-region 1 2)", "kill-region"),
+            ("(copy-region-as-kill 1 2)", "copy-region-as-kill"),
+            ("(delete-char -1 t)", "delete-char"),
+        ] {
+            let e = ctx.eval_string(program).unwrap_err();
+            assert_eq!(
+                e.desc(),
+                format!("{name} is not allowed in inkline-suggestion-functions"),
+                "{program}"
+            );
         }
     }
 

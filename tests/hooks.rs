@@ -439,6 +439,162 @@ fn a_shell_error_in_an_after_change_function_gives_a_new_prompt() {
     sh.wait_for("the hook on the new line", |s| has_row(s, "ac 1 2 0 [x]"));
 }
 
+const GIT: &str = r#"(add-hook 'inkline-suggestion-functions
+  (lambda (line) (when (string-prefix-p line "git status") "git status")))"#;
+
+#[test]
+fn a_lisp_suggestion_is_taken_with_c_e() {
+    let mut sh = shell(GIT);
+    sh.send("gi");
+    sh.wait_for("the grey suggestion", |s| cursor_row(s) == "$ git status");
+    sh.send("\x05");
+    sh.wait_for("taken", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position().1 == 12
+    });
+}
+
+#[test]
+fn history_wins_over_lisp() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(GIT.into()),
+        history: vec!["git log"],
+        ..Options::default()
+    });
+    sh.send("gi");
+    sh.wait_for("history's suggestion", |s| cursor_row(s) == "$ git log");
+}
+
+#[test]
+fn other_answers_are_skipped_and_the_next_function_asked() {
+    let mut sh = shell(&format!(
+        r#"{GIT}
+           (add-hook 'inkline-suggestion-functions (lambda (_line) "xyz"))
+           (add-hook 'inkline-suggestion-functions (lambda (_line) 42))"#
+    ));
+    sh.send("gi");
+    sh.wait_for("the third function's answer", |s| {
+        cursor_row(s) == "$ git status"
+    });
+}
+
+#[test]
+fn a_suggestion_function_may_not_change_the_line() {
+    let mut sh =
+        shell(r#"(add-hook 'inkline-suggestion-functions (lambda (_line) (insert "x") nil))"#);
+    sh.send("ab");
+    // The message is cut at the screen's width.
+    sh.wait_for("the removal", |s| {
+        (0..s.size().0).any(|r| {
+            row_text(s, r)
+                .starts_with("inkline: lambda: the line cannot be changed here (removed from")
+        })
+    });
+    assert_eq!(cursor_row(&sh.settle()), "$ ab");
+}
+
+#[test]
+fn a_suggestion_function_may_not_run_commands_or_show_messages() {
+    for (form, name) in [
+        ("(call-interactively 'backward-char)", "call-interactively"),
+        (r#"(message "hi")"#, "message"),
+        ("(kill-region 1 2)", "kill-region"),
+        (r#"(print "hi")"#, "print"),
+        (r#"(princ "hi")"#, "princ"),
+        (r#"(prin1 "hi")"#, "prin1"),
+        ("(ding)", "ding"),
+        (r#"(y-or-n-p "Go? ")"#, "y-or-n-p"),
+        (
+            r#"(keymap-global-set "C-x y" 'forward-char)"#,
+            "keymap-global-set",
+        ),
+        (r#"(keymap-global-unset "C-x y")"#, "keymap-global-unset"),
+        ("(inkline-unbind-defaults)", "inkline-unbind-defaults"),
+        (
+            r#"(inkline-set-readline-variable "bell-style" "audible")"#,
+            "inkline-set-readline-variable",
+        ),
+    ] {
+        // Wide enough for the whole message on one row.
+        let mut sh = Shell::start(Options {
+            cols: 160,
+            init_el: Some(format!(
+                "(add-hook 'inkline-suggestion-functions (lambda (_line) {form} nil))"
+            )),
+            ..Options::default()
+        });
+        sh.send("ab");
+        let expected = format!(
+            "inkline: lambda: {name} is not allowed in inkline-suggestion-functions \
+             (removed from inkline-suggestion-functions)"
+        );
+        sh.wait_for("the removal", |s| s.contents().contains(&expected));
+        let s = sh.settle();
+        assert_eq!(cursor_row(&s), "$ ab", "{}", dump(&s));
+        assert_eq!(s.cursor_position().1, 4, "{}", dump(&s));
+    }
+}
+
+#[test]
+fn typing_through_a_lisp_suggestion_asks_once() {
+    let mut sh = shell(
+        r#"(defvar asked 0)
+           (add-hook 'inkline-suggestion-functions
+             (lambda (line) (when (string-prefix-p "g" line) (setq asked (1+ asked)) "git status")))"#,
+    );
+    sh.send("git st");
+    sh.wait_for("still suggested", |s| cursor_row(s) == "$ git status");
+    sh.send("\x15inkline eval asked\r");
+    sh.wait_for("the count", |s| has_row(s, "1"));
+}
+
+/// A `C-c` while a suggestion function computes: no later function is asked.
+#[test]
+fn c_c_while_a_suggestion_function_computes_asks_no_more() {
+    let mut sh = shell(
+        r#"(defvar started nil)
+           (defvar seen nil)
+           (add-hook 'inkline-suggestion-functions
+             (lambda (line) (when (equal line "zz")
+                              (setq started t)
+                              (let ((i 0)) (while (< i 6000000) (setq i (1+ i)))))
+                        nil))
+           (add-hook 'inkline-suggestion-functions
+             (lambda (line) (when (equal line "zz") (setq seen t)) nil) t)"#,
+    );
+    sh.send("zz");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    // 2 when the first function started and the second was not asked.
+    sh.send("inkline eval '(if (and started (not seen)) 2 1)'\r");
+    sh.wait_for("the value", |s| has_row(s, "2") && cursor_row(s) == "$");
+}
+
+/// No hook runs at bash's `>` prompt, where it asks for the rest of an
+/// unfinished command.
+#[test]
+fn no_hooks_at_the_continuation_prompt() {
+    let mut sh = shell(
+        r#"(add-hook 'inkline-accept-functions
+             (lambda () (when (equal (buffer-string) "echo b; fi") (goto-char (point-max)) (insert "; echo ACCEPTED"))))
+           (add-hook 'inkline-after-change-functions (lambda (_b _e _l) (message "AC:%s" (buffer-string))))
+           (add-hook 'inkline-suggestion-functions (lambda (line) (concat line "SUGG")))"#,
+    );
+    sh.send(&format!("if true; then{ALT_ENTER}"));
+    sh.wait_for("the continuation prompt", |s| cursor_row(s) == ">");
+    sh.send("echo b; fi");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "> echo b; fi", "{}", dump(&s));
+    assert!(!s.contents().contains("AC:e"), "{}", dump(&s));
+    sh.send("\r");
+    sh.wait_for("the output", |s| has_row(s, "b") && cursor_row(s) == "$");
+    let s = sh.settle();
+    assert!(!s.contents().contains("ACCEPTED"), "{}", dump(&s));
+    assert!(!s.contents().contains("AC:e"), "{}", dump(&s));
+}
+
 /// The changes of all line-start functions are one undo step.
 #[test]
 fn two_line_start_inserts_are_one_undo_step() {
@@ -472,6 +628,29 @@ fn a_panic_in_an_after_change_function_draws_the_line_below_the_notice() {
     assert_eq!(s.cursor_position(), (2, 8), "{}", dump(&s));
     sh.send("b");
     sh.wait_for("typing on", |s| cursor_row(s) == "$ echo ab");
+}
+
+/// An internal error in a suggestion function: the notice, then the line drawn
+/// again below it.
+#[cfg(debug_assertions)]
+#[test]
+fn a_panic_in_a_suggestion_function_draws_the_line_below_the_notice() {
+    let mut sh =
+        shell(r#"(add-hook 'inkline-suggestion-functions (lambda (_line) (inkline--panic)))"#);
+    sh.send("e");
+    sh.wait_for("the notice", |s| {
+        has_row(s, "inkline: internal error, turned off")
+    });
+    let s = sh.settle();
+    assert_eq!(
+        rows(&s),
+        ["$ e", "inkline: internal error, turned off", "$ e"],
+        "{}",
+        dump(&s)
+    );
+    assert_eq!(s.cursor_position(), (2, 3), "{}", dump(&s));
+    sh.send("b");
+    sh.wait_for("typing on", |s| cursor_row(s) == "$ eb");
 }
 
 /// An internal error in a line-start function: the notice, then the line drawn

@@ -181,16 +181,32 @@ thread_local! {
     /// inkline is off.
     #[cfg(not(test))]
     static SEEN: std::cell::Cell<Option<Seen>> = const { std::cell::Cell::new(None) };
+    /// The suggestion hook's answers for this line.
+    #[cfg(not(test))]
+    static ANSWERS: std::cell::RefCell<Answers> = std::cell::RefCell::default();
+}
+
+/// What the suggestion hook answered on this line, so it is asked once for each
+/// text of the line.
+#[cfg(not(test))]
+#[derive(Default)]
+struct Answers {
+    /// The full text of the last answer given: while the line is a shorter
+    /// start of it, it is the answer without asking.
+    last_answer: Option<String>,
+    /// Each line text asked about, and its answer; `None` for no answer.
+    by_line: std::collections::HashMap<String, Option<String>>,
 }
 
 /// Resets what inkline keeps about the line, as a new line begins: the
-/// after-change hook compares with the line as it is now. A line read
-/// while Lisp runs (`read -e` in shell code that Lisp ran) is not the
-/// command line and changes nothing.
+/// after-change hook compares with the line as it is now, and the suggestion
+/// hook's answers are forgotten. A line read while Lisp runs (`read -e` in
+/// shell code that Lisp ran) is not the command line and changes nothing.
 #[cfg(not(test))]
 pub fn line_started() {
     if !super::RUNNING.load(std::sync::atomic::Ordering::Relaxed) {
         see_line(None);
+        let _ = ANSWERS.try_with(|answers| answers.take());
     }
 }
 
@@ -388,6 +404,103 @@ pub fn run_line_start() -> bool {
     });
     see_line(None);
     changed.unwrap_or(false)
+}
+
+/// The full text a function of `inkline-suggestion-functions` suggests for
+/// `line`, which starts with `line` and is longer. While `line` is a shorter
+/// start of the last answer, that answer stays without asking; else the answer
+/// kept for this text of the line; else, where hooks may run, the functions are
+/// asked in order, with `line` read-only as the buffer. The first string that
+/// starts with `line` and is longer wins; anything else is no answer, and the
+/// next function is asked. A function that fails is removed from the hook, and
+/// the message says so; after a `quit`, no more functions are asked. The
+/// answer, none included, is kept until the next line starts. A busy
+/// interpreter gives none, and nothing is kept.
+#[cfg(not(test))]
+pub fn suggestion(line: &str) -> Option<String> {
+    // Kept answers belong to the command line; they are not for `read -e`.
+    if !crate::ffi::reading_command() {
+        return None;
+    }
+    let longer = |answer: &str| answer.len() > line.len() && answer.starts_with(line);
+    let kept = ANSWERS
+        .try_with(|answers| {
+            let answers = answers.borrow();
+            match &answers.last_answer {
+                Some(full) if longer(full) => Some(Some(full.clone())),
+                Some(_) | None => answers.by_line.get(line).cloned(),
+            }
+        })
+        .ok()
+        .flatten();
+    let answer = match kept {
+        Some(answer) => answer,
+        None => {
+            if !crate::hooks::hooks_allowed() {
+                return None;
+            }
+            let answer = super::with_lisp_marking_panics(|ctx| ask(ctx, line, longer)).ok()??;
+            let _ = ANSWERS.try_with(|answers| {
+                answers
+                    .borrow_mut()
+                    .by_line
+                    .insert(line.to_owned(), answer.clone());
+            });
+            answer
+        }
+    };
+    if let Some(full) = &answer {
+        let _ = ANSWERS.try_with(|answers| answers.borrow_mut().last_answer = Some(full.clone()));
+    }
+    answer
+}
+
+/// Asks the functions of `inkline-suggestion-functions` about `line` for
+/// `suggestion`: the first answer that `wins` accepts, else `Some(None)`. None
+/// when the hook has no functions, or when a `C-c` came while functions were
+/// left to ask: bash is about to throw the line away, so nothing is kept.
+#[cfg(not(test))]
+fn ask(ctx: &mut TulispContext, line: &str, wins: impl Fn(&str) -> bool) -> Option<Option<String>> {
+    let hook = ctx.intern(SUGGESTION);
+    let hook_functions = functions(&hook);
+    if hook_functions.is_empty() {
+        return None;
+    }
+    let _line = super::commands::install_line(false);
+    let mut errors = Vec::new();
+    let mut answer = None;
+    let mut stopped = false;
+    for function in &hook_functions {
+        if crate::hooks::lisp_must_stop() || crate::ffi::interrupt_caught() {
+            stopped = true;
+            break;
+        }
+        match ctx.funcall(function, (line.to_owned(),)) {
+            Ok(value) => {
+                if value.stringp()
+                    && let Ok(text) = value.as_string()
+                    && wins(&text)
+                {
+                    answer = Some(text);
+                    break;
+                }
+            }
+            Err(e) => match super::commands::failure_of(ctx, &e) {
+                Failure::Error(text) | Failure::Refused(text) => {
+                    remove(&hook, function);
+                    errors.push(format!(
+                        "inkline: {}: {text} (removed from {SUGGESTION})",
+                        function_name(function)
+                    ));
+                }
+                Failure::Quit => break,
+            },
+        }
+    }
+    if !errors.is_empty() {
+        crate::hooks::show_message(&errors.join("; "));
+    }
+    (!stopped).then_some(answer)
 }
 
 /// Runs the functions of the hook named `hook` on readline's line, in order,

@@ -5,6 +5,7 @@ use std::cell::RefCell;
 
 use tulisp::{Error, TulispContext, TulispObject};
 
+use super::buffer::refuse_when_read_only;
 use super::commands::{self, Command, LispCommand};
 use super::keydesc;
 use super::layout::Group;
@@ -310,6 +311,8 @@ fn describe(b: &ffi::Binding) -> String {
     }
 }
 
+/// Defines the functions that change key bindings and readline's variables.
+/// Each refuses to run in `inkline-suggestion-functions`, which may only read.
 pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "keymap-global-set",
@@ -317,6 +320,7 @@ pub fn register(ctx: &mut TulispContext) {
          key: String,
          command: TulispObject|
          -> Result<TulispObject, Error> {
+            refuse_when_read_only("keymap-global-set")?;
             global_set(ctx, &key, &command).map_err(Error::invalid_argument)?;
             Ok(command)
         },
@@ -324,6 +328,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "keymap-global-unset",
         |key: String| -> Result<TulispObject, Error> {
+            refuse_when_read_only("keymap-global-unset")?;
             unset(&key).map_err(Error::invalid_argument)?;
             Ok(TulispObject::nil())
         },
@@ -331,6 +336,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "inkline-unbind-defaults",
         |groups: Option<TulispObject>| -> Result<TulispObject, Error> {
+            refuse_when_read_only("inkline-unbind-defaults")?;
             let group = |g: TulispObject| {
                 g.symbolp()
                     .then(|| Group::named(&g.to_string()))
@@ -365,6 +371,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "inkline-set-readline-variable",
         |name: String, value: TulispObject| -> Result<TulispObject, Error> {
+            refuse_when_read_only("inkline-set-readline-variable")?;
             let text = if value.stringp() {
                 value.as_string()?
             } else if value.null() {

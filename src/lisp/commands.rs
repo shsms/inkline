@@ -583,6 +583,7 @@ fn call_interactively(
     ctx: &mut TulispContext,
     command: &TulispObject,
 ) -> Result<TulispObject, Error> {
+    buffer::refuse_when_read_only("call-interactively")?;
     if !buffer::editing() {
         return Err(Error::lisp_error("no line is being edited"));
     }
@@ -649,6 +650,7 @@ fn call_command(f: ffi::CommandFn, count: c_int, key: c_int) -> Result<c_int, ff
 /// After a `C-c` or a jump to bash's top level, it quits without asking.
 /// It asks only in a command or in `inkline-accept-functions`.
 fn y_or_n_p(ctx: &mut TulispContext, prompt: &str) -> Result<TulispObject, Error> {
+    buffer::refuse_when_read_only("y-or-n-p")?;
     // `UNDO_GROUP` is set while a Lisp step runs (`one_step`).
     if UNDO_GROUP.get().is_none()
         || IN_HOOK
@@ -770,16 +772,21 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun("y-or-n-p", |ctx: &mut TulispContext, prompt: String| {
         y_or_n_p(ctx, &prompt)
     });
-    ctx.defun("ding", |_arg: Option<TulispObject>| {
-        ffi::ding();
-        TulispObject::nil()
-    });
+    ctx.defun(
+        "ding",
+        |_arg: Option<TulispObject>| -> Result<TulispObject, Error> {
+            buffer::refuse_when_read_only("ding")?;
+            ffi::ding();
+            Ok(TulispObject::nil())
+        },
+    );
     ctx.defun(
         "message",
         |ctx: &mut TulispContext,
          format: TulispObject,
          args: Rest<TulispObject>|
          -> Result<TulispObject, Error> {
+            buffer::refuse_when_read_only("message")?;
             if format.null() {
                 if buffer::editing() {
                     crate::hooks::clear_message();
@@ -794,6 +801,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "print",
         |value: TulispObject| -> Result<TulispObject, Error> {
+            buffer::refuse_when_read_only("print")?;
             print(&format!("{}\n", value.fmt_string()))?;
             Ok(value)
         },
@@ -801,6 +809,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "princ",
         |value: TulispObject| -> Result<TulispObject, Error> {
+            buffer::refuse_when_read_only("princ")?;
             print(&value.fmt_string())?;
             Ok(value)
         },
@@ -808,6 +817,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         "prin1",
         |value: TulispObject| -> Result<TulispObject, Error> {
+            buffer::refuse_when_read_only("prin1")?;
             print(&value.to_string())?;
             Ok(value)
         },

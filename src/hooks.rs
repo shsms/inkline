@@ -692,7 +692,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                     end_update();
                     ffi::flush_out();
                 },
-                || (),
+                draw_below_notice,
             ),
             // Readline's reader stops on these and leaves the signal to be
             // handled after the read.
@@ -732,7 +732,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                         end_update();
                         ffi::flush_out();
                     },
-                    || (),
+                    draw_below_notice,
                 );
             }
         }
@@ -1047,8 +1047,7 @@ fn repaint_line() -> bool {
     let Some(line) = ffi::line() else {
         return false;
     };
-    let message = MESSAGE.with_borrow(Clone::clone);
-    if (line.is_empty() && message.is_none())
+    if (line.is_empty() && MESSAGE.with_borrow(Option::is_none))
         || STATE.with_borrow(|s| s.displaced)
         || left_to_readline()
     {
@@ -1063,10 +1062,17 @@ fn repaint_line() -> bool {
     let suggestion_lines = crate::lisp::settings::suggestion_lines();
     let path = ffi::shell_variable("PATH").unwrap_or_default();
     let suggestion = if editing && !line.is_empty() && point == line.len() {
-        ffi::history_find_map(|entry| suggest::rest(&line, entry).map(str::to_owned))
+        ffi::history_find_map(|entry| suggest::rest(&line, entry).map(str::to_owned)).or_else(
+            || {
+                let full = crate::lisp::hooks::suggestion(&line)?;
+                suggest::rest(&line, &full).map(str::to_owned)
+            },
+        )
     } else {
         None
     };
+    // Read after the suggestion hook, which may have set it.
+    let message = MESSAGE.with_borrow(Clone::clone);
     STATE.with_borrow_mut(|s| {
         let error = error_to_underline(s, &line, point);
         let paths = &mut s.paths;
