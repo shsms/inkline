@@ -46,6 +46,14 @@ Things to check: which step of the reload drops them (reading
 variables), and whether something there sets the terminal up again in
 a way that throws away input not yet read.
 
+** TODO A deeply nested line overflows the stack
+
+A line nested about 5,000 to 8,000 levels deep, such as ~"$(~ typed
+over and over, overflows an 8 MB stack in ~args::commands~, which walks
+the parse tree by calling itself for each level; ~Lexer::spans~ does
+the same at about 16,000 levels. The overflow kills bash. Give both
+walks a cap on the depth they go to.
+
 * Code
 
 ** TODO Write the "single function" check for hooks once
