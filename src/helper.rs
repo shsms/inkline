@@ -215,6 +215,54 @@ pub fn replies(
     })
 }
 
+/// The sockets of the helpers that owe inkline something: those still
+/// starting, and those with a request in flight. Waiting for a key also
+/// waits on them, so that `read_waiting` can take what they send.
+pub fn waiting_fds() -> Vec<RawFd> {
+    HELPERS.with_borrow(|helpers| {
+        helpers
+            .iter()
+            .filter_map(|h| match &h.state {
+                State::Starting(process) => Some(process.fd()),
+                State::Running(running) if running.in_flight.is_some() => {
+                    Some(running.process.fd())
+                }
+                State::NotStarted | State::Running(_) | State::Off(_) => None,
+            })
+            .collect()
+    })
+}
+
+/// Reads what the helpers in `waiting_fds` have sent, without waiting:
+/// their first lines, and replies, which are kept for the next redraw to
+/// find. A helper that breaks the protocol, writes too much or exits is
+/// turned off, with a message for `take_notices`. Whether the line must be
+/// drawn again: a reply came (the redraw uses it, or sends the request for
+/// the line as it is now), a helper started running (the redraw sends it
+/// its request), or a helper was turned off.
+pub fn read_waiting() -> bool {
+    HELPERS.with_borrow_mut(|helpers| {
+        let mut changed = false;
+        for h in helpers.iter_mut() {
+            let read = match &mut h.state {
+                State::Starting(_) => h
+                    .read_first_line()
+                    .map(|()| matches!(h.state, State::Running(_))),
+                State::Running(running) if running.in_flight.is_some() => running.read_reply(),
+                State::NotStarted | State::Running(_) | State::Off(_) => continue,
+            };
+            match read {
+                Ok(read) => changed |= read,
+                Err(reason) => {
+                    h.turn_off(reason);
+                    changed = true;
+                }
+            }
+        }
+        changed
+    })
+}
+
 /// The requests in `asks` for the helper for `name`, in order.
 fn requests_for<'a>(asks: &'a [(String, Request)], name: &str) -> Vec<&'a Request> {
     asks.iter()
@@ -313,31 +361,19 @@ impl Helper {
 
 impl Running {
     /// See `Helper::advance`.
+    ///
+    /// What it read is always looked at before it returns, so a whole reply
+    /// is never left in the buffer, where waiting on the socket would not
+    /// see it.
     fn advance(
         &mut self,
         requests: &[&Request],
         deadline: Instant,
         interrupted: fn() -> bool,
     ) -> Result<Option<RawFd>, String> {
+        let mut read_some = false;
         loop {
-            if let Some((id, request)) = &self.in_flight {
-                let lens: Vec<usize> = request.1.iter().map(|(_, text)| text.len()).collect();
-                match protocol::reply(self.process.buffer(), *id, &lens, &mut self.reply_seen) {
-                    Read::Done(reply, used) => {
-                        let wanted = *id > self.forgotten;
-                        self.process.buffer().drain(..used);
-                        self.reply_seen = 0;
-                        if let Some((_, request)) = self.in_flight.take()
-                            && wanted
-                        {
-                            self.keep(request, reply);
-                        }
-                        continue;
-                    }
-                    Read::Bad(reason) => return Err(reason),
-                    Read::Incomplete => check_unread(&mut self.process)?,
-                }
-            }
+            self.take_reply()?;
             let Some(&unanswered) = requests.iter().find(|request| self.kept(request).is_none())
             else {
                 return Ok(None);
@@ -345,9 +381,55 @@ impl Running {
             if self.in_flight.is_none() {
                 self.send(unanswered, interrupted)?;
             }
-            if !self.process.fill(None)? || Instant::now() >= deadline {
+            if read_some && Instant::now() >= deadline {
                 return Ok(Some(self.process.fd()));
             }
+            if !self.process.fill(None)? {
+                return Ok(Some(self.process.fd()));
+            }
+            read_some = true;
+        }
+    }
+
+    /// Reads what has come towards the reply to the request in flight,
+    /// without waiting, and takes the reply once it is whole. Whether one
+    /// came, or the reason the helper must be turned off.
+    fn read_reply(&mut self) -> Result<bool, String> {
+        loop {
+            if self.take_reply()? {
+                return Ok(true);
+            }
+            if self.in_flight.is_none() {
+                return Ok(false);
+            }
+            if !self.process.fill(None)? {
+                return Ok(false);
+            }
+        }
+    }
+
+    /// Takes the reply to the request in flight if the buffer holds all of
+    /// it: keeps it, or drops it if it is forgotten. Whether one came, or
+    /// the reason the helper must be turned off.
+    fn take_reply(&mut self) -> Result<bool, String> {
+        let Some((id, request)) = &self.in_flight else {
+            return Ok(false);
+        };
+        let lens: Vec<usize> = request.1.iter().map(|(_, text)| text.len()).collect();
+        match protocol::reply(self.process.buffer(), *id, &lens, &mut self.reply_seen) {
+            Read::Done(reply, used) => {
+                let wanted = *id > self.forgotten;
+                self.process.buffer().drain(..used);
+                self.reply_seen = 0;
+                if let Some((_, request)) = self.in_flight.take()
+                    && wanted
+                {
+                    self.keep(request, reply);
+                }
+                Ok(true)
+            }
+            Read::Bad(reason) => Err(reason),
+            Read::Incomplete => check_unread(&mut self.process).map(|()| false),
         }
     }
 
@@ -503,6 +585,84 @@ mod tests {
         assert!(got[0].is_some());
         let got = ask(&["a"], Duration::ZERO);
         assert!(got[0].is_some(), "the reply for `a` was kept");
+    }
+
+    /// Waits on `waiting_fds` and reads them until `done`, or two seconds
+    /// have passed. Whether `read_waiting` said the line must be drawn
+    /// again.
+    fn read_until(done: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut changed = false;
+        while !done() && Instant::now() < deadline {
+            let fds = waiting_fds();
+            assert!(!fds.is_empty(), "nothing to wait on");
+            process::readable(&fds, deadline);
+            changed |= read_waiting();
+        }
+        changed
+    }
+
+    #[test]
+    fn a_reply_that_comes_between_redraws_is_kept() {
+        register("csvm", fake("late"));
+        assert!(prepare_until_started("csvm").is_empty());
+        assert!(waiting_fds().is_empty(), "nothing asked yet");
+        assert_eq!(ask(&["a"], Duration::from_millis(20)), [None]);
+        assert!(!read_waiting(), "nothing has come yet");
+        let answered = || {
+            HELPERS
+                .with_borrow(|hs| matches!(&hs[0].state, State::Running(r) if !r.kept.is_empty()))
+        };
+        assert!(read_until(answered));
+        assert!(waiting_fds().is_empty(), "nothing in flight");
+        assert!(ask(&["a"], Duration::ZERO)[0].is_some());
+    }
+
+    /// A reply to a request sent before `forget_replies` is dropped when it
+    /// comes, and asks for a redraw, which sends the request for the line
+    /// as it is now.
+    #[test]
+    fn a_forgotten_reply_is_dropped_and_the_line_asked_about_again() {
+        register("csvm", fake("late"));
+        assert!(prepare_until_started("csvm").is_empty());
+        assert_eq!(ask(&["a"], Duration::ZERO), [None]);
+        forget_replies();
+        // Its request cannot go out while the forgotten one is in flight.
+        assert_eq!(ask(&["a"], Duration::ZERO), [None]);
+        let idle = || waiting_fds().is_empty();
+        assert!(read_until(idle), "the dropped reply asks for a redraw");
+        let kept = || {
+            HELPERS
+                .with_borrow(|hs| matches!(&hs[0].state, State::Running(r) if !r.kept.is_empty()))
+        };
+        assert!(!kept(), "the forgotten reply is not kept");
+        assert!(ask(&["a"], Duration::from_secs(2))[0].is_some());
+    }
+
+    #[test]
+    fn a_helper_still_starting_is_waited_on() {
+        // It prints its first line after 0.3 s.
+        register("csvm", fake("slow"));
+        prepare(&["csvm".to_owned()], &path(), || None);
+        assert_eq!(waiting_fds().len(), 1, "waited on while starting");
+        assert!(!read_waiting(), "its first line has not come");
+        let running = || HELPERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
+        assert!(read_until(running), "moving to running asks for a redraw");
+        assert!(running());
+        assert!(waiting_fds().is_empty(), "nothing in flight");
+        assert!(take_notices().is_empty());
+    }
+
+    #[test]
+    fn a_helper_that_exits_between_redraws_is_off() {
+        register("csvm", fake("exit"));
+        assert!(prepare_until_started("csvm").is_empty());
+        // It exits once it has read the request this sends.
+        assert_eq!(ask(&["a"], Duration::ZERO), [None]);
+        let off = || HELPERS.with_borrow(|hs| matches!(hs[0].state, State::Off(_)));
+        assert!(read_until(off));
+        assert_eq!(take_notices(), ["inkline: highlight csvm: off (exited)"]);
+        assert!(waiting_fds().is_empty());
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! binary when `enable -f` loads it.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_ulong, c_void};
+use std::os::fd::RawFd;
 
 pub const EXECUTION_SUCCESS: c_int = 0;
 pub const EXECUTION_FAILURE: c_int = 1;
@@ -507,6 +508,9 @@ pub enum Wait {
     Signal(c_int),
     /// Waiting failed; readline's own reader will report it.
     Error,
+    /// One of the other files waited on became readable or hung up, and
+    /// no input is ready.
+    Other,
 }
 
 /// Milliseconds left until readline's timeout (`read -t`), rounded up, or -1
@@ -537,18 +541,20 @@ fn timeout_remaining() -> c_int {
 }
 
 /// Blocks until `stream` has input, readline's timeout is up, `pause`
-/// milliseconds pass, or a signal arrives.
-pub fn wait_for_input(stream: *mut libc::FILE, pause: Option<c_int>) -> Wait {
+/// milliseconds pass, a signal arrives, or one of the files in `also` is
+/// readable or hangs up.
+pub fn wait_for_input(stream: *mut libc::FILE, pause: Option<c_int>, also: &[RawFd]) -> Wait {
     let remaining = timeout_remaining();
     // The pause only counts if it ends before readline's timeout.
     let pause = pause.filter(|&p| remaining < 0 || p < remaining);
-    match poll_input(stream, pause.unwrap_or(remaining)) {
-        0 if pause.is_some() => Wait::Paused,
-        n if n >= 0 => Wait::Ready,
-        _ if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) => {
+    match poll_input(stream, pause.unwrap_or(remaining), also) {
+        Polled::TimedOut if pause.is_some() => Wait::Paused,
+        Polled::Input | Polled::TimedOut => Wait::Ready,
+        Polled::Other => Wait::Other,
+        Polled::Failed(error) if error.raw_os_error() == Some(libc::EINTR) => {
             Wait::Signal(unsafe { rl_pending_signal() })
         }
-        _ => Wait::Error,
+        Polled::Failed(_) => Wait::Error,
     }
 }
 
@@ -807,7 +813,9 @@ pub fn input_waiting() -> bool {
 /// paste, or read by readline and put back. Macro text does not count.
 pub fn key_waiting() -> bool {
     unsafe {
-        rl_pending_input != 0 || _rl_pushed_input_available() != 0 || poll_input(rl_instream, 0) > 0
+        rl_pending_input != 0
+            || _rl_pushed_input_available() != 0
+            || matches!(poll_input(rl_instream, 0, &[]), Polled::Input)
     }
 }
 
@@ -836,21 +844,46 @@ unsafe extern "C" fn read_key(_count: c_int, _key: c_int) -> c_int {
     }
 }
 
-/// `poll` on `stream`, or on standard input when it is null, for up to
-/// `timeout` milliseconds (-1 waits for ever): above 0 when input is waiting,
-/// 0 when the time ran out, -1 on an error.
-fn poll_input(stream: *mut libc::FILE, timeout: c_int) -> c_int {
+/// What `poll_input` found.
+enum Polled {
+    /// Input is waiting.
+    Input,
+    /// No input is waiting, and one of the other files is readable or hung
+    /// up.
+    Other,
+    /// The time ran out.
+    TimedOut,
+    /// `poll` failed with this error.
+    Failed(std::io::Error),
+}
+
+/// `poll` on `stream`, or on standard input when it is null, and on the
+/// files in `also`, for up to `timeout` milliseconds (-1 waits for ever).
+fn poll_input(stream: *mut libc::FILE, timeout: c_int, also: &[RawFd]) -> Polled {
     let fd = if stream.is_null() {
         0
     } else {
         unsafe { libc::fileno(stream) }
     };
-    let mut poll = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    unsafe { libc::poll(&mut poll, 1, timeout) }
+    let mut fds: Vec<libc::pollfd> = std::iter::once(fd)
+        .chain(also.iter().copied())
+        .map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    // SAFETY: `fds` is a live array of `fds.len()` entries.
+    let n = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
+    if n < 0 {
+        Polled::Failed(std::io::Error::last_os_error())
+    } else if n == 0 {
+        Polled::TimedOut
+    } else if fds[0].revents != 0 {
+        Polled::Input
+    } else {
+        Polled::Other
+    }
 }
 
 // ---- Pairing ----

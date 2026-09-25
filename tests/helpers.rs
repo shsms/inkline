@@ -452,3 +452,88 @@ fn garbage_turns_a_helper_off() {
         has_row(s, "inkline: highlight csvm: off (bad reply: \"nonsense\")")
     });
 }
+
+#[test]
+fn a_late_reply_is_painted_without_a_key() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("late")),
+        ..Options::default()
+    });
+    sh.send("csvm 'select a'");
+    sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'select a'");
+    // No key after this: the reply comes about 0.5 s later.
+    sh.wait_for("the late colours", |s| fg_is(s, "select", Color::Idx(2)));
+}
+
+#[test]
+fn a_stale_reply_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake_logging("late", &log)),
+        ..Options::default()
+    });
+    // The reply for `7` makes its first byte a number.
+    sh.send("csvm '7'");
+    wait_for_log(&log, "final:7");
+    sh.send("\x15csvm 'zz'");
+    // The request for `zz` goes out once the reply for `7` has come, and
+    // its reply comes about 0.5 s later.
+    wait_for_log(&log, "final:zz");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let s = sh.screen();
+    assert_eq!(cursor_row(&s), "$ csvm 'zz'");
+    assert_eq!(
+        fg(&s, "zz"),
+        fg(&s, "'zz"),
+        "the reply for `7` is not painted on `zz`:\n{}",
+        dump(&s)
+    );
+    sh.wait_for("the new colours", |s| fg_is(s, "zz", Color::Idx(2)));
+}
+
+#[test]
+fn a_late_reply_waits_for_a_question_to_be_answered() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("late")),
+        rc: "complete -W 'a1 a2 a3' csvm\n".into(),
+        inputrc: Some("set completion-query-items 2\n".into()),
+        ..Options::default()
+    });
+    sh.send("csvm 'select' a");
+    sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'select' a");
+    sh.send("\t\t");
+    let question = "Display all 3 possibilities? (y or n)";
+    sh.wait_for("the question", |s| cursor_row(s) == question);
+    // Well past the reply.
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), question, "{}", dump(&s));
+    assert!(has_row(&s, "$ csvm 'select' a"), "{}", dump(&s));
+    assert!(!fg_is(&s, "select", Color::Idx(2)), "{}", dump(&s));
+    sh.send("n");
+    sh.wait_for("the colours", |s| {
+        cursor_row(s) == "$ csvm 'select' a" && fg_is(s, "select", Color::Idx(2))
+    });
+}
+
+#[test]
+fn part_of_a_reply_does_not_hold_up_the_underline() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("split")),
+        rc: "inkline eval '(setq inkline-colors \"error=4\")' >/dev/null\n".into(),
+        ..Options::default()
+    });
+    // The first span comes during the pause; the rest 2 s later.
+    let began = std::time::Instant::now();
+    sh.send("csvm 'a b'; echo ) x");
+    sh.wait_for("the underline", |s| underlined(s, ")"));
+    let took = began.elapsed();
+    // The rest of the reply comes 2 s after its first span; the bound
+    // leaves room for a slow start.
+    assert!(
+        took < std::time::Duration::from_millis(1700),
+        "took {took:?}"
+    );
+    sh.wait_for("the colours", |s| fg_is(s, "b", Color::Idx(4)));
+}

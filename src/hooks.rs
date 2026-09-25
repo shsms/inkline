@@ -664,7 +664,10 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
 /// - after a signal interrupts the wait and bash returns to it (a window
 ///   resize, a background job ending), inkline repaints the line straight away;
 ///   for a resize, readline has redrawn it first. If bash may have printed
-///   while handling the signal, readline draws the rest of the line instead.
+///   while handling the signal, readline draws the rest of the line instead;
+/// - a highlight helper's reply that comes after the redraw stopped waiting
+///   for it is painted as soon as it comes, while readline waits at the
+///   main prompt for the key of the next command and no Lisp runs.
 ///
 /// Readline's own drawing function is in place while waiting, so a resize is
 /// redrawn the way readline expects; inkline's is installed once the key
@@ -699,15 +702,49 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         NESTED_LINE.set(true);
     }
     let in_lisp = running && !NESTED_LINE.get();
+    // When the pause asked for began: a repaint for a helper's reply does
+    // not start it again.
+    let mut pause_began = None;
     let key = loop {
         if take_interrupt(in_lisp) {
             break Some(CTRL_G);
         }
+        // Whether readline reads the key of the next command in plain
+        // editing. While it waits for the answer to a question, a search's
+        // keys or a count, the line is not drawn as it was, and a repaint
+        // would draw over what readline shows: helpers are not waited on
+        // then.
+        let plain_key = guard(
+            || ffi::reading_command_key() && ffi::normal_editing(),
+            || false,
+        );
         let pause = guard(
             || STATE.with_borrow_mut(|s| std::mem::take(&mut s.wants_pause)),
             || false,
         )
-        .then_some(PAUSE_MS);
+        .then(|| {
+            let began: &Instant = pause_began.get_or_insert_with(Instant::now);
+            let waited = c_int::try_from(began.elapsed().as_millis()).unwrap_or(c_int::MAX);
+            (PAUSE_MS - waited).max(0)
+        });
+        // The highlight helpers that owe inkline a reply or their first
+        // line: waited on only at the main prompt, for a `plain_key`, while
+        // inkline is on and no Lisp runs (a line that shell code run from
+        // Lisp reads counts as Lisp running).
+        let helpers = guard(
+            || {
+                if running
+                    || !plain_key
+                    || !ffi::reading_command()
+                    || !STATE.with_borrow(|s| s.enabled)
+                {
+                    Vec::new()
+                } else {
+                    helper::waiting_fds()
+                }
+            },
+            Vec::new,
+        );
         // A signal that came before the wait did not interrupt it: it is
         // handled first, or it would wait for a key. When a key is typed
         // ahead, or keys typed after a `C-c` have already been read, it waits
@@ -717,17 +754,32 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         let signal = (!in_lisp && !typed_ahead && !KEYS_AFTER_C_C.get())
             .then(ffi::signal_before_wait)
             .flatten();
-        match signal.unwrap_or_else(|| ffi::wait_for_input(stream, pause)) {
+        match signal.unwrap_or_else(|| ffi::wait_for_input(stream, pause, &helpers)) {
             ffi::Wait::Ready | ffi::Wait::Error => break None,
             // Typing paused with a new error on the line: underline it.
-            ffi::Wait::Paused => guard(
+            ffi::Wait::Paused => {
+                pause_began = None;
+                guard(
+                    || {
+                        STATE.with_borrow_mut(|s| s.paused_on = ffi::line());
+                        redraw();
+                    },
+                    draw_below_notice,
+                );
+            }
+            // A helper sent something: paint its reply, or say it was
+            // turned off once typing pauses. The redraw asks the helpers
+            // again: a reply kept for the line's arguments now answers,
+            // one for arguments no longer on the line is dropped, and a
+            // request for the line as it is now is sent. Without a
+            // redraw, a pause asked for is still waited for.
+            ffi::Wait::Other => guard(
                 || {
-                    STATE.with_borrow_mut(|s| s.paused_on = ffi::line());
-                    begin_update();
-                    erase_suggestion_and_message();
-                    draw();
-                    end_update();
-                    ffi::flush_out();
+                    if helper::read_waiting() {
+                        redraw();
+                    } else if pause.is_some() {
+                        STATE.with_borrow_mut(|s| s.wants_pause = true);
+                    }
                 },
                 draw_below_notice,
             ),
@@ -746,6 +798,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             // A `C-c` is taken at the top of the loop.
             ffi::Wait::Signal(signal) if in_lisp => SIGNAL_IN_LISP.set(Some(signal)),
             ffi::Wait::Signal(signal) => {
+                pause_began = None;
                 // Readline's redraw after a resize and inkline's repaint go out
                 // as one update. Other signals are not held back: bash may jump
                 // from them to a new prompt and run commands there. Bash may
@@ -1020,6 +1073,16 @@ extern "C" fn redisplay() {
     if lisp_ran {
         after_lisp();
     }
+}
+
+/// Draws the line again at once, as one update, while readline waits for a
+/// key.
+fn redraw() {
+    begin_update();
+    erase_suggestion_and_message();
+    draw();
+    end_update();
+    ffi::flush_out();
 }
 
 /// After a panic, whose notice ended on a new row: readline draws the line
