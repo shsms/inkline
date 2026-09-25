@@ -1,9 +1,10 @@
 # inkline's Lisp reference
 
 Everything this version of inkline adds to tulisp, its embedded Lisp
-interpreter: the settings `init.el` can set, the functions it can call, and
-where inkline's Lisp differs from Emacs's. See the [README](../README.md)
-for how `init.el` is found and read, and for the default key layout.
+interpreter: the settings `init.el` can set, the functions it can call, the
+hooks it can add functions to, and where inkline's Lisp differs from Emacs's.
+See the [README](../README.md) for how `init.el` is found and read, and for the
+default key layout.
 
 ## Settings
 
@@ -142,35 +143,183 @@ can find it too.
   more, its readline function is free for another command; a named command
   keeps its function for the life of the process, since readline keeps its
   name registered.
-- `(call-interactively COMMAND)` — runs `COMMAND` (see above) the way
-  pressing a key bound to it would, with `current-prefix-arg` as its count.
-  Only works while a command is already running. A Lisp command or lambda
-  runs directly, with the same `current-prefix-arg`, `this-command` and
-  `last-command` already in effect — it does not get its own. A readline or
-  inkline command runs with the key the calling Lisp command was run for;
-  after a `C-c` came (while reading a key, or while Lisp computed), or
-  shell code jumped as above, it raises `quit` instead of running.
+- `(call-interactively COMMAND)` — runs `COMMAND` (see above) the way pressing a
+  key bound to it would, with `current-prefix-arg` as its count. Only works
+  while a command or a hook function (see [Hooks](#hooks)) is already running. A
+  Lisp command or lambda runs directly, with the same `current-prefix-arg`,
+  `this-command` and `last-command` already in effect — it does not get its own.
+  A readline or inkline command runs with the key the calling Lisp command or
+  hook was run for; after a `C-c` came (while reading a key, while Lisp
+  computed, or while a readline command ran), or shell code jumped as above, it
+  raises `quit` instead of running.
 - `(message FORMAT &rest ARGS)` — formats `FORMAT` and `ARGS` as `format`
   does and shows the text under the line until the next key, replacing any
   message already showing; `(message nil)` clears it. Only the text up to
   its first line break or other control character shows (a tab is kept).
   Under the line, it is cut to fit the screen's width; where it cannot go
   under the line (such as while inkline is off), it is printed in full
-  above the prompt, and a long text takes more rows. Outside a command, it
-  goes to stderr instead, and `(message nil)` does nothing.
+  above the prompt, and a long text takes more rows. Outside a command or a
+  hook function, it goes to stderr instead, and `(message nil)` does
+  nothing.
 - `(print VALUE)`, `(princ VALUE)`, `(prin1 VALUE)` — show `VALUE` under the
   line the same way: `print` and `princ` write `VALUE` as plain text, as
   tulisp's `print` and `princ` do (`print` adds a newline, which does not
   show under the line; Emacs's `print` writes `VALUE` the way `prin1` does),
-  and `prin1` writes `VALUE` as Lisp would read it back. Outside a command,
-  they write to stdout at once instead. All three return `VALUE`.
+  and `prin1` writes `VALUE` as Lisp would read it back. Outside a command
+  or a hook function, they write to stdout at once instead. All three
+  return `VALUE`.
 - `(y-or-n-p PROMPT)` — shows `PROMPT(y or n) ` under the line and reads one
   key: `y` or `Y` returns `t`, `n` or `N` returns `nil`, any other key rings
   the bell and asks again. `C-g`, `C-c`, or a key typed before it asks,
   raises `quit` instead of answering; keys that come from a readline macro
   (text bound to a key with `bind`) or a keyboard macro do answer it. Only
-  works while a command is already running.
+  works in a command or in `inkline-accept-functions`; elsewhere it is an
+  error.
 - `(ding)` — rings the bell.
+
+## Hooks
+
+A hook is a variable that holds a list of functions. inkline calls the functions
+in the list, in order, at certain times. The four hooks below start as `nil`.
+
+- `(add-hook HOOK FUNCTION &optional AT-END LOCAL)` — adds `FUNCTION` to the
+  list in the variable `HOOK`: at the front, or at the end when `AT-END` is
+  non-`nil`. A function already in the list (compared with `equal`) is not added
+  again and stays where it is. `HOOK` does not need to exist first. `LOCAL` is
+  ignored: inkline has no buffer-local variables. Returns the new list.
+- `(remove-hook HOOK FUNCTION &optional LOCAL)` — removes every copy of
+  `FUNCTION` (compared with `equal`) from `HOOK`. `LOCAL` is ignored. Returns
+  `nil`.
+
+As in Emacs, a hook may hold a single function instead of a list; `add-hook`
+then turns it into a list. A `t` in the list is skipped.
+
+Hooks run only at bash's main prompt while it reads a command, and only while
+inkline is on. They do not run in `read -e`, at bash's `>` prompt (where it asks
+for the rest of an unfinished command), while inkline is off, or while Lisp is
+already running. Changes that hook functions make never run
+`inkline-after-change-functions`.
+
+In every hook, `current-prefix-arg` is `nil`. So are `this-command` and
+`last-command`, except in `inkline-after-change-functions`.
+`call-interactively` works in every hook except `inkline-suggestion-functions`,
+but `call-interactively` of `undo`, `revert-line` or `vi-undo` fails with an
+error such as `undo cannot run in a hook`. `y-or-n-p` works only in
+`inkline-accept-functions`; in the line-start and after-change hooks it fails
+with `y-or-n-p works only in a command or in inkline-accept-functions`.
+
+A readline command run with `call-interactively` gets the key that ran the hook,
+so `(call-interactively 'self-insert)` inserts the key that runs the line in
+`inkline-accept-functions` (a carriage return, for Enter), and nothing in
+`inkline-line-start-functions`, which no key runs.
+
+In the messages below, `NAME` is the function's name, or `lambda`; when more
+than one function fails, the messages under the line are joined with `; `.
+
+### `inkline-accept-functions`
+
+Called with no arguments just before a line runs: when Enter
+(`accept-or-newline`) or `M-RET` (`accept-as-is`) runs it, or `C-j`
+(`insert-newline`) while a macro replays or where inkline adds no lines (with
+`horizontal-scroll-mode` on, or on a terminal that cannot move the cursor up).
+Also called for an empty line.
+
+- The functions see the line as typed, before bash's history and alias
+  expansion. The line runs as they leave it, even if it is now unfinished: bash
+  then asks for the rest at its `>` prompt. A line they changed is drawn again
+  before it runs, and history keeps the line as it ran.
+- `(user-error …)` refuses the line: every change of this run is undone, its
+  text shows under the line on its own (with no `inkline: NAME:`), and the line
+  stays for editing. No later function runs. A `quit` refuses the line the same
+  way, and shows nothing. `C-c` at a `y-or-n-p` question is a `quit`; bash then
+  throws the line away and gives a new prompt, as `C-c` does.
+- Any other error undoes that function's own changes, and prints `inkline: NAME:
+  TEXT` on a row of its own above the command's output, so it stays in the
+  scrollback. The next function runs, and the line still runs.
+- A `message` does not stay on screen once the line runs.
+- Not called while a `C-c` waits for bash, which throws that line away. Not
+  called when `C-o` (`operate-and-get-next`), `M-#` (`comment-lines`) or a key
+  bound with `bind` to readline's `accept-line` runs the line.
+
+### `inkline-line-start-functions`
+
+Called with no arguments when a new command line begins at the main prompt,
+before you type. The line may already hold text: after `C-o`, the next history
+line.
+
+- What they change is one undo step. Point stays where they leave it, and the
+  line is drawn again when they changed it. The suggestion and
+  `inkline-after-change-functions` start from the line as they leave it.
+- A function that fails, also with `user-error`, has its own changes undone but
+  stays in the hook. `inkline: NAME: TEXT` shows under the line, and the next
+  function runs.
+- A `quit` undoes every change of this run, and no later function runs. `C-c`
+  in a readline command a function runs with `call-interactively` (while it
+  reads a key or runs shell code) is a `quit`, and bash then gives a new prompt,
+  where the functions run again.
+- If a function never ends (an endless loop) at the first line of a shell, the
+  next shell skips `init.el`, as it does for an `init.el` that never finishes
+  (see the README). A function at the first line that waits for a key (in a
+  readline command run with `call-interactively`) for more than ten seconds
+  counts as stuck too: a new shell started meanwhile skips `init.el`.
+
+### `inkline-after-change-functions`
+
+Called with `(BEG END OLD-LEN)`, as in Emacs, once after each key whose command
+changed the line: after the command has returned, and before the line is drawn.
+
+- `BEG` and `END` are the positions of the changed text in the line as it is
+  now; `OLD-LEN` is how many characters that part had before. It is the smallest
+  part that differs, and several changes in one key make one part. When the
+  change could be in more than one place, as when a space is typed before
+  another space, it is the place nearest the cursor: where it was before the key
+  or after it, whichever is further left.
+- The line is compared with the line after the last run of this hook, or of the
+  line-start hook: no difference, no call. Keys that readline handles in one go,
+  such as typed-ahead characters it inserts together, or a macro, can be one
+  change, as a paste is.
+- History recall, a search, undo and taking a suggestion are changes like any
+  other, as in Emacs. `this-command` is the name of the command the key ran, and
+  `last-command` that of the key before (`nil` for a lambda, and at the first
+  key of a line), so the functions can tell these apart. On bash 5.3, a key
+  that ends an incremental search (`C-r`) runs its own command with
+  `this-command` still naming the search, such as `reverse-search-history`.
+- Their changes are one undo step of their own, after the key's: the first `C-_`
+  takes back what they did and keeps what you typed.
+- Only called in plain editing: not while searching, reading a count (`M-3`) or
+  a quoted key (`C-v`), and not when the key ran the line.
+- A function that fails, also with `user-error`, has its own changes undone and
+  is removed from the hook. `inkline: NAME: TEXT (removed from
+  inkline-after-change-functions)` shows under the line. A `quit` undoes every
+  change of this run, and no later function runs.
+
+### `inkline-suggestion-functions`
+
+Called with the line as a string when inkline would show a history suggestion
+but history has none: the line is not empty, the cursor is at its end, and
+inkline draws the line, in plain editing. History always wins over these
+functions.
+
+- The first function that returns a string that starts with the line and is
+  longer wins. Any other value is no answer, and the next function is asked.
+- The rest of that string shows after the cursor as a history suggestion would:
+  cut at the first control character other than a newline or a tab, with a
+  newline giving a multi-line suggestion of at most `inkline-suggestion-lines`
+  lines. The same keys take it.
+- Each answer, `nil` included, is kept for that exact line text until the next
+  line starts. While what you type still matches the start of the suggestion, it
+  stays, and the functions are not asked again.
+- The functions may only read the line. Changing it, or moving point or the
+  mark, raises "the line cannot be changed here". Calling one of these raises an
+  error that names it, such as "message is not allowed in
+  inkline-suggestion-functions": `call-interactively`, `y-or-n-p`, `message`,
+  `print`, `princ`, `prin1`, `ding`, `kill-region`, `copy-region-as-kill`,
+  `delete-char` with `KILLFLAG`, `keymap-global-set`, `keymap-global-unset`,
+  `inkline-unbind-defaults` and `inkline-set-readline-variable`.
+- A function that fails, also with `user-error`, is removed from the hook.
+  `inkline: NAME: TEXT (removed from inkline-suggestion-functions)` shows under
+  the line. After a `quit`, no later function is asked, and that text of the
+  line gets no suggestion.
 
 ## The line
 
@@ -276,12 +425,10 @@ error. As on an empty line, `forward-char`, `backward-char` and
 `buffer-substring`, `buffer-substring-no-properties`, `delete-region`,
 `kill-region` and `copy-region-as-kill` with a position other than 1. Every
 function that changes the line's text, and `copy-region-as-kill`, raises "no
-line is being edited" instead. A change, or `copy-region-as-kill`, can also
-raise "the line cannot be changed here" when the installed line is
-read-only, though nothing in this version of inkline makes it so. When the
-line being edited is not valid UTF-8 (text in another encoding was typed or
-pasted), every function above raises "the line is not UTF-8" and changes
-nothing.
+line is being edited" instead. While `inkline-suggestion-functions` runs,
+the line is read-only: see [Hooks](#hooks). When the line being edited is
+not valid UTF-8 (text in another encoding was typed or pasted), every
+function above raises "the line is not UTF-8" and changes nothing.
 
 ## Other functions
 
@@ -378,6 +525,8 @@ tulisp lacks these; inkline defines them so they behave as Emacs's do.
   `%d` and `%f`.
 - A name is either a function or a variable, not both:
   `(let ((list 5)) (list 1))` fails, unlike in Emacs.
+- `add-hook` does not know Emacs's hook depths: any non-`nil` `AT-END`,
+  even a negative number, adds the function at the end.
 - `string-to-number` with a `BASE` other than 10 reads no sign:
   `(string-to-number "-ff" 16)` is 0.
 - `(interactive)` does nothing, `print` writes plain text, and there is no
