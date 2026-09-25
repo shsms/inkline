@@ -11,6 +11,7 @@ pub mod buffer;
 pub mod commands;
 pub mod emacs;
 pub mod errors;
+pub mod hooks;
 pub mod init;
 pub mod keydesc;
 #[cfg(not(test))]
@@ -67,6 +68,7 @@ fn new_context() -> TulispContext {
     ctx.set_max_eval_depth(lockout::max_eval_depth(lockout::stack_limit()));
     errors::register(&mut ctx);
     emacs::register(&mut ctx);
+    hooks::register(&mut ctx);
     buffer::register(&mut ctx);
     #[cfg(not(test))]
     commands::register(&mut ctx);
