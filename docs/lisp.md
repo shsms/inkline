@@ -20,8 +20,13 @@ change takes effect on the next key.
   where `previous-line-or-history` leaves the cursor in a multi-line entry
   it recalls.
 - `inkline-colors` (default `nil`): the colours inkline draws with, as an
-  alist of `(NAME . "SGR")` pairs, or a string in `LS_COLORS`'s format. See
-  the README's "Colours" section.
+  alist of `(NAME . "SGR")` pairs, or a string in `LS_COLORS`'s format. The
+  names are `command`, `unknown`, `keyword`, `option`, `string`, `variable`,
+  `operator`, `comment`, `suggestion` and `error`, and three that only
+  [highlight helpers](#highlight-helpers) use: `number` (default `36`),
+  `function` (default `32`) and `script` (default `2`), the style added on
+  top of every colour inside an argument a helper coloured. See the README's
+  "Colours" section.
 
 ## Keys
 
@@ -315,7 +320,8 @@ functions.
   inkline-suggestion-functions": `call-interactively`, `y-or-n-p`, `message`,
   `print`, `princ`, `prin1`, `ding`, `kill-region`, `copy-region-as-kill`,
   `delete-char` with `KILLFLAG`, `keymap-global-set`, `keymap-global-unset`,
-  `inkline-unbind-defaults` and `inkline-set-readline-variable`.
+  `inkline-unbind-defaults`, `inkline-set-readline-variable` and
+  `inkline-highlight-arguments`.
 - A function that fails, also with `user-error`, is removed from the hook.
   `inkline: NAME: TEXT (removed from inkline-suggestion-functions)` shows under
   the line. After a `quit`, no later function is asked, and that text of the
@@ -429,6 +435,33 @@ line is being edited" instead. While `inkline-suggestion-functions` runs,
 the line is read-only: see [Hooks](#hooks). When the line being edited is
 not valid UTF-8 (text in another encoding was typed or pasted), every
 function above raises "the line is not UTF-8" and changes nothing.
+
+## Highlight helpers
+
+A highlight helper is a program that tells inkline how to colour the
+arguments of one command, such as the script in `csvm 'sort id' data.csv`.
+See the README's
+["Colouring a program's arguments"](../README.md#colouring-a-programs-arguments),
+and [`docs/highlight-protocol.md`](highlight-protocol.md) for writing one.
+
+- `(inkline-highlight-arguments NAME PROGRAM)` — makes `PROGRAM` the helper
+  for the command `NAME`, a string. `PROGRAM` is a list of non-empty
+  strings: the program, then its arguments, such as `'("csvm"
+  "--highlight")`. A program name without a `/` is looked up in bash's
+  `PATH` when the helper starts; `~` and variables in `PROGRAM` are not
+  expanded. Returns `nil`. A `NAME` that is not a string, or a `PROGRAM`
+  that is neither such a list nor `nil`, is a `wrong-type-argument` error.
+  - `NAME` matches a command word that is exactly `NAME` once its quotes
+    are removed. An alias is not expanded: `alias c=csvm` needs
+    `(inkline-highlight-arguments "c" …)` too.
+  - Registering a `NAME` again, even with the same `PROGRAM`, replaces its
+    helper: the old process is stopped, and a new one starts the next time
+    a line holds the command. This also turns back on a helper that failed.
+  - `(inkline-highlight-arguments NAME nil)` removes the helper for `NAME`.
+  - `inkline reload` stops every helper and forgets them; `init.el` then
+    registers them again.
+  - Not allowed in `inkline-suggestion-functions` (see
+    [Hooks](#inkline-suggestion-functions)).
 
 ## Other functions
 
