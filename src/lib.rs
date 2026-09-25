@@ -1,6 +1,7 @@
 //! inkline: syntax highlighting, history suggestions and bracket pairing for
 //! bash's readline, loaded into bash with `enable -f`.
 
+pub mod args;
 pub mod colors;
 pub mod commands;
 pub mod helper;
