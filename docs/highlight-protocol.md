@@ -1,0 +1,288 @@
+# The highlight helper protocol
+
+A highlight helper is a program that tells inkline how to colour the
+arguments of one command. It is usually the command's own program, run in a
+special mode, such as `csvm --highlight`: it parses the arguments with the
+program's own parser, so the colours always match the language. This page is
+for people who write one. See the README's
+["Colouring a program's arguments"](../README.md#colouring-a-programs-arguments)
+for how a user sets one up, and [`docs/lisp.md`](lisp.md#highlight-helpers)
+for `inkline-highlight-arguments`.
+
+This is version 1 of the protocol. All numbers are decimal ASCII. Lengths
+and offsets count bytes, not characters: `é` is two bytes. Every line ends
+with one newline byte (`\n`), never `\r\n`. Fields on a line are separated by
+single spaces.
+
+## How inkline runs a helper
+
+- inkline starts the helper the first time a line holds its command, with
+  the program and arguments given to `inkline-highlight-arguments`. A program
+  name without a `/` is looked up in bash's `PATH`. The helper's environment
+  is what bash exports at that moment, as for a program bash runs then.
+- The helper's stdin and stdout are one socket, connected to inkline. Its
+  stderr is `/dev/null`, so anything it writes there is lost; to debug,
+  write to a file of your own.
+- The helper is not bash's child: bash's `jobs` and `wait` never see it. It
+  runs in a session of its own, so `C-c` at the prompt does not reach it.
+- The helper keeps running while the shell does, and answers one request
+  after another. When bash exits, or the helper is stopped (`inkline
+  reload`, `enable -d inkline`, the command registered again or its helper
+  removed with `nil`, or the helper turned off for one of the reasons
+  below), inkline closes its end of the socket, and the helper reads the
+  end of its input. There is no signal: the end of input is the only sign
+  to exit. A subshell that bash forked while the helper ran, such as
+  `while :; do sleep 100; done &`, holds a copy of inkline's end, so the
+  helper then sees the end of its input only once that subshell ends too.
+- The helper starts in `/`, so it never keeps a directory in use. Run the
+  program's own parser on the text the program would get, and use the
+  directory in each request (`:cwd`) to find files: that is the shell's
+  directory at the time of the request.
+
+## The first line
+
+As soon as it starts, the helper writes this line on its stdout:
+
+```
+inkline-highlight 1
+```
+
+The line may name extra requests the helper can answer, as words after the
+`1`, each after a single space: `inkline-highlight 1 indent`. inkline accepts
+the words, and only ever sends a helper the kinds of request it named.
+Version 1 defines no extra requests, so a helper should send the line with
+no words. Any other first line turns the helper off (`not a highlight
+helper`).
+
+## A request
+
+inkline writes a request on the helper's stdin:
+
+```
+:request ID
+:cwd LEN
+BYTES
+:arg KIND LEN
+BYTES
+…one :arg for each argument…
+:done
+```
+
+- `ID` counts up from 1, for each helper process.
+- `:cwd` gives the shell's current directory (bash's `PWD`); it is empty
+  when `PWD` is unset.
+- There is one `:arg` for each word of the command, in order. Argument 0 is
+  the command name.
+- `BYTES` is exactly `LEN` bytes, then one newline, which is not part of it.
+  The bytes may hold anything, newlines included, so read `LEN` bytes, not a
+  line.
+- `KIND` is `final` or `raw`:
+  - `final`: the argument exactly as the program will get it, after bash
+    removes the quotes and backslashes.
+  - `raw`: bash will still change the argument before the program gets it,
+    so `BYTES` is the text as typed, quote marks included. This is an
+    argument that holds a `$` (a variable, `$( … )`, `$(( … ))`, `$'…'`,
+    `$"…"`) or a backquote outside single quotes; or, outside all quotes, a
+    glob (`*`, `?`, `[`, or an extglob such as `@(…)`), a brace expansion
+    (`{a,b}`, `{1..5}`), a leading `~` (also after the `=` of a word such
+    as `x=~/a`, or after a later `:` in such a word, as in `PATH=a:~/b`),
+    or a process substitution (`<( … )`, `>( … )`).
+
+Redirections, such as `>out` or `2>&1`, and `VAR=x` words before the command
+name are not arguments. inkline sends a request only when it has none in
+flight to that helper, so a helper never has more than one request to
+answer at a time.
+
+## A reply
+
+The helper answers on its stdout:
+
+```
+:span ARG START END KIND
+:error ARG START END MESSAGE
+:end ID
+```
+
+- Zero or more `:span` lines, in any order. `ARG` is the argument's index.
+  `START` and `END` are byte offsets into that argument's `BYTES`, with
+  `START < END <= LEN`. `KIND` is one of `command`, `keyword`, `option`,
+  `operator`, `string`, `number`, `variable`, `function` and `comment`;
+  each is drawn with the `inkline-colors` key of the same name.
+- At most one `:error` line, with `START <= END` and `END <= LEN`. `MESSAGE`
+  is the rest of the line after the space that follows `END`: one line of
+  text. The space is there even when `MESSAGE` is empty (`:error 1 0 2 `);
+  without it the line does not parse. An error that has no place in the
+  arguments is written `:error - - - MESSAGE`.
+- `:end ID` ends the reply, with the `ID` of the request it answers.
+
+## An example
+
+The user types, in `/home/me/sales`:
+
+```bash
+csvm 'sort id | head 5' data.csv
+```
+
+inkline sends this request, the first of several: it sends one each time
+the arguments or the directory change, as the user types. Each line below
+ends with one `\n` byte, and there are no other bytes; the whole request is
+111 bytes:
+
+```
+:request 1
+:cwd 14
+/home/me/sales
+:arg final 4
+csvm
+:arg final 16
+sort id | head 5
+:arg final 8
+data.csv
+:done
+```
+
+Argument 1 is `sort id | head 5`, without its quote marks: that is what csvm
+gets. The helper answers:
+
+```
+:span 1 0 4 command
+:span 1 5 7 variable
+:span 1 8 9 operator
+:span 1 10 14 command
+:span 1 15 16 number
+:end 1
+```
+
+`:span 1 0 4 command` is bytes 0 to 4 of argument 1, `sort`. inkline maps
+the offsets back to what was typed, so `sort` on the line is drawn in the
+`command` colour, just after the quote mark.
+
+Next the user mistypes the column as `idd`. The request is the same,
+except for `:request 2` and the argument (now 17 bytes):
+
+```
+:arg final 17
+sort idd | head 5
+```
+
+and the helper answers with an error on bytes 5 to 8, `idd`:
+
+```
+:span 1 0 4 command
+:span 1 5 8 variable
+:span 1 9 10 operator
+:span 1 11 15 command
+:span 1 16 17 number
+:error 1 5 8 unknown column 'idd'
+:end 2
+```
+
+A `raw` argument is sent as typed. For `csvm "head $n" data.csv`, argument 1
+is:
+
+```
+:arg raw 9
+"head $n"
+```
+
+Its offsets count from the first `"`. inkline never paints the quote marks,
+and `$n` keeps bash's own colour, so the helper can colour the rest.
+
+## What inkline does with a reply
+
+- The spans go over bash's colours in the argument, on the characters that
+  were typed for those bytes. Quote marks are never painted, nor, in a
+  `final` argument, the backslashes bash removes. A variable such as `$n`
+  or `${n}` keeps bash's colour.
+- Every character of an argument that got at least one span is drawn with
+  the `script` style on top (dim, by default), except its quote marks and,
+  in a `final` argument, the backslashes bash removes.
+- The error is underlined once the user pauses typing, as a bash syntax
+  error is, and `NAME: MESSAGE` (the command's name, then the message) shows
+  under the line for as long as the underline does. An empty range
+  (`START = END`) underlines the character after it, or the argument's last
+  character when it is at the end. An error with no place, with a range
+  outside the argument, or with `START > END` shows only its message. An
+  error is not shown while the cursor is right at the end of its range
+  (the user is still typing it), inside a `raw` argument (bash will change
+  that text), or when bash sees a syntax error on the line.
+- inkline waits at most 15 ms for a reply each time it draws the line. A
+  reply that comes later is not a failure: inkline paints it when it comes,
+  if the arguments are still on the line.
+- inkline keeps a reply and uses it again, without asking, while the same
+  arguments and directory are on the line. So a change to a file the helper
+  reads, such as a CSV file's header, may show only once the arguments
+  change, or on the next line: each new line at the prompt asks again.
+
+## What inkline ignores
+
+So that later versions can add to a reply, inkline ignores, without turning
+the helper off:
+
+- a `:span` with a `KIND` it does not know;
+- a `:span` that overlaps a span kept before it in the same argument;
+- a `:span` whose `ARG` or offsets are outside the arguments, or whose
+  `START` is not below its `END`;
+- any other line starting with `:` whose keyword it does not know, such as
+  `:hint something`.
+
+## What turns a helper off
+
+A helper that fails is turned off until the user registers it again or runs
+`inkline reload`. The user sees `inkline: highlight NAME: off (REASON)` under
+the line once they pause typing, and `inkline status` shows `highlight NAME:
+off (REASON)`. The reasons:
+
+- `not found`: the program is not on bash's `PATH`, or does not exist.
+- `cannot run: …`: the program exists but cannot be started, with the
+  system's reason.
+- `not a highlight helper`: its first line is not `inkline-highlight 1`,
+  alone or followed by words.
+- `bad reply: "LINE"`: this line of the reply, cut to 40 bytes, breaks the
+  protocol. That is a line that does not start with `:` (an empty line
+  too); `:span`, `:error` or `:end` with fields that do not parse; a second
+  `:error` in one reply; or `:end` with the wrong `ID`.
+- `bad reply: too much output`: the helper wrote more than 1 MiB without
+  finishing its first line or a reply.
+- `bad reply: request not read`: the helper stopped reading its input, and
+  a request could not be written within a second.
+- `exited`: the helper exited, or closed its end of the socket.
+- `connection lost`: a command in the shell closed inkline's end of the
+  socket. inkline keeps it on the highest free descriptor below 256 (or
+  below the limit on open files, when that is lower), where bash keeps its
+  own.
+
+## The rules a helper must keep
+
+- Write the first line as soon as it starts, before reading anything.
+- Answer every request, in order, with exactly one reply ending in `:end ID`.
+- Flush the output after each `:end` line, and after the first line. The
+  output is a socket, not a terminal, so most languages buffer it until
+  told to flush; a reply stuck in the buffer never reaches inkline.
+- Write nothing else: no text before the first line or between replies.
+- Keep reading requests: never stop reading stdin while the shell runs.
+- Exit when stdin ends.
+- Never write to the terminal, and never read from it. The helper has no
+  terminal to use.
+
+## A working example
+
+[`tests/data/fake-highlight`](../tests/data/fake-highlight) is the small
+bash helper that inkline's own tests use. It shows the whole loop: the first
+line, reading `:cwd` and each `:arg` by its length with `read -N` (under
+`LC_ALL=C`, so that bash counts bytes, not characters), and writing the
+`:span`, `:error` and `:end` lines. Its first argument picks what it does,
+so that it can also break the protocol for tests; `words` is the plain
+case. Try it by hand:
+
+```bash
+printf ':request 1\n:cwd 1\n/\n:arg final 4\ncsvm\n:arg final 16\nsort id | head 5\n:done\n' |
+    tests/data/fake-highlight words
+```
+
+It prints `inkline-highlight 1`, the five `:span` lines of the example above,
+and `:end 1`. To use it in a shell, register it in `init.el`:
+
+```elisp
+(inkline-highlight-arguments "csvm" '("/path/to/inkline/tests/data/fake-highlight" "words"))
+```
