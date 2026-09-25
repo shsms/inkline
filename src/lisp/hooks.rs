@@ -48,9 +48,25 @@ const PRELUDE: &str = r#"
   nil)
 "#;
 
+thread_local! {
+    /// The symbol `inkline-after-change-functions` of the current interpreter,
+    /// so each key can see the hook is empty without taking the interpreter.
+    static AFTER_CHANGE_SYMBOL: std::cell::RefCell<Option<TulispObject>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub fn register(ctx: &mut TulispContext) {
     ctx.eval_prelude("<inkline-hooks>", PRELUDE)
         .expect("inkline's own Lisp compiles");
+    let symbol = ctx.intern(AFTER_CHANGE);
+    AFTER_CHANGE_SYMBOL.set(Some(symbol));
+}
+
+/// Whether `inkline-after-change-functions` holds any function.
+#[cfg(not(test))]
+fn after_change_has_functions() -> bool {
+    AFTER_CHANGE_SYMBOL
+        .with_borrow(|symbol| symbol.as_ref().is_some_and(|s| !functions(s).is_empty()))
 }
 
 /// The functions a hook variable holds, in order: none when `hook` is unbound
@@ -147,10 +163,142 @@ pub fn run_accept(key: c_int) -> Accept {
     })
 }
 
+/// The line as the after-change hook last saw it.
+#[cfg(not(test))]
+struct Seen {
+    line: Vec<u8>,
+    point: usize,
+    /// The symbol of the command the key before ran, for `last-command`.
+    command: Option<String>,
+}
+
 thread_local! {
     /// Whether a command line has started in this shell.
     #[cfg(not(test))]
     static FIRST_LINE_STARTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The line the after-change hook compares with: the line after the last
+    /// run of this hook or of the line-start hook. None between lines and while
+    /// inkline is off.
+    #[cfg(not(test))]
+    static SEEN: std::cell::Cell<Option<Seen>> = const { std::cell::Cell::new(None) };
+}
+
+/// Resets what inkline keeps about the line, as a new line begins: the
+/// after-change hook compares with the line as it is now. A line read
+/// while Lisp runs (`read -e` in shell code that Lisp ran) is not the
+/// command line and changes nothing.
+#[cfg(not(test))]
+pub fn line_started() {
+    if !super::RUNNING.load(std::sync::atomic::Ordering::Relaxed) {
+        see_line(None);
+    }
+}
+
+/// Forgets the line the after-change hook compares with, as a line ends or
+/// inkline turns off, so the hook runs again only once a new line has started.
+#[cfg(not(test))]
+pub fn forget_line() {
+    let _ = SEEN.try_with(|seen| seen.take());
+}
+
+/// Saves readline's line and point for the after-change hook to compare with,
+/// and `command` as the command the key before ran.
+#[cfg(not(test))]
+fn see_line(command: Option<String>) {
+    let seen = Seen {
+        line: crate::ffi::line_bytes(),
+        point: crate::ffi::point(),
+        command,
+    };
+    let _ = SEEN.try_with(|s| s.set(Some(seen)));
+}
+
+/// Runs after each key's command has returned, while the line is still being
+/// edited. When the line differs from the one saved, runs
+/// `inkline-after-change-functions` with `(BEG END OLD-LEN)` for the part
+/// that differs, `this-command` the symbol of the command this key ran and
+/// `last-command` that of the key before. Their changes are one undo step after
+/// the key's; a function that fails has its own changes undone and is removed
+/// from the hook, and the message says so. A `quit`, or a `C-c` or a jump to
+/// bash's top level while a function ran, undoes every change of this run. The
+/// line as the functions leave it is saved for the next key, so their changes
+/// never run the hook. Does nothing when no line is saved, and runs no Lisp
+/// when the hook is empty. True when Lisp ran.
+#[cfg(not(test))]
+pub fn after_key() -> bool {
+    use crate::ffi;
+    let Some(seen) = SEEN.try_with(|s| s.take()).ok().flatten() else {
+        return false;
+    };
+    // Readline 8.3 leaves `rl_last_func` at the search command when a key that
+    // ended an incremental search runs its command, so `this-command` is then
+    // the search command.
+    let this = ffi::last_command().and_then(super::commands::command_symbol_of);
+    if !after_change_has_functions() {
+        see_line(this);
+        return false;
+    }
+    let line = ffi::line_bytes();
+    let point = ffi::point();
+    let old = String::from_utf8_lossy(&seen.line);
+    // A line that is not UTF-8 cannot be read from Lisp.
+    let change = std::str::from_utf8(&line)
+        .ok()
+        .and_then(|new| changed_part(&old, seen.point, new, point));
+    let ran = change.is_some_and(|change| {
+        run_after_change(
+            ffi::executing_key(),
+            change,
+            this.as_deref(),
+            seen.command.as_deref(),
+        )
+    });
+    see_line(this);
+    ran
+}
+
+/// Runs `inkline-after-change-functions` for `after_key`. True when Lisp ran; a
+/// busy interpreter runs nothing.
+#[cfg(not(test))]
+fn run_after_change(
+    key: c_int,
+    (beg, end, old_len): (i64, i64, i64),
+    this: Option<&str>,
+    last: Option<&str>,
+) -> bool {
+    let ran = super::with_lisp_marking_panics(|ctx| {
+        let hook = ctx.intern(AFTER_CHANGE);
+        let mut errors = Vec::new();
+        let result = super::commands::with_command_variables(ctx, None, this, last, |ctx| {
+            run_hook(
+                ctx,
+                AFTER_CHANGE,
+                key,
+                (beg, end, old_len),
+                |function, failure| match failure {
+                    Failure::Error(text) | Failure::Refused(text) => {
+                        remove(&hook, function);
+                        errors.push(format!(
+                            "inkline: {}: {text} (removed from {AFTER_CHANGE})",
+                            function_name(function)
+                        ));
+                        Ok(())
+                    }
+                    Failure::Quit => Err(Failure::Quit),
+                },
+            )
+        });
+        // `run_hook` fails only with a `quit`, which has undone the run
+        // already. Another failure comes from setting `this-command` and
+        // `last-command`, before any function ran.
+        if let Err(Failure::Error(text) | Failure::Refused(text)) = result {
+            errors.push(format!("inkline: {AFTER_CHANGE}: {text}"));
+        }
+        if !errors.is_empty() {
+            crate::hooks::show_message(&errors.join("; "));
+        }
+    });
+    ran.is_ok()
 }
 
 /// The smallest part where `new` differs from `old`, as the after-change hook's
@@ -238,6 +386,7 @@ pub fn run_line_start() -> bool {
         }
         result.unwrap_or(false) || crate::ffi::point() != point
     });
+    see_line(None);
     changed.unwrap_or(false)
 }
 

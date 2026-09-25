@@ -219,6 +219,36 @@ fn a_line_start_insert_is_one_undo_step() {
     sh.wait_for("undone", |s| cursor_row(s) == "$");
 }
 
+/// `y-or-n-p` works only in a command and in the accept hook.
+#[test]
+fn y_or_n_p_is_an_error_in_line_start_and_after_change_functions() {
+    const ERROR: &str = "y-or-n-p works only in a command or in inkline-accept-functions";
+    let mut sh = Shell::start(Options {
+        cols: 160,
+        init_el: Some(
+            r#"(add-hook 'inkline-line-start-functions (lambda () (insert "a") (y-or-n-p "Start? ")))
+               (add-hook 'inkline-after-change-functions (lambda (_b _e _l) (y-or-n-p "Change? ")))"#
+                .into(),
+        ),
+        ..Options::default()
+    });
+    sh.wait_for("the line-start error", |s| {
+        has_row(s, &format!("inkline: lambda: {ERROR}"))
+    });
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$", "{}", dump(&s));
+    sh.send("b");
+    sh.wait_for("the after-change removal", |s| {
+        has_row(
+            s,
+            &format!("inkline: lambda: {ERROR} (removed from inkline-after-change-functions)"),
+        )
+    });
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ b", "{}", dump(&s));
+    assert!(!s.contents().contains("? (y or n)"), "{}", dump(&s));
+}
+
 #[test]
 fn line_start_functions_see_the_text_c_o_brings() {
     let mut sh = Shell::start(Options {
@@ -278,6 +308,137 @@ fn a_failing_line_start_function_is_undone_and_shown() {
     assert_eq!(cursor_row(&s), "$ ls", "{}", dump(&s));
 }
 
+const SHOW_CHANGES: &str = r#"(add-hook 'inkline-after-change-functions
+  (lambda (beg end len) (message "%s %s %s %s %s" this-command last-command beg end len)))"#;
+
+#[test]
+fn after_change_gets_the_part_and_the_commands() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(SHOW_CHANGES.into()),
+        history: vec!["echo old"],
+        ..Options::default()
+    });
+    sh.send("a");
+    sh.wait_for("typing", |s| has_row(s, "self-insert nil 1 2 0"));
+    sh.send("b");
+    sh.wait_for("typing", |s| has_row(s, "self-insert self-insert 2 3 0"));
+    // The default layout binds DEL to `delete-pair` and Up to
+    // `previous-line-or-history`.
+    sh.send("\x7f");
+    sh.wait_for("deleting", |s| has_row(s, "delete-pair self-insert 2 2 1"));
+    sh.send(UP);
+    sh.wait_for("history", |s| {
+        has_row(s, "previous-line-or-history delete-pair 1 9 1")
+    });
+}
+
+#[test]
+fn an_abbreviation_is_one_undo_step_after_the_typing() {
+    let mut sh = shell(
+        r#"(add-hook 'inkline-after-change-functions
+             (lambda (_b _e _l) (when (and (eq this-command 'self-insert) (equal (buffer-string) "gco ")) (erase-buffer) (insert "git checkout "))))"#,
+    );
+    sh.send("gco ");
+    sh.wait_for("expanded", |s| cursor_row(s) == "$ git checkout");
+    sh.send("\x1f");
+    sh.wait_for("the expansion undone", |s| cursor_row(s) == "$ gco");
+    let s = sh.settle();
+    assert_eq!(s.cursor_position().1, 6, "{}", dump(&s));
+}
+
+#[test]
+fn a_hook_change_does_not_run_the_hook_again() {
+    let mut sh = shell(
+        r#"(defvar calls 0)
+           (add-hook 'inkline-after-change-functions
+             (lambda (_b _e _l) (setq calls (1+ calls))
+               (when (equal (buffer-string) "x") (insert "y"))
+               (message "calls %d" calls)))"#,
+    );
+    sh.send("x");
+    sh.wait_for("one call", |s| has_row(s, "calls 1"));
+    sh.send("z");
+    sh.wait_for("two calls", |s| has_row(s, "calls 2"));
+    assert_eq!(cursor_row(&sh.settle()), "$ xyz");
+}
+
+#[test]
+fn a_failing_after_change_function_is_removed() {
+    let mut sh = shell(
+        r#"(add-hook 'inkline-after-change-functions (lambda (_b _e _l) (insert "q") (error "ac")))"#,
+    );
+    sh.send("a");
+    sh.wait_for("the removal", |s| {
+        has_row(
+            s,
+            "inkline: lambda: ac (removed from inkline-after-change-functions)",
+        )
+    });
+    sh.send("b");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ ab", "{}", dump(&s));
+    assert!(!has_row(
+        &s,
+        "inkline: lambda: ac (removed from inkline-after-change-functions)"
+    ));
+}
+
+#[test]
+fn no_after_change_at_read_e_or_while_searching() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(SHOW_CHANGES.into()),
+        history: vec!["echo abc"],
+        ..Options::default()
+    });
+    sh.send("\x12ab");
+    sh.wait_for("the search", |s| cursor_row(s).contains("echo abc"));
+    let s = sh.settle();
+    assert!(
+        !(0..s.size().0).any(|r| row_text(&s, r).starts_with("self-insert")),
+        "{}",
+        dump(&s)
+    );
+    sh.send("\x07\x15read -e v\r");
+    sh.send("q");
+    let s = sh.settle();
+    assert!(
+        !(0..s.size().0).any(|r| row_text(&s, r).starts_with("self-insert")),
+        "{}",
+        dump(&s)
+    );
+}
+
+/// Shell code that fails under an after-change function (`shell-expand-line` on
+/// `${zz:?boom}`): bash's error goes after the line, as with readline's own
+/// `shell-expand-line`, the new prompt comes below it, and the hook runs again
+/// only once the new line changes.
+#[test]
+fn a_shell_error_in_an_after_change_function_gives_a_new_prompt() {
+    let mut sh = shell(
+        r#"(add-hook 'inkline-after-change-functions
+             (lambda (_b _e _l)
+               (when (equal (buffer-string) "echo ${zz:?boom}!")
+                 (call-interactively 'shell-expand-line))))
+           (add-hook 'inkline-after-change-functions
+             (lambda (b e l) (message "ac %s %s %s [%s]" b e l (buffer-string))) t)"#,
+    );
+    sh.send("echo ${zz:?boom}");
+    sh.wait_for("the typing", |s| cursor_row(s) == "$ echo ${zz:?boom}");
+    sh.send("!");
+    sh.wait_for("a new prompt", |s| {
+        cursor_row(s) == "$" && (0..s.size().0).any(|r| row_text(s, r).ends_with("zz: boom"))
+    });
+    let s = sh.settle();
+    assert_eq!(
+        rows(&s),
+        ["$ echo ${zz:?boom}bash: zz: boom", "$"],
+        "{}",
+        dump(&s)
+    );
+    sh.send("x");
+    sh.wait_for("the hook on the new line", |s| has_row(s, "ac 1 2 0 [x]"));
+}
+
 /// The changes of all line-start functions are one undo step.
 #[test]
 fn two_line_start_inserts_are_one_undo_step() {
@@ -288,6 +449,29 @@ fn two_line_start_inserts_are_one_undo_step() {
     sh.wait_for("both inserts", |s| cursor_row(s) == "$ ls -l");
     sh.send("\x1f");
     sh.wait_for("both undone", |s| cursor_row(s) == "$");
+}
+
+/// An internal error in an after-change function: the notice, then the line
+/// drawn again below it.
+#[cfg(debug_assertions)]
+#[test]
+fn a_panic_in_an_after_change_function_draws_the_line_below_the_notice() {
+    let mut sh =
+        shell(r#"(add-hook 'inkline-after-change-functions (lambda (_b _e _l) (inkline--panic)))"#);
+    sh.send("echo a");
+    sh.wait_for("the notice", |s| {
+        has_row(s, "inkline: internal error, turned off")
+    });
+    let s = sh.settle();
+    assert_eq!(
+        rows(&s),
+        ["$", "inkline: internal error, turned off", "$ echo a"],
+        "{}",
+        dump(&s)
+    );
+    assert_eq!(s.cursor_position(), (2, 8), "{}", dump(&s));
+    sh.send("b");
+    sh.wait_for("typing on", |s| cursor_row(s) == "$ echo ab");
 }
 
 /// An internal error in a line-start function: the notice, then the line drawn
@@ -309,4 +493,41 @@ fn a_panic_in_a_line_start_function_draws_the_line_below_the_notice() {
     assert_eq!(s.cursor_position(), (2, 2), "{}", dump(&s));
     sh.send("ab");
     sh.wait_for("typing on", |s| cursor_row(s) == "$ ab");
+}
+
+/// Shell code that an after-change function runs can turn inkline off. Once
+/// `inkline on` runs in the middle of a later line, the hook waits for the next
+/// line: it does not compare with the line it saw before inkline went off.
+#[test]
+fn inkline_on_mid_line_does_not_run_after_change_on_an_old_line() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"(add-hook 'inkline-after-change-functions
+                 (lambda (b e l)
+                   (if (equal (buffer-string) "zz ")
+                       (call-interactively 'complete)
+                     (message "AC %s %s %s" b e l))))"#
+                .into(),
+        ),
+        rc: r#"f() { inkline off; COMPREPLY=(foo); }; complete -F f zz
+bind -x '"\C-xo": inkline on'
+"#
+        .into(),
+        ..Options::default()
+    });
+    sh.send("zz");
+    sh.wait_for("the typing", |s| cursor_row(s) == "$ zz");
+    sh.send(" ");
+    sh.wait_for("the completion", |s| cursor_row(s) == "$ zz foo");
+    sh.send("a\x18o");
+    sh.send("b");
+    sh.wait_for("the typing", |s| cursor_row(s) == "$ zz foo ab");
+    let s = sh.settle();
+    assert!(!s.contents().contains("AC "), "{}", dump(&s));
+    sh.send("\x15\r");
+    sh.wait_for("the next line", |s| {
+        cursor_row(s) == "$" && s.cursor_position().0 > 0
+    });
+    sh.send("x");
+    sh.wait_for("the hook on the next line", |s| has_row(s, "AC 1 2 0"));
 }

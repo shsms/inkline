@@ -351,6 +351,7 @@ pub fn call_hook(f: Option<HookFn>) -> c_int {
 
 // rl_readline_state flags; the same values in readline 8.0 and 8.2.
 const RL_STATE_READCMD: c_ulong = 0x8;
+const RL_STATE_DISPATCHING: c_ulong = 0x20;
 const RL_STATE_MOREINPUT: c_ulong = 0x40;
 const RL_STATE_ISEARCH: c_ulong = 0x80;
 const RL_STATE_NSEARCH: c_ulong = 0x100;
@@ -393,6 +394,11 @@ pub fn normal_editing() -> bool {
 /// that a readline command runs.
 pub fn reading_command_key() -> bool {
     unsafe { rl_readline_state & RL_STATE_READCMD != 0 }
+}
+
+/// Whether readline is running a key's command.
+pub fn dispatching() -> bool {
+    unsafe { rl_readline_state & RL_STATE_DISPATCHING != 0 }
 }
 
 /// Whether readline has accepted the line.
@@ -1319,6 +1325,12 @@ pub fn running_key() -> Option<RunningKey> {
             prefix: _rl_dispatching_keymap != map,
         })
     }
+}
+
+/// The key readline ran a command for last.
+pub fn executing_key() -> c_int {
+    // SAFETY: a plain value readline sets before it runs a key's command.
+    unsafe { rl_executing_key }
 }
 
 /// Macro text in memory from `malloc`, which readline frees once it is done

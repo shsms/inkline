@@ -297,6 +297,9 @@ fn enable() {
         use_own_key_reader();
         ffi::set_deprep_function(Some(deprep_terminal as ffi::VoidFn));
         ffi::set_pre_input_hook(Some(pre_input as ffi::HookFn));
+        // A hook that turned inkline off may have saved the line after
+        // `disable` forgot it; the hook waits for the next line instead.
+        crate::lisp::hooks::forget_line();
         s.enabled = true;
     });
 }
@@ -307,6 +310,7 @@ fn disable() {
     let _ = catch_unwind(erase_suggestion_and_message);
     let _ = MESSAGE.try_with(|m| m.replace(None));
     let _ = ACCEPT_ERRORS.try_with(|e| e.try_borrow_mut().map(|mut e| e.clear()));
+    crate::lisp::hooks::forget_line();
     unwrap_completion();
     end_update();
     ffi::flush_out();
@@ -466,6 +470,8 @@ pub fn after_lisp() {
             None => {}
         }
         if let Some(value) = jump {
+            // The jump skips `deprep_terminal`: the line ends here.
+            crate::lisp::hooks::forget_line();
             ffi::jump_to_shell_top_level(value);
         }
     }
@@ -832,6 +838,7 @@ extern "C" fn pre_input() -> c_int {
                 s.search_continues = false;
             });
             wrap_completion();
+            crate::lisp::hooks::line_started();
             let changed = hooks_allowed() && {
                 before_lisp();
                 crate::lisp::hooks::run_line_start()
@@ -862,9 +869,14 @@ extern "C" fn pre_input() -> c_int {
 /// accept functions that let the line run then go there, each on a row of its
 /// own, above the command's output. Readline's own drawing function goes back
 /// in place, so a later terminal setup (such as after `TERM` changes) sees it.
+/// The after-change hook forgets the line, unless the line that ends is one
+/// read while Lisp runs.
 extern "C" fn deprep_terminal() {
     guard(
         || {
+            if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
+                crate::lisp::hooks::forget_line();
+            }
             clear_message();
             let (shown_at, message_rows) =
                 STATE.with_borrow_mut(|s| (s.shown_at.take(), s.message_rows.take()));
@@ -920,18 +932,52 @@ fn end_update() {
     }
 }
 
+/// Readline's drawing function while inkline is on. Readline calls it once
+/// after each key's command has returned, unless the key ran the line; the
+/// after-change hook (`inkline-after-change-functions`) runs then, before the
+/// line is drawn. Every other call comes while a command runs
+/// (`RL_STATE_DISPATCHING`, also left set by readline's abort) or while
+/// readline waits for a key (`RL_STATE_READCMD`), or outside plain editing.
+/// What came in while Lisp ran is handed on last (`after_lisp`), outside
+/// `guard`: bash may jump from there to a new prompt.
 extern "C" fn redisplay() {
-    guard(
+    let lisp_started = Cell::new(false);
+    let lisp_ran = guard(
         || {
+            let after_key = hooks_allowed()
+                && !ffi::dispatching()
+                && !ffi::reading_command_key()
+                && ffi::normal_editing();
+            if after_key {
+                before_lisp();
+                lisp_started.set(true);
+            }
+            let lisp_ran = after_key && crate::lisp::hooks::after_key();
             begin_update();
             erase_suggestion_and_message();
+            lisp_ran
         },
-        || (),
+        // The panic's notice ended on a new row: readline's draw below starts
+        // the line again under it.
+        || {
+            ffi::on_new_line();
+            lisp_started.get()
+        },
     );
-    ffi::call_redisplay(originals().redisplay);
-    guard(draw, || ());
+    // Bash may have printed while Lisp ran (a shell error), and it jumps to a
+    // new prompt next: the line is not drawn again, and no suggestion function
+    // runs first.
+    if !(lisp_ran && lisp_must_stop()) {
+        ffi::call_redisplay(originals().redisplay);
+        if !panicked() {
+            guard(draw, draw_below_notice);
+        }
+    }
     end_update();
     ffi::flush_out();
+    if lisp_ran {
+        after_lisp();
+    }
 }
 
 /// After a panic, whose notice ended on a new row: readline draws the line
