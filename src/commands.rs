@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// The executable names in the directories of `PATH`. Rebuilt when `PATH`
@@ -61,6 +61,15 @@ fn is_executable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
+/// Where bash would find the program `name` (no `/` in it) in the
+/// directories of `path`: the first executable file of that name. An empty
+/// entry is the current directory, as bash reads it.
+pub fn find_program(name: &str, path: &str) -> Option<PathBuf> {
+    path.split(':')
+        .map(|dir| Path::new(if dir.is_empty() { "." } else { dir }).join(name))
+        .find(|file| is_executable(file))
+}
+
 /// Whether bash can run `word`. `known_to_bash` answers for keywords, aliases,
 /// functions and builtins; a word with a `/` is checked as a path.
 pub fn exists(
@@ -104,6 +113,22 @@ mod tests {
         assert!(cache.contains("tool", &path));
         assert!(!cache.contains("data", &path));
         assert!(!cache.contains("missing", &path));
+    }
+
+    #[test]
+    fn finds_the_first_program_of_a_name() {
+        let one = tempfile::tempdir().unwrap();
+        let two = tempfile::tempdir().unwrap();
+        file(one.path(), "tool", 0o644);
+        let want = file(two.path(), "tool", 0o755);
+        file(one.path(), "later", 0o755);
+        let path = format!(
+            "/nonexistent:{}:{}",
+            one.path().display(),
+            two.path().display()
+        );
+        assert_eq!(find_program("tool", &path), Some(want));
+        assert_eq!(find_program("missing", &path), None);
     }
 
     #[test]
