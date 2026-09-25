@@ -600,6 +600,46 @@ fn c_c_while_a_suggestion_function_computes_asks_no_more() {
     sh.wait_for("the value", |s| has_row(s, "2") && cursor_row(s) == "$");
 }
 
+/// Every `elisp` block of the README, in order, as one `init.el`.
+fn readme_lisp() -> String {
+    let mut lisp = String::new();
+    let mut inside = false;
+    for line in include_str!("../README.md").lines() {
+        match line {
+            "```elisp" => inside = true,
+            "```" => inside = false,
+            _ if inside => {
+                lisp.push_str(line);
+                lisp.push('\n');
+            }
+            _ => {}
+        }
+    }
+    lisp
+}
+
+#[test]
+fn readme_examples_work() {
+    let mut sh = shell(&readme_lisp());
+    sh.send("inkline status\r");
+    sh.wait_for("init.el loaded", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).ends_with("(loaded)"))
+    });
+    // The abbreviation, expanded by the space command.
+    sh.send("gst ");
+    sh.wait_for("the expansion", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position().1 == 13
+    });
+    // The abbreviation, expanded by the accept function as the line runs.
+    sh.send("\x15ll\r");
+    sh.wait_for("the expanded line ran", |s| {
+        has_row(s, "$ ls -l") && cursor_row(s) == "$"
+    });
+    // The Lisp suggestion.
+    sh.send("make t");
+    sh.wait_for("the suggestion", |s| cursor_row(s) == "$ make test");
+}
+
 /// Shell code for the tests below: `slow` takes about a second, and first
 /// writes a window title, which the tests wait for.
 const SLOW_RC: &str = r#"

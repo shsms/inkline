@@ -155,7 +155,56 @@ A command is a Lisp function bound to a key with `keymap-global-set`:
 `C-x u` now upper-cases the whole line; `C-x k` asks under the line and
 clears it on `y`.
 
-Every variable, function and command inkline adds to Lisp is listed in
+A hook is a variable holding a list of functions that inkline calls at certain
+times; `add-hook` adds one. An abbreviation can turn into its full text when you
+type a space after it, with a command bound to `SPC`, and when the line runs,
+with a function in `inkline-accept-functions`:
+
+```elisp
+;; ~/.config/inkline/init.el
+(defvar my-abbrevs '(("gst" . "git status") ("ll" . "ls -l")))
+
+;; Replaces the word before the cursor when it is an abbreviation.
+(defun my-expand ()
+  (let* ((end (point))
+         (start (save-excursion (skip-chars-backward "^ \n") (point)))
+         (full (cdr (assoc (buffer-substring start end) my-abbrevs))))
+    (when full
+      (delete-region start end)
+      (insert full))))
+
+(defun expand-then-space ()
+  (interactive)
+  (my-expand)
+  (call-interactively 'self-insert))
+(keymap-global-set "SPC" 'expand-then-space)
+
+(add-hook 'inkline-accept-functions
+          (lambda () (goto-char (point-max)) (my-expand)))
+```
+
+`gst` then Space gives `git status `; `ll` then Enter runs `ls -l`.
+
+A function in `inkline-suggestion-functions` gets the line and returns a longer
+line to suggest, or `nil`. inkline asks it only when history has no suggestion.
+It may read the line, but not change it:
+
+```elisp
+;; ~/.config/inkline/init.el
+(defvar my-commands '("make test" "git log --oneline"))
+
+(add-hook 'inkline-suggestion-functions
+          (lambda (line)
+            (let ((found nil))
+              (dolist (command my-commands)
+                (when (and (not found) (string-prefix-p line command))
+                  (setq found command)))
+              found)))
+```
+
+Typing `make t` now shows `est` in grey after the cursor.
+
+Every variable, function, command and hook inkline adds to Lisp is listed in
 [`docs/lisp.md`](docs/lisp.md).
 
 ## What it does
@@ -180,17 +229,17 @@ Every variable, function and command inkline adds to Lisp is listed in
   inkline is off, it sends the line, as in plain bash. A `C-j` that readline
   replays from a macro, such as the `\n` in `"\C-xr": "echo hi\n"` or one
   recorded with `C-x (`, also runs the command. `M-RET` (Alt+Enter) runs
-  `accept-as-is`, which sends the command to bash as it is, finished or not;
-  where Alt+Enter does not reach the shell
-  (Windows Terminal uses it for fullscreen, macOS terminals need Option set as
-  Meta), press Esc then Enter. An Enter typed while a command is still running
-  arrives as `C-j`, so it adds a line to the next command instead of running it,
-  like pasted text. Up and Down move between the lines and into history from the
-  first and last line; a multi-line entry recalled with
-  `previous-line-or-history` opens on its first line, so the next Up goes on
-  through history. `C-a`, `C-e`, `C-k` and `C-u` act on the current line, and
-  `C-k` and `C-u` join lines at its edges. `M-#` comments out every line. Pasted
-  text keeps its own spacing.
+  `accept-as-is`, which sends the command to bash as it is, finished or not,
+  after the accept hook (`inkline-accept-functions`); where Alt+Enter does
+  not reach the shell (Windows Terminal uses it for fullscreen, macOS
+  terminals need Option set as Meta), press Esc then Enter. An Enter typed
+  while a command is still running arrives as `C-j`, so it adds a line to the
+  next command instead of running it, like pasted text. Up and Down move
+  between the lines and into history from the first and last line; a
+  multi-line entry recalled with `previous-line-or-history` opens on its
+  first line, so the next Up goes on through history. `C-a`, `C-e`, `C-k`
+  and `C-u` act on the current line, and `C-k` and `C-u` join lines at its
+  edges. `M-#` comments out every line. Pasted text keeps its own spacing.
 - **Syntax errors.** A command bash would reject is underlined in wavy red
   when you pause typing, on the word bash would complain about. The word you
   are typing is never underlined.
@@ -311,13 +360,15 @@ entry of its own, so a commented block comes back one line at a time.
 If you set inkline up before this version: delete the old `bind` block from
 `.bashrc`. inkline's layout now binds those keys itself, with the same
 commands except `M-RET`: the block bound it to readline's `accept-line`, the
-layout binds it to `accept-as-is`. The block runs after `init.el`, so it
-would also bind again any key that `init.el` gives back or binds to
-something else. Move any `INKLINE_COLORS`, `INKLINE_INDENT`,
-`INKLINE_HISTORY_CURSOR` or `INKLINE_SUGGESTION_LINES` value into `init.el`,
-as `inkline-colors`, `inkline-indent`, `inkline-history-cursor` and
-`inkline-suggestion-lines`. Until you do, inkline still starts, but prints
-one line per variable still set and does not read any of them.
+layout binds it to `accept-as-is`. The old `M-RET` line would skip the
+accept hook (`inkline-accept-functions`), as readline's `accept-line` does.
+The block runs after `init.el`, so it would also bind again any key that
+`init.el` gives back or binds to something else. Move any
+`INKLINE_COLORS`, `INKLINE_INDENT`, `INKLINE_HISTORY_CURSOR` or
+`INKLINE_SUGGESTION_LINES` value into `init.el`, as `inkline-colors`,
+`inkline-indent`, `inkline-history-cursor` and `inkline-suggestion-lines`.
+Until you do, inkline still starts, but prints one line per variable still
+set and does not read any of them.
 
 The layout binds every group, pairing included, even if you never bound it
 before. Enter now runs `accept-or-newline`, so Enter on an unfinished command
@@ -395,6 +446,12 @@ line.
   layout binds Enter to `accept-or-newline`, and `\n` is `C-j`, which always
   adds a line. Send `\r` instead, start bash with `--norc`, or turn
   multi-line editing off with `(inkline-unbind-defaults '(multi-line))`.
+- `inkline-after-change-functions` and `inkline-suggestion-functions` run
+  on almost every key you type, so keep their functions small and fast: a
+  slow one makes typing slow.
+- These ways of running a line skip the accept hook
+  (`inkline-accept-functions`): `C-o` (`operate-and-get-next`), `M-#`
+  (`comment-lines`), and a key bound with `bind` to readline's `accept-line`.
 - A key bound with `keymap-global-set` that starts a longer sequence, such as
   `C-x` or `ESC`, runs only after readline's `keyseq-timeout` has passed, or
   as soon as a key arrives that does not continue the sequence.
