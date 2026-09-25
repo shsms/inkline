@@ -87,6 +87,12 @@ impl Lexer {
         merge(&labels)
     }
 
+    /// Parses `line` and returns the tree, or `None` if tree-sitter refuses
+    /// to parse it at all.
+    pub fn tree(&mut self, line: &str) -> Option<tree_sitter::Tree> {
+        self.parser.parse(line, None)
+    }
+
     /// Whether the cursor at byte `pos` is in code, a comment or a string.
     pub fn context_at(&mut self, line: &str, pos: usize) -> Context {
         let Some(tree) = self.parser.parse(line, None) else {
