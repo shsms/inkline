@@ -9,8 +9,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
 use std::sync::atomic::Ordering;
 
+use crate::args;
 use crate::commands::{self, PathCache};
 use crate::ffi;
+use crate::helper;
 use crate::lexer::{Kind, Lexer};
 use crate::pairs::{self, Action};
 use crate::render::{self, Repaint};
@@ -196,6 +198,7 @@ pub fn unload() {
     guard(
         || {
             disable();
+            helper::stop_all();
             STATE.with_borrow_mut(|s| s.unloaded = true);
         },
         || (),
@@ -211,12 +214,16 @@ fn run_builtin(args: &[String]) -> c_int {
     match args.as_slice() {
         [] | ["status"] => {
             let on = STATE.with_borrow(|s| s.enabled);
-            match writeln!(
-                std::io::stdout(),
-                "inkline: {}\n{}",
+            let mut text = format!(
+                "inkline: {}\n{}\n",
                 if on { "on" } else { "off" },
                 crate::lisp::init::status_line()
-            ) {
+            );
+            for line in helper::status_lines() {
+                text.push_str(&line);
+                text.push('\n');
+            }
+            match std::io::stdout().write_all(text.as_bytes()) {
                 Ok(()) => ffi::EXECUTION_SUCCESS,
                 Err(_) => ffi::EXECUTION_FAILURE,
             }
@@ -1099,7 +1106,10 @@ fn repaint_line() -> bool {
     } else {
         None
     };
-    // Read after the suggestion hook, which may have set it.
+    start_helpers(&line, &path);
+    show_helper_notices(&line);
+    // Read after the suggestion hook and the helper notices, which may have
+    // set it.
     let message = MESSAGE.with_borrow(Clone::clone);
     STATE.with_borrow_mut(|s| {
         let error = error_to_underline(s, &line, point);
@@ -1133,6 +1143,48 @@ fn repaint_line() -> bool {
         }
         true
     })
+}
+
+/// Starts the highlight helpers of the registered commands on `line`, at the
+/// main prompt while no Lisp runs, looking up their programs in `path`
+/// (bash's `PATH`). Why a helper was turned off waits for
+/// `show_helper_notices`.
+fn start_helpers(line: &str, path: &str) {
+    if !ffi::reading_command()
+        || crate::lisp::RUNNING.load(Ordering::Relaxed)
+        || !helper::any_registered()
+    {
+        return;
+    }
+    let Some(tree) = STATE.with_borrow_mut(|s| s.lexer.tree(line)) else {
+        return;
+    };
+    let names: Vec<String> = args::commands(&tree, line, helper::is_registered)
+        .into_iter()
+        .map(|command| command.name)
+        .collect();
+    helper::prepare(&names, path, || Some(ffi::exported_environment()));
+}
+
+/// Shows why highlight helpers were turned off once typing pauses on
+/// `line`, as a new syntax error waits for the pause before it is
+/// underlined; until then, asks `getc` for the pause. The message then
+/// stays until the next key. Only at the main prompt: a line a script reads
+/// or bash's `>` prompt has nothing to do with helpers.
+fn show_helper_notices(line: &str) {
+    if !ffi::reading_command() || !helper::has_notices() {
+        return;
+    }
+    let paused = STATE.with_borrow_mut(|s| {
+        let paused = s.paused_on.as_deref() == Some(line);
+        if !paused {
+            s.wants_pause = true;
+        }
+        paused
+    });
+    if paused {
+        show_message(&helper::take_notices().join("; "));
+    }
 }
 
 /// What bash would make of `line`, checked once for each text of the line.

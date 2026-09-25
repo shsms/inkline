@@ -11,6 +11,7 @@ pub mod buffer;
 pub mod commands;
 pub mod emacs;
 pub mod errors;
+pub mod highlight;
 pub mod hooks;
 pub mod init;
 pub mod keydesc;
@@ -73,6 +74,7 @@ fn new_context() -> TulispContext {
     #[cfg(not(test))]
     commands::register(&mut ctx);
     settings::register(&mut ctx);
+    highlight::register(&mut ctx);
     #[cfg(not(test))]
     keys::register(&mut ctx);
     #[cfg(not(test))]
@@ -152,10 +154,11 @@ pub fn load(path: &str) -> Result<(), String> {
     .map_err(|Busy| "busy running Lisp".to_owned())?
 }
 
-/// `inkline reload`: puts back the keys inkline still owns, starts a fresh
-/// interpreter, sets the layout's readline variables and binds the layout
-/// again, and reads `init.el` again. `Ok(false)` when `init.el` was skipped
-/// or failed; its problem is already printed.
+/// `inkline reload`: puts back the keys inkline still owns, forgets every
+/// highlight helper, starts a fresh interpreter, sets the layout's readline
+/// variables and binds the layout again, and reads `init.el` again.
+/// `Ok(false)` when `init.el` was skipped or failed; its problem is already
+/// printed.
 #[cfg(not(test))]
 pub fn reload() -> Result<bool, String> {
     if SLOT.with_borrow(Option::is_none) && STARTED.get() {
@@ -165,6 +168,7 @@ pub fn reload() -> Result<bool, String> {
     // every later command reload again.
     BROKEN.set(false);
     keys::restore_all();
+    crate::helper::stop_all();
     start();
     let mut read_cleanly = true;
     if crate::ffi::line_editing_shell() {

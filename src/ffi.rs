@@ -255,6 +255,31 @@ pub fn shell_variable(name: &str) -> Option<String> {
     unsafe { c_str(get_string_value(name.as_ptr())) }.map(|v| v.to_string_lossy().into_owned())
 }
 
+unsafe extern "C" {
+    static mut export_env: *mut *mut c_char;
+    fn maybe_make_export_env();
+}
+
+/// The variables and functions bash exports, as `NAME=VALUE` entries: the
+/// environment bash would give a program it ran now.
+pub fn exported_environment() -> Vec<Vec<u8>> {
+    let mut entries = Vec::new();
+    // SAFETY: `maybe_make_export_env` brings `export_env` up to date with
+    // bash's variables: a list of C strings that ends with a null pointer.
+    // The entries are copied before bash can change the list again.
+    unsafe {
+        maybe_make_export_env();
+        let mut entry = export_env.cast_const();
+        while !entry.is_null()
+            && let Some(text) = c_str(*entry)
+        {
+            entries.push(text.to_bytes().to_vec());
+            entry = entry.add(1);
+        }
+    }
+    entries
+}
+
 /// Whether `word` is a keyword, alias, function or builtin.
 pub fn known_to_bash(word: &str) -> bool {
     let Ok(word) = CString::new(word) else {
