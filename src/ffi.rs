@@ -481,6 +481,21 @@ pub fn signal_before_wait() -> Option<Wait> {
     }
 }
 
+/// Whether a signal that must be acted on at once has come, such as C-c
+/// (see `acts_at_once`).
+pub fn signal_to_act_on() -> bool {
+    // SAFETY: these read plain values readline and bash keep.
+    acts_at_once(unsafe { rl_pending_signal() }, interrupted())
+}
+
+/// Whether a signal must be acted on at once: `pending` is one readline
+/// caught and has not handled yet (0 for none), and `noted` says bash has a
+/// `SIGINT` it has not acted on. A resize of the window (`SIGWINCH`) need
+/// not be.
+fn acts_at_once(pending: c_int, noted: bool) -> bool {
+    noted || (pending != 0 && pending != libc::SIGWINCH)
+}
+
 pub enum Wait {
     /// Input is ready to read, or readline's timeout (`read -t`) is up.
     Ready,
@@ -1499,4 +1514,18 @@ pub fn command_name(f: CommandFn) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_resize_alone_need_not_be_acted_on_at_once() {
+        assert!(!acts_at_once(0, false));
+        assert!(!acts_at_once(libc::SIGWINCH, false));
+        assert!(acts_at_once(libc::SIGINT, false));
+        assert!(acts_at_once(0, true));
+        assert!(acts_at_once(libc::SIGWINCH, true), "a C-c bash noted");
+    }
 }

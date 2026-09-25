@@ -8,11 +8,13 @@ use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Once;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
-use crate::args;
+use crate::args::{self, CommandArgs};
 use crate::commands::{self, PathCache};
 use crate::ffi;
-use crate::helper;
+use crate::helper::{self, protocol::Reply};
+use crate::highlight;
 use crate::lexer::{Kind, Lexer};
 use crate::pairs::{self, Action};
 use crate::render::{self, Repaint};
@@ -872,6 +874,11 @@ extern "C" fn pre_input() -> c_int {
                 s.goal_column = None;
                 s.search_continues = false;
             });
+            // A new line at the main prompt drops the helpers' replies; a
+            // line read while Lisp runs is part of the line Lisp runs in.
+            if ffi::reading_command() && !crate::lisp::RUNNING.load(Ordering::Relaxed) {
+                helper::forget_replies();
+            }
             wrap_completion();
             crate::lisp::hooks::line_started();
             let changed = hooks_allowed() && {
@@ -1106,7 +1113,7 @@ fn repaint_line() -> bool {
     } else {
         None
     };
-    start_helpers(&line, &path);
+    let found = ask_helpers(&line, &path);
     show_helper_notices(&line);
     // Read after the suggestion hook and the helper notices, which may have
     // set it.
@@ -1117,16 +1124,17 @@ fn repaint_line() -> bool {
         let spans = s.lexer.spans(&line, |word| {
             !commands::is_plain(word) || commands::exists(word, &path, paths, ffi::known_to_bash)
         });
+        let painted = highlight::paint(line.len(), &spans, &found);
         let repaint = Repaint {
             prompt_width,
             line: &line,
             point,
-            spans: &spans,
+            spans: &painted.spans,
             colors: &colors,
             suggestion: suggestion.as_deref(),
             suggestion_lines,
             error: error.clone(),
-            script: &[],
+            script: &painted.script,
             message: message.as_deref(),
             rows,
             cols,
@@ -1145,25 +1153,46 @@ fn repaint_line() -> bool {
     })
 }
 
-/// Starts the highlight helpers of the registered commands on `line`, at the
-/// main prompt while no Lisp runs, looking up their programs in `path`
-/// (bash's `PATH`). Why a helper was turned off waits for
-/// `show_helper_notices`.
-fn start_helpers(line: &str, path: &str) {
+/// Asks the highlight helpers of the registered commands on `line` how to
+/// colour their arguments, at the main prompt while no Lisp runs: starts
+/// the helpers not started yet, looking up their programs in `path` (bash's
+/// `PATH`), and waits up to `helper::WAIT` in all for their first lines and
+/// replies. The commands answered in time, each with its reply, in line
+/// order. Why a helper was turned off waits for `show_helper_notices`.
+fn ask_helpers(line: &str, path: &str) -> Vec<(CommandArgs, Reply)> {
+    let began = Instant::now();
     if !ffi::reading_command()
         || crate::lisp::RUNNING.load(Ordering::Relaxed)
         || !helper::any_registered()
     {
-        return;
+        return Vec::new();
     }
+    // `STATE` is borrowed only for the parse: never while waiting on a
+    // helper.
     let Some(tree) = STATE.with_borrow_mut(|s| s.lexer.tree(line)) else {
-        return;
+        return Vec::new();
     };
-    let names: Vec<String> = args::commands(&tree, line, helper::is_registered)
-        .into_iter()
-        .map(|command| command.name)
-        .collect();
+    let commands = args::commands(&tree, line, helper::is_registered);
+    if commands.is_empty() {
+        return Vec::new();
+    }
+    let names: Vec<String> = commands.iter().map(|c| c.name.clone()).collect();
     helper::prepare(&names, path, || Some(ffi::exported_environment()));
+    let cwd = ffi::shell_variable("PWD").unwrap_or_default().into_bytes();
+    let asks: Vec<(String, helper::Request)> = commands
+        .iter()
+        .map(|c| {
+            let args = c.args.iter().map(|a| (a.raw, a.text.clone())).collect();
+            (c.name.clone(), (cwd.clone(), args))
+        })
+        .collect();
+    let wait = helper::WAIT.saturating_sub(began.elapsed());
+    let replies = helper::replies(&asks, wait, ffi::signal_to_act_on);
+    commands
+        .into_iter()
+        .zip(replies)
+        .filter_map(|(command, reply)| Some((command, reply?)))
+        .collect()
 }
 
 /// Shows why highlight helpers were turned off once typing pauses on

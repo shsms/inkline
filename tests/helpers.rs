@@ -272,3 +272,183 @@ fn the_helper_holds_none_of_bashs_descriptors() {
     run(&mut sh, "exec 4>&-");
     wait_for_file(&done);
 }
+
+#[test]
+fn a_script_is_coloured_and_dimmed() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("words")),
+        ..Options::default()
+    });
+    sh.send("csvm 'select a 12 | sort b' x.csv");
+    sh.wait_for("colours", |s| fg_is(s, "select", Color::Idx(2)));
+    let s = sh.settle();
+    assert_eq!(fg(&s, "12"), Color::Idx(6));
+    assert_eq!(fg(&s, "sort"), Color::Idx(2));
+    assert!(cell(&s, "select").unwrap().dim());
+    assert!(!cell(&s, "'select").unwrap().dim(), "the quote mark");
+    assert_eq!(fg(&s, "x.csv"), Color::Default);
+}
+
+#[test]
+fn double_quoted_scripts_map_back_to_what_was_typed() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("words")),
+        ..Options::default()
+    });
+    // The helper gets `sélect "a" 7`: its offsets skip the backslashes.
+    sh.send("csvm \"sélect \\\"a\\\" 7\"");
+    sh.wait_for("colours", |s| fg_is(s, "sélect", Color::Idx(2)));
+    let s = sh.settle();
+    assert_eq!(fg(&s, "7"), Color::Idx(6));
+    assert!(
+        !cell(&s, "\\\"a").unwrap().dim(),
+        "a removed backslash is not the helper's"
+    );
+}
+
+#[test]
+fn a_bash_variable_inside_the_script_keeps_its_colour() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("words")),
+        ..Options::default()
+    });
+    sh.send("csvm \"select $x 7\"");
+    sh.wait_for("colours", |s| fg_is(s, "select", Color::Idx(2)));
+    let s = sh.settle();
+    assert_eq!(fg(&s, "$x"), Color::Idx(4));
+    assert_eq!(fg(&s, "7"), Color::Idx(6));
+    assert!(cell(&s, "select").unwrap().dim());
+    assert!(!cell(&s, "\"select").unwrap().dim(), "the quote mark");
+}
+
+#[test]
+fn two_commands_on_one_line() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("words")),
+        ..Options::default()
+    });
+    sh.send("csvm 'one' | csvm 'two'");
+    sh.wait_for("both", |s| {
+        fg_is(s, "one", Color::Idx(2)) && fg_is(s, "two", Color::Idx(2))
+    });
+}
+
+/// A new line forgets the replies kept for the one before: the files they
+/// speak of may have changed since. The same line recalled is asked about
+/// again.
+#[test]
+fn a_new_line_asks_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake_logging("words", &log)),
+        ..Options::default()
+    });
+    sh.send("csvm 'a'");
+    wait_for_log(&log, "final:a");
+    sh.send("\r");
+    sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
+    sh.send("\x1b[A");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let asked = || {
+        let logged = std::fs::read_to_string(&log).unwrap_or_default();
+        logged.lines().filter(|l| *l == "final:a").count()
+    };
+    while asked() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "asked {} times",
+            asked()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// `exec FD>file` after the helper started leaves both the file and the
+/// helper working.
+fn a_users_descriptor_is_left_alone(fd: u32) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("out");
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("words")),
+        ..Options::default()
+    });
+    sh.send("csvm 'select a'");
+    sh.wait_for("colours", |s| fg_is(s, "select", Color::Idx(2)));
+    run(&mut sh, &format!("exec {fd}>{}", file.display()));
+    sh.send("\x15csvm 'sort b'");
+    sh.wait_for("colours", |s| fg_is(s, "sort", Color::Idx(2)));
+    run(&mut sh, &format!("echo hi >&{fd}"));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hi\n");
+    status_row(&mut sh, "highlight csvm: running");
+}
+
+#[test]
+fn a_users_low_descriptor_is_left_alone() {
+    a_users_descriptor_is_left_alone(3);
+}
+
+/// bash takes a close-on-exec descriptor from 10 up for one of its own and
+/// puts it back after `exec 10>file`, so the socket is not on 10 either.
+#[test]
+fn a_users_descriptor_10_is_left_alone() {
+    a_users_descriptor_is_left_alone(10);
+}
+
+/// A command that closes inkline's end of the socket owns that descriptor
+/// from then on: the helper is turned off, and a file opened there stays
+/// open. (bash puts back a close-on-exec descriptor from 10 up after `exec
+/// N>file`, taking it for one of its own: it must be closed first.)
+#[test]
+fn a_socket_taken_over_is_left_to_the_user() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("out");
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("words")),
+        ..Options::default()
+    });
+    sh.send("csvm 'select a'");
+    sh.wait_for("colours", |s| fg_is(s, "select", Color::Idx(2)));
+    // The shell's only socket is inkline's end.
+    run(
+        &mut sh,
+        &format!(
+            "for f in /proc/$$/fd/*; do [[ $(readlink $f) == socket:* ]] && n=${{f##*/}}; done; \
+             eval \"exec $n>&-; exec $n>{}\"",
+            file.display()
+        ),
+    );
+    sh.send("\x15csvm 'sort b'");
+    sh.wait_for("off", |s| {
+        has_row(s, "inkline: highlight csvm: off (connection lost)")
+    });
+    run(&mut sh, "echo hi >&$n");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hi\n");
+}
+
+#[test]
+fn a_helper_that_exits_is_turned_off() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("exit")),
+        ..Options::default()
+    });
+    sh.send("csvm 'a'");
+    sh.wait_for("off", |s| {
+        has_row(s, "inkline: highlight csvm: off (exited)")
+    });
+    sh.send(" 'b'");
+    sh.send("\x15echo still here\r");
+    sh.wait_for("bash is alive", |s| has_row(s, "still here"));
+}
+
+#[test]
+fn garbage_turns_a_helper_off() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake("garbage")),
+        ..Options::default()
+    });
+    sh.send("csvm 'a'");
+    sh.wait_for("off", |s| {
+        has_row(s, "inkline: highlight csvm: off (bad reply: \"nonsense\")")
+    });
+}
