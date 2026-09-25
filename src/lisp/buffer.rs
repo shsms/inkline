@@ -124,6 +124,16 @@ pub fn editing() -> bool {
     CURRENT.with_borrow(Option::is_some)
 }
 
+/// Whether a buffer is installed and it is read-only.
+pub fn read_only() -> bool {
+    editing() && !WRITABLE.get()
+}
+
+/// The error for changing a read-only buffer, or moving its point or mark.
+fn read_only_error() -> Error {
+    Error::lisp_error("the line cannot be changed here")
+}
+
 /// Runs `f` on the current buffer's text, point and mark (bytes). With no
 /// buffer installed, `f` sees an empty line with point and mark at 0. An
 /// error when the installed buffer's text is not valid UTF-8.
@@ -152,15 +162,25 @@ fn read<R>(f: impl FnOnce(&str, usize, usize, &dyn Buffer) -> R) -> Result<R, Er
 fn change<R>(f: impl FnOnce(&mut dyn Buffer) -> Result<R, String>) -> Result<R, Error> {
     CURRENT.with_borrow_mut(|slot| match slot {
         Some(buf) if WRITABLE.get() => f(buf.as_mut()).map_err(Error::lisp_error),
-        Some(_) => Err(Error::lisp_error("the line cannot be changed here")),
+        Some(_) => Err(read_only_error()),
         None => Err(Error::lisp_error("no line is being edited")),
     })
 }
 
-/// Moves the installed buffer's point to `byte`. Does nothing with no
-/// buffer installed: moving point is never an error, only changing a
-/// missing line's text is.
-fn move_to(byte: usize) {
+/// Moves the installed buffer's point to `byte`, for Lisp: an error when the
+/// buffer is read-only. Does nothing with no buffer installed: moving point
+/// there is never an error, only changing a missing line's text is.
+fn move_to(byte: usize) -> Result<(), Error> {
+    if read_only() {
+        return Err(read_only_error());
+    }
+    put_point(byte);
+    Ok(())
+}
+
+/// Moves the installed buffer's point to `byte`, also when it is read-only.
+/// Does nothing with no buffer installed.
+fn put_point(byte: usize) {
     CURRENT.with_borrow_mut(|slot| {
         if let Some(buf) = slot {
             buf.set_point(byte);
@@ -168,14 +188,18 @@ fn move_to(byte: usize) {
     });
 }
 
-/// Moves the installed buffer's mark to `byte`. Does nothing with no
-/// buffer installed.
-fn set_mark_to(byte: usize) {
+/// Moves the installed buffer's mark to `byte`: an error when the buffer is
+/// read-only. Does nothing with no buffer installed.
+fn set_mark_to(byte: usize) -> Result<(), Error> {
+    if read_only() {
+        return Err(read_only_error());
+    }
     CURRENT.with_borrow_mut(|slot| {
         if let Some(buf) = slot {
             buf.set_mark(byte);
         }
     });
+    Ok(())
 }
 
 /// `byte` moved back to a place in `text`: to its end when past it, and
@@ -401,8 +425,7 @@ fn move_point(delta: i64) -> Result<(), Error> {
             None => Err(Error::out_of_range(format!("Args out of range: {delta}"))),
         }
     })??;
-    move_to(byte);
-    Ok(())
+    move_to(byte)
 }
 
 /// The validated byte range for two position args, in either order, and
@@ -588,7 +611,7 @@ pub fn register(ctx: &mut TulispContext) {
     ctx.defun("goto-char", |pos: TulispObject| -> Result<i64, Error> {
         let target = position(&pos)?;
         let byte = read(|text, _point, _mark, _buf| to_byte(text, target))?;
-        move_to(byte);
+        move_to(byte)?;
         Ok(target)
     });
     ctx.defun("forward-char", |n: Option<i64>| -> Result<(), Error> {
@@ -599,18 +622,16 @@ pub fn register(ctx: &mut TulispContext) {
     });
     ctx.defun("beginning-of-line", || -> Result<(), Error> {
         let byte = read(|text, point, _mark, _buf| line_start(text, point))?;
-        move_to(byte);
-        Ok(())
+        move_to(byte)
     });
     ctx.defun("end-of-line", || -> Result<(), Error> {
         let byte = read(|text, point, _mark, _buf| line_end(text, point))?;
-        move_to(byte);
-        Ok(())
+        move_to(byte)
     });
     ctx.defun("forward-line", |n: Option<i64>| -> Result<i64, Error> {
         let n = n.unwrap_or(1);
         let (byte, shortfall) = read(|text, point, _mark, _buf| forward_line_calc(text, point, n))?;
-        move_to(byte);
+        move_to(byte)?;
         Ok(shortfall)
     });
     ctx.defun(
@@ -623,7 +644,7 @@ pub fn register(ctx: &mut TulispContext) {
                     .max(point);
                 skip_forward(text, point, &parse_set(&spec), bound)
             })?;
-            move_to(byte);
+            move_to(byte)?;
             Ok(moved)
         },
     );
@@ -635,15 +656,14 @@ pub fn register(ctx: &mut TulispContext) {
                 let bound = lim_target.map_or(0, |p| to_byte(text, p)).min(point);
                 skip_backward(text, point, &parse_set(&spec), bound)
             })?;
-            move_to(byte);
+            move_to(byte)?;
             Ok(moved)
         },
     );
     ctx.defun("set-mark", |pos: TulispObject| -> Result<(), Error> {
         let target = position(&pos)?;
         let byte = read(|text, _point, _mark, _buf| to_byte(text, target))?;
-        set_mark_to(byte);
-        Ok(())
+        set_mark_to(byte)
     });
     ctx.defun("insert", |args: Rest<TulispObject>| -> Result<(), Error> {
         let text = insert_text(args)?;
@@ -726,8 +746,10 @@ pub fn register(ctx: &mut TulispContext) {
                 m.truncate(i);
                 byte
             });
+            // Putting point back is not a move by Lisp: it works on a read-only
+            // buffer too.
             if let Some(byte) = byte {
-                move_to(byte);
+                put_point(byte);
             }
             Ok(())
         },
@@ -1056,8 +1078,10 @@ mod tests {
             kills: vec![],
         }));
         set_writable(false);
-        let e = ctx.eval_string(r#"(insert "x")"#).unwrap_err();
-        assert_eq!(e.desc(), "the line cannot be changed here");
+        for program in [r#"(insert "x")"#, "(goto-char 1)", "(set-mark 1)"] {
+            let e = ctx.eval_string(program).unwrap_err();
+            assert_eq!(e.desc(), "the line cannot be changed here", "{program}");
+        }
     }
 
     /// A line that is not UTF-8, as readline's can be. Changing it is a

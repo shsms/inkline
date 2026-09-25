@@ -138,9 +138,9 @@ thread_local! {
     /// The function objects inkline gave `READLINE_NAMES` in the current
     /// interpreter.
     static OWN: RefCell<Vec<(&'static str, TulispObject)>> = const { RefCell::new(Vec::new()) };
-    /// While a Lisp command runs from a key: its undo group.
+    /// While a Lisp step runs (`one_step`): its undo group.
     static UNDO_GROUP: Cell<Option<Group>> = const { Cell::new(None) };
-    /// While a Lisp command runs from a key: that key, as readline gave it.
+    /// While a Lisp step runs: its key, as readline gave it.
     static KEY: Cell<c_int> = const { Cell::new(0) };
     /// The name of the Lisp command `SHARED` last ran, `None` for a lambda.
     static SHARED_LAST: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -248,7 +248,7 @@ fn print(text: &str) -> Result<(), Error> {
         .map_err(|e| Error::os_error(format!("print: {e}")))
 }
 
-/// The running command's undo group.
+/// The running step's undo group.
 #[derive(Clone, Copy)]
 enum Group {
     Closed,
@@ -260,10 +260,10 @@ enum Group {
     },
 }
 
-/// Opens the running command's undo group before a change, unless one is
-/// already open on the current history line. After the command moved to
+/// Opens the running step's undo group before a change, unless one is
+/// already open on the current history line. After the step moved to
 /// another history line, the old group stays open on the line left
-/// behind. Does nothing outside a command.
+/// behind. Does nothing outside a step.
 fn before_change() {
     if let Some(Group::Open { history, .. }) = UNDO_GROUP.get()
         && history != ffi::history_position()
@@ -280,7 +280,7 @@ fn before_change() {
     }
 }
 
-/// Closes the running command's undo group if it is open, and drops it
+/// Closes the running step's undo group if it is open, and drops it
 /// when nothing changed inside it. The next change opens a new one. A
 /// group opened on another history line stays open there: the current
 /// line gets no `UNDO_END`.
@@ -296,22 +296,39 @@ fn close_group() {
     }
 }
 
-/// How a Lisp command ended, other than normally.
-enum Failure {
+/// How Lisp run from a key or a hook ended, other than normally.
+pub(crate) enum Failure {
+    /// A `quit`, or a `C-c`.
     Quit,
+    /// A `user-error`, with its text.
+    Refused(String),
+    /// Any other error, as one line.
     Error(String),
 }
 
-/// Tells `before_change` a Lisp command runs, and `call-interactively` its
-/// key. What they held before, for a command further up the stack, comes
+/// What the Lisp error `e` means for the command or hook that raised it.
+pub(crate) fn failure_of(ctx: &TulispContext, e: &Error) -> Failure {
+    if let ErrorKind::Throw(thrown) = e.kind()
+        && thrown.car().is_ok_and(|tag| tag.to_string() == QUIT)
+    {
+        return Failure::Quit;
+    }
+    match errors::user_error_text(e) {
+        Some(text) => Failure::Refused(text),
+        None => Failure::Error(errors::describe(e, ctx, None)),
+    }
+}
+
+/// Tells `before_change` a Lisp step runs, and `call-interactively` its
+/// key. What they held before, for a step further up the stack, comes
 /// back afterwards. On drop, closes a group still open, so readline's
 /// groups stay balanced even after a panic; after a panic, as after an
-/// error, the command's change on the line is also taken back, and point
-/// and mark go back, unless the command moved to another history line.
+/// error, the step's change on the line is also taken back, and point
+/// and mark go back, unless the step moved to another history line.
 struct Running {
     outer: Option<Group>,
     outer_key: c_int,
-    /// Point, mark and history line from before the command.
+    /// Point, mark and history line from before the step.
     point: usize,
     mark: usize,
     history: c_int,
@@ -328,7 +345,7 @@ impl Running {
         }
     }
 
-    /// The command's undo group.
+    /// The step's undo group.
     fn finish(self) -> Option<Group> {
         let group = UNDO_GROUP.replace(self.outer);
         KEY.set(self.outer_key);
@@ -375,7 +392,7 @@ fn run_shared(count: c_int, key: c_int) -> c_int {
 
 /// The name of the command `f` runs, for `last-command`: a Lisp command's
 /// name (`None` for a lambda), or the name readline knows `f` by.
-fn command_symbol_of(f: ffi::CommandFn) -> Option<String> {
+pub(crate) fn command_symbol_of(f: ffi::CommandFn) -> Option<String> {
     if std::ptr::fn_addr_eq(f, SHARED) {
         return SHARED_LAST.with_borrow(Clone::clone);
     }
@@ -385,25 +402,82 @@ fn command_symbol_of(f: ffi::CommandFn) -> Option<String> {
     }
 }
 
-/// Runs `command` for its key, as one undo step; rings the bell for none.
-/// On an error or `quit`, the line, point and mark go back to what they
-/// were, unless the command moved to another history line. A readline
-/// `undo` the command called stays done, since readline cannot redo.
+/// Runs `command` for its key, as one undo step (`one_step`); rings the bell
+/// for none. Its error, and the bad settings it left, show under the line.
 fn run(command: Option<&LispCommand>, count: c_int, key: c_int) -> c_int {
     let Some(command) = command else {
         ffi::ding();
         return 0;
     };
     let prefix = ffi::explicit_count().then_some(count);
-    let running = Running::start(key);
-    let (point, mark, history) = (running.point, running.mark, running.history);
     let last = ffi::last_command().and_then(command_symbol_of);
-    let result = crate::lisp::with_lisp_marking_panics(|ctx| call(ctx, command, prefix, last));
-    let group = running.finish();
+    let result = crate::lisp::with_lisp_marking_panics(|ctx| {
+        let function = match command {
+            LispCommand::Named(name) => ctx.intern(name),
+            LispCommand::Lambda(f) => f.clone(),
+        };
+        with_command_variables(ctx, prefix, command.name(), last.as_deref(), |ctx| {
+            let _line = install_line(true);
+            one_step(key, false, || {
+                ctx.funcall(&function, ())
+                    .map(drop)
+                    .map_err(|e| failure_of(ctx, &e))
+            })
+        })
+    });
     let Ok(result) = result else {
         ffi::ding();
         return 0;
     };
+    // The command's error and the bad settings it left go in one message,
+    // the error first.
+    let mut notices = Vec::new();
+    if let Err(Failure::Error(text) | Failure::Refused(text)) = result {
+        let name = command.name().unwrap_or("lambda");
+        notices.push(format!("inkline: {name}: {text}"));
+    }
+    for problem in crate::lisp::settings::problems() {
+        notices.push(format!("inkline: {problem}"));
+    }
+    if !notices.is_empty() {
+        crate::hooks::show_message(&notices.join("; "));
+    }
+    0
+}
+
+/// Runs `f` as one undo step, with `KEY` set to `key`: the changes it
+/// makes to the line go in one undo group of their own, opened at the
+/// first change and dropped if nothing changed. When `f` fails, the group
+/// is undone and point and mark go back to where they were, unless `f`
+/// moved to another history line: the group then stays open on the line
+/// left behind, and nothing is undone. A readline `undo` that `f` called
+/// stays done, since readline cannot redo. Afterwards point and mark are
+/// inside the line. `KEY` and the undo group of a step further up the
+/// stack come back afterwards, also after a panic, which takes the step
+/// back as an error does.
+///
+/// With `open_now`, the group opens before `f` runs instead of at the first
+/// change. A step `f` runs with `one_step` then opens its group inside this
+/// one, as readline's groups nest: undoing it takes back only its own changes,
+/// and undoing this one takes back everything, the inner steps' changes too, as
+/// one step. It is still dropped if nothing changed, as an inner step that
+/// changed nothing added no group and one that failed took its group off again.
+///
+/// Must run inside `with_lisp`, with the line already installed: it installs
+/// none, as installing again would drop the outer buffer and `save-excursion`'s
+/// places in it.
+pub(crate) fn one_step<T>(
+    key: c_int,
+    open_now: bool,
+    f: impl FnOnce() -> Result<T, Failure>,
+) -> Result<T, Failure> {
+    let running = Running::start(key);
+    let (point, mark, history) = (running.point, running.mark, running.history);
+    if open_now {
+        before_change();
+    }
+    let result = f();
+    let group = running.finish();
     let here = ffi::history_position();
     let undo = result.is_err() && here == history;
     match group {
@@ -427,43 +501,34 @@ fn run(command: Option<&LispCommand>, count: c_int, key: c_int) -> c_int {
     let end = ffi::line_bytes().len();
     ffi::set_point(ffi::point().min(end));
     ffi::set_mark(ffi::mark().min(end));
-    // The command's error and the bad settings it left go in one message,
-    // the error first.
-    let mut notices = Vec::new();
-    if let Err(Failure::Error(text)) = result {
-        let name = command.name().unwrap_or("lambda");
-        notices.push(format!("inkline: {name}: {text}"));
-    }
-    for problem in crate::lisp::settings::problems() {
-        notices.push(format!("inkline: {problem}"));
-    }
-    if !notices.is_empty() {
-        crate::hooks::show_message(&notices.join("; "));
-    }
-    0
+    result
 }
 
-/// Calls `command` with the line installed as the buffer,
-/// `current-prefix-arg` set to `prefix`, `this-command` to its name and
-/// `last-command` to `last`.
-fn call(
+/// Installs readline's line as the buffer, read-only unless `writable`.
+pub(crate) fn install_line(writable: bool) -> buffer::Installed {
+    let installed = buffer::install(Box::new(ReadlineBuffer));
+    buffer::set_writable(writable);
+    installed
+}
+
+/// Runs `f` with `current-prefix-arg` set to `prefix` (`nil` for none), and
+/// `this-command` and `last-command` to the symbols `this` and `last` (`nil`
+/// for none). The bindings come off again on every path.
+pub(crate) fn with_command_variables<R>(
     ctx: &mut TulispContext,
-    command: &LispCommand,
     prefix: Option<c_int>,
-    last: Option<String>,
-) -> Result<(), Failure> {
-    let (function, name) = match command {
-        LispCommand::Named(name) => (ctx.intern(name), ctx.intern(name)),
-        LispCommand::Lambda(f) => (f.clone(), TulispObject::nil()),
-    };
-    let last = last.map_or_else(TulispObject::nil, |n| ctx.intern(&n));
+    this: Option<&str>,
+    last: Option<&str>,
+    f: impl FnOnce(&mut TulispContext) -> Result<R, Failure>,
+) -> Result<R, Failure> {
+    let mut symbol = |name: Option<&str>| name.map_or_else(TulispObject::nil, |n| ctx.intern(n));
     let values = [
         (
             "current-prefix-arg",
             prefix.map_or_else(TulispObject::nil, |n| TulispObject::from(i64::from(n))),
         ),
-        ("this-command", name),
-        ("last-command", last),
+        ("this-command", symbol(this)),
+        ("last-command", symbol(last)),
     ];
     /// Takes the variables' bindings off again on every path.
     struct Unbind(Vec<TulispObject>);
@@ -482,16 +547,7 @@ fn call(
             .map_err(|e| Failure::Error(errors::describe(&e, ctx, None)))?;
         unbind.0.push(variable);
     }
-    let _installed = buffer::install(Box::new(ReadlineBuffer));
-    ctx.funcall(&function, ()).map(drop).map_err(|e| {
-        if let ErrorKind::Throw(thrown) = e.kind()
-            && thrown.car().is_ok_and(|tag| tag.to_string() == QUIT)
-        {
-            Failure::Quit
-        } else {
-            Failure::Error(errors::describe(&e, ctx, None))
-        }
-    })
+    f(ctx)
 }
 
 /// The error `quit` raises: a throw to `QUIT`, which `condition-case`

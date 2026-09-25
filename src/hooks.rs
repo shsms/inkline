@@ -95,13 +95,13 @@ thread_local! {
     static INTERRUPTED_IN_LISP: Cell<bool> = const { Cell::new(false) };
     /// Set when another signal interrupted inkline's wait for a key while
     /// Lisp was reading one: the signal, as `ffi::Wait::Signal` gives it.
-    /// Readline handles it once the key is read; `run_lisp_key` runs bash's
-    /// part (traps, `read -e -t` timing out in bash 5.0) once the command
-    /// has returned.
+    /// Readline handles it once the key is read; `after_lisp` runs bash's
+    /// part (traps, `read -e -t` timing out in bash 5.0) once Lisp has
+    /// stopped.
     static SIGNAL_IN_LISP: Cell<Option<c_int>> = const { Cell::new(None) };
     /// Set when shell code that a readline command run from Lisp ran jumped
-    /// to bash's top level: the value it jumped with. `run_lisp_key` makes
-    /// the jump once Lisp has stopped.
+    /// to bash's top level: the value it jumped with. `after_lisp` makes the
+    /// jump once Lisp has stopped.
     static SHELL_JUMP: Cell<Option<c_int>> = const { Cell::new(None) };
     /// Set once readline reads a line of its own (`read -e` in shell code)
     /// under a readline command that Lisp runs, until that command returns.
@@ -312,8 +312,8 @@ fn disable() {
         })
     });
     // Restore unless the state says inkline was already off. While Lisp
-    // runs, inkline's key reader stays until the Lisp command's key has
-    // returned (see `run_lisp_key`).
+    // runs, inkline's key reader stays until Lisp has stopped (see
+    // `after_lisp`).
     if !matches!(enabled, Ok(Ok(false))) {
         let orig = originals();
         ffi::set_redisplay_function(orig.redisplay);
@@ -343,14 +343,10 @@ fn panicked() -> bool {
 /// key instead runs what it had before inkline bound it (`slot` as for
 /// `keys::saved_binding`). Holds no borrow of `STATE` while Lisp runs.
 /// inkline's key reader is in place while the command runs, also when
-/// inkline is off, so a `C-c` while the command reads a key waits for
-/// Lisp to stop. When inkline's drawing function is not in place (inkline
-/// is off), the command's message is printed once it returns. A `C-c`
-/// that came while the command ran, or bash's part of another signal that
-/// came while it read a key, is handled last, as it is after inkline's
-/// wait for a key, and then a jump to bash's top level that shell code
-/// run from Lisp made; only once Lisp has stopped running, so not when
-/// this command's key was run by a readline command that Lisp called.
+/// inkline is off (`before_lisp`). When inkline's drawing function is not
+/// in place (inkline is off), the command's message is printed once it
+/// returns. What came in while the command ran is handed on last
+/// (`after_lisp`).
 pub fn run_lisp_key(
     slot: Option<usize>,
     count: c_int,
@@ -364,7 +360,7 @@ pub fn run_lisp_key(
     if unloaded || panicked() {
         return run_saved_binding(slot, count, key);
     }
-    use_own_key_reader();
+    before_lisp();
     let result = guard(
         || {
             let result = run();
@@ -380,6 +376,25 @@ pub fn run_lisp_key(
             0
         },
     );
+    after_lisp();
+    result
+}
+
+/// Gets ready for Lisp run from a key or a hook: puts inkline's key reader in
+/// place, also when inkline is off, so a `C-c` while Lisp reads a key waits for
+/// Lisp to stop.
+pub fn before_lisp() {
+    use_own_key_reader();
+}
+
+/// Hands on what came in while Lisp ran, once it has stopped: a `C-c` that
+/// came while it ran, or bash's part of another signal that came while it
+/// read a key, as after inkline's wait for a key, and then a jump to
+/// bash's top level that shell code run from Lisp made. Does nothing while
+/// Lisp still runs, as when a readline command that Lisp called ran this
+/// key. It may `longjmp` to bash's top level, so callers call it last,
+/// outside `guard`, with nothing in their frame to drop.
+pub fn after_lisp() {
     if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
         // Shell code the command ran may have switched inkline on or off;
         // inkline keeps its reader only while it is on.
@@ -410,7 +425,19 @@ pub fn run_lisp_key(
             ffi::jump_to_shell_top_level(value);
         }
     }
-    result
+}
+
+/// Whether the Lisp hooks may run now: at the main prompt while bash reads a
+/// command, while inkline is on, and while no Lisp runs. State that cannot be
+/// read counts as off.
+#[expect(dead_code, reason = "the hooks call it")]
+pub fn hooks_allowed() -> bool {
+    ffi::reading_command()
+        && !crate::lisp::RUNNING.load(Ordering::Relaxed)
+        && !panicked()
+        && STATE
+            .try_with(|s| s.try_borrow().is_ok_and(|s| s.enabled && !s.unloaded))
+            .unwrap_or(false)
 }
 
 /// Runs `f`, which runs a readline command for Lisp with
@@ -424,7 +451,7 @@ pub fn in_readline_command<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Notes a jump to bash's top level with `value` that shell code run from
-/// Lisp made, for `run_lisp_key` to make once Lisp has stopped.
+/// Lisp made, for `after_lisp` to make once Lisp has stopped.
 pub fn note_shell_jump(value: c_int) {
     SHELL_JUMP.set(Some(value));
 }
@@ -554,9 +581,9 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
 ///
 /// While Lisp runs (a Lisp command reading a key), bash must not jump from a
 /// signal to a new prompt: that would skip the Lisp and Rust frames. A
-/// `C-c` then comes back as `C-g`, and is handed on once the command has
-/// returned (see `run_lisp_key`); readline handles other signals after the
-/// key, and bash's part of them waits for the command too. A line of its
+/// `C-c` then comes back as `C-g`, and is handed on once Lisp has stopped
+/// (see `after_lisp`); readline handles other signals after the key, and
+/// bash's part of them waits for Lisp too. A line of its
 /// own that shell code run from Lisp reads (`read -e`) gets its signals as
 /// usual, from its first key until the readline command that ran the shell
 /// code returns: bash's jump from there stops at `ffi::call_command` (see
