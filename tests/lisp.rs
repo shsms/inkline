@@ -406,8 +406,7 @@ fn a_looping_init_el_is_skipped_by_the_next_shell() {
     let sh = Shell::start(opts(None));
     let s = sh.settle();
     assert!(
-        (0..s.size().0)
-            .any(|r| row_text(&s, r).contains("init.el did not finish in an earlier shell")),
+        (0..s.size().0).any(|r| row_text(&s, r).contains("did not finish in an earlier shell")),
         "{}",
         dump(&s)
     );

@@ -147,6 +147,49 @@ pub fn run_accept(key: c_int) -> Accept {
     })
 }
 
+thread_local! {
+    /// Whether a command line has started in this shell.
+    #[cfg(not(test))]
+    static FIRST_LINE_STARTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `inkline-line-start-functions` on readline's new line, in order, with
+/// their changes as one undo step. A function that fails has its own changes
+/// undone, the next one runs, and `inkline: NAME: TEXT` shows under the line. A
+/// `quit`, or a `C-c` or a jump to bash's top level while a function ran,
+/// undoes every change of this run and runs no more functions. Point stays
+/// where the functions leave it. True when the line or point changed. A busy
+/// interpreter runs nothing.
+///
+/// At the first line of the shell, a `hooks.<pid>` marker exists while the
+/// functions run, so a shell killed while one is stuck makes the next shell
+/// skip `init.el`.
+#[cfg(not(test))]
+pub fn run_line_start() -> bool {
+    let first_line = !FIRST_LINE_STARTED.replace(true);
+    let changed = super::with_lisp_marking_panics(|ctx| {
+        let _marker = if first_line && !functions(&ctx.intern(LINE_START)).is_empty() {
+            super::init::hooks_marker()
+        } else {
+            None
+        };
+        let point = crate::ffi::point();
+        let mut errors = Vec::new();
+        let result = run_hook(ctx, LINE_START, 0, (), |function, failure| match failure {
+            Failure::Error(text) | Failure::Refused(text) => {
+                errors.push(format!("inkline: {}: {text}", function_name(function)));
+                Ok(())
+            }
+            Failure::Quit => Err(Failure::Quit),
+        });
+        if !errors.is_empty() {
+            crate::hooks::show_message(&errors.join("; "));
+        }
+        result.unwrap_or(false) || crate::ffi::point() != point
+    });
+    changed.unwrap_or(false)
+}
+
 /// Runs the functions of the hook named `hook` on readline's line, in order,
 /// with `args` and `KEY` set to `key`, as one undo step; each function's
 /// changes are a step of their own inside it, undone when that function fails.

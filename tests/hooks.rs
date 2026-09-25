@@ -208,3 +208,105 @@ fn a_panic_in_an_accept_function_runs_the_line_as_typed() {
         has_row(s, "ok") && cursor_row(s) == "$"
     });
 }
+
+#[test]
+fn a_line_start_insert_is_one_undo_step() {
+    let mut sh = shell(r#"(add-hook 'inkline-line-start-functions (lambda () (insert "ls ")))"#);
+    sh.wait_for("the insert", |s| cursor_row(s) == "$ ls");
+    let s = sh.settle();
+    assert_eq!(s.cursor_position().1, 5, "{}", dump(&s));
+    sh.send("\x1f");
+    sh.wait_for("undone", |s| cursor_row(s) == "$");
+}
+
+#[test]
+fn line_start_functions_see_the_text_c_o_brings() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"(add-hook 'inkline-line-start-functions (lambda () (message "start:%s" (buffer-string))))"#
+                .into(),
+        ),
+        history: vec!["echo one", "echo two"],
+        ..Options::default()
+    });
+    sh.send(&format!("{UP}{UP}\x0f"));
+    sh.wait_for("the next line", |s| has_row(s, "start:echo two"));
+}
+
+#[test]
+fn a_looping_line_start_function_is_skipped_by_the_next_shell() {
+    let home = tempfile::tempdir().unwrap();
+    let opts = |init_el: Option<&str>| Options {
+        home: Some(home.path().to_owned()),
+        init_el: init_el.map(str::to_owned),
+        ..Options::default()
+    };
+    let stuck = Shell::spawn(opts(Some(
+        "(add-hook 'inkline-line-start-functions (lambda () (while t)))\n",
+    )));
+    let state = home.path().join(".local/state/inkline");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !std::fs::read_dir(&state)
+        .into_iter()
+        .flatten()
+        .any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with("hooks.")))
+    {
+        assert!(std::time::Instant::now() < deadline, "no marker");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    drop(stuck);
+    let sh = Shell::start(opts(None));
+    let s = sh.settle();
+    assert!(
+        find(&s, "did not finish in an earlier shell").is_some(),
+        "{}",
+        dump(&s)
+    );
+}
+
+#[test]
+fn a_failing_line_start_function_is_undone_and_shown() {
+    let sh = shell(
+        r#"(add-hook 'inkline-line-start-functions (lambda () (insert "ls")))
+           (add-hook 'inkline-line-start-functions (lambda () (insert "zz") (error "bad")) t)
+           (add-hook 'inkline-line-start-functions (lambda () (user-error "no")) t)"#,
+    );
+    sh.wait_for("the message", |s| {
+        has_row(s, "inkline: lambda: bad; inkline: lambda: no")
+    });
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ ls", "{}", dump(&s));
+}
+
+/// The changes of all line-start functions are one undo step.
+#[test]
+fn two_line_start_inserts_are_one_undo_step() {
+    let mut sh = shell(
+        r#"(add-hook 'inkline-line-start-functions (lambda () (insert "ls ")))
+           (add-hook 'inkline-line-start-functions (lambda () (insert "-l ")) t)"#,
+    );
+    sh.wait_for("both inserts", |s| cursor_row(s) == "$ ls -l");
+    sh.send("\x1f");
+    sh.wait_for("both undone", |s| cursor_row(s) == "$");
+}
+
+/// An internal error in a line-start function: the notice, then the line drawn
+/// again below it.
+#[cfg(debug_assertions)]
+#[test]
+fn a_panic_in_a_line_start_function_draws_the_line_below_the_notice() {
+    let mut sh = shell(r#"(add-hook 'inkline-line-start-functions (lambda () (inkline--panic)))"#);
+    sh.wait_for("the notice", |s| {
+        has_row(s, "inkline: internal error, turned off")
+    });
+    let s = sh.settle();
+    assert_eq!(
+        rows(&s),
+        ["$", "inkline: internal error, turned off", "$"],
+        "{}",
+        dump(&s)
+    );
+    assert_eq!(s.cursor_position(), (2, 2), "{}", dump(&s));
+    sh.send("ab");
+    sh.wait_for("typing on", |s| cursor_row(s) == "$ ab");
+}

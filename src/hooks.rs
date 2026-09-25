@@ -812,7 +812,11 @@ fn take_interrupt(in_lisp: bool) -> bool {
 /// Readline calls this at the start of each line, once it has drawn the prompt
 /// and before the first key. A line it filled in by then (the next history
 /// entry after `C-o`, `read -e -i`) was drawn with readline's own drawing
-/// function, so inkline paints it here.
+/// function, so inkline paints it here. At the main prompt, the line-start hook
+/// (`inkline-line-start-functions`) runs first; a line it changed is drawn by
+/// readline again before inkline paints it. What came in while Lisp ran is
+/// handed on last (`after_lisp`), outside `guard`: bash may jump from there to
+/// a new prompt.
 extern "C" fn pre_input() -> c_int {
     let result = ffi::call_hook(originals().pre_input);
     guard(
@@ -828,11 +832,23 @@ extern "C" fn pre_input() -> c_int {
                 s.search_continues = false;
             });
             wrap_completion();
-            draw();
+            let changed = hooks_allowed() && {
+                before_lisp();
+                crate::lisp::hooks::run_line_start()
+            };
+            // As in `redisplay`: nothing is drawn before a jump to a new
+            // prompt.
+            if !lisp_must_stop() {
+                if changed {
+                    ffi::call_redisplay(originals().redisplay);
+                }
+                draw();
+            }
             ffi::flush_out();
         },
-        || (),
+        draw_below_notice,
     );
+    after_lisp();
     result
 }
 
@@ -916,6 +932,13 @@ extern "C" fn redisplay() {
     guard(draw, || ());
     end_update();
     ffi::flush_out();
+}
+
+/// After a panic, whose notice ended on a new row: readline draws the line
+/// again under it.
+fn draw_below_notice() {
+    ffi::on_new_line();
+    ffi::call_redisplay(originals().redisplay);
 }
 
 /// Setups where readline's own drawing is left alone: readline does not draw

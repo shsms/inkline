@@ -118,7 +118,9 @@ Before reading `init.el`, inkline leaves a marker in `$XDG_STATE_HOME/inkline`
 read. If a shell's `init.el` never finishes — an endless loop, for example —
 its marker stays. A later shell that finds it, once the stuck shell has ended
 or the marker is more than 10 seconds old, skips `init.el` until the file
-changes, and says so; fix the file, then run `inkline reload`. The marker
+changes, and says so; fix the file, then run `inkline reload`. The same
+happens when a function in `inkline-line-start-functions` never finishes at a
+shell's first line (see [`docs/lisp.md`](docs/lisp.md#hooks)). The marker
 directory gets the same owner and permission checks as `init.el`'s
 directory. If it fails them, inkline prints one line saying so and reads
 `init.el` without markers, so a looping `init.el` is not skipped.

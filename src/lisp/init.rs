@@ -192,6 +192,15 @@ fn marker_dir() -> Result<Option<PathBuf>, String> {
     }
 }
 
+/// A `hooks.<pid>` marker in the marker directory, made for the line-start hook
+/// at the shell's first line; None when there is no marker directory or markers
+/// are off.
+#[cfg(not(test))]
+pub fn hooks_marker() -> Option<super::lockout::OwnMarker> {
+    let state = marker_dir().ok().flatten()?;
+    super::lockout::make_marker(&state, "hooks")
+}
+
 /// The stuck markers in `state`.
 #[cfg(not(test))]
 fn stuck_markers(state: &Path) -> Vec<super::lockout::Marker> {
@@ -242,10 +251,10 @@ fn read(path: &Path) -> bool {
     if let Some(state) = &state {
         let stuck = stuck_markers(state);
         if changed.is_some_and(|c| super::lockout::skip_init(c, &stuck)) {
-            say("init.el did not finish in an earlier shell; not read. Fix it, then run inkline reload".into());
+            say("init.el or a line-start function did not finish in an earlier shell; init.el not read. Fix init.el, then run inkline reload".into());
             set_outcome(Outcome::Skipped(
                 path.to_owned(),
-                "did not finish in an earlier shell".into(),
+                "it or a line-start function did not finish in an earlier shell".into(),
             ));
             return false;
         }
