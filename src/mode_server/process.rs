@@ -507,7 +507,7 @@ mod tests {
         std::os::unix::fs::symlink(&fake("words")[0], dir.path().join("fake-hl")).unwrap();
         let dirs = format!("/nonexistent:{}:{}", dir.path().display(), path());
         let mut p = start(&["fake-hl".to_owned(), "words".to_owned()], &dirs, None).unwrap();
-        assert_eq!(line(&mut p).unwrap(), "inkline-highlight 1\n");
+        assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         assert_eq!(
             start(&["fake-hl".to_owned()], &path(), None)
                 .err()
@@ -537,7 +537,7 @@ mod tests {
     fn a_relative_program_is_found_from_the_shells_directory() {
         let program = ["tests/data/fake-mode-server", "words"].map(str::to_owned);
         let mut p = start(&program, &path(), None).unwrap();
-        assert_eq!(line(&mut p).unwrap(), "inkline-highlight 1\n");
+        assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
     }
 
     #[test]
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn a_socket_replaced_under_inkline_is_given_up_not_closed() {
         let mut p = start(&fake("words"), &path(), None).unwrap();
-        assert_eq!(line(&mut p).unwrap(), "inkline-highlight 1\n");
+        assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         let fd = p.fd();
         let null = std::fs::File::open("/dev/null").unwrap();
         // SAFETY: `fd` is the helper's socket, which this test owns.
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn a_helper_answers_a_request() {
         let mut p = start(&fake("words"), &path(), None).unwrap();
-        assert_eq!(line(&mut p).unwrap(), "inkline-highlight 1\n");
+        assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         p.send(
             b":request 1\n:cwd 0\n\n:arg final 4\ncsvm\n:arg final 1\na\n:done\n",
             || false,
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn fill_without_a_deadline_does_not_wait() {
         let mut p = start(&fake("words"), &path(), None).unwrap();
-        assert_eq!(line(&mut p).unwrap(), "inkline-highlight 1\n");
+        assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         let before = Instant::now();
         p.fill(None).unwrap();
         assert!(before.elapsed() < Duration::from_millis(100));
@@ -635,7 +635,7 @@ mod tests {
     #[test]
     fn a_helper_that_exits_is_exited_without_sigpipe() {
         let mut p = start(&fake("exit"), &path(), None).unwrap();
-        assert_eq!(line(&mut p).unwrap(), "inkline-highlight 1\n");
+        assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         p.send(b":request 1\n:cwd 0\n\n:arg final 4\ncsvm\n:done\n", || {
             false
         })

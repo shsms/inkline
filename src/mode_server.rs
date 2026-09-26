@@ -998,12 +998,9 @@ mod tests {
         define("csvm", fake("version"), None);
         assert_eq!(
             prepare_until_started("csvm"),
-            ["inkline: mode csvm: off (not a highlight helper)"]
+            ["inkline: mode csvm: off (not a mode server)"]
         );
-        assert_eq!(
-            status_lines(&[]),
-            ["mode csvm (): off (not a highlight helper)"]
-        );
+        assert_eq!(status_lines(&[]), ["mode csvm (): off (not a mode server)"]);
     }
 
     #[test]
@@ -1045,7 +1042,7 @@ mod tests {
         Some(vec![
             "/bin/sh".to_owned(),
             "-c".to_owned(),
-            format!("echo 'inkline-highlight 1 indent'; read x; {then}"),
+            format!("echo 'inkline-mode 1 indent'; read x; {then}"),
         ])
     }
 

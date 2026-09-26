@@ -109,7 +109,7 @@ fn a_wrong_first_line_is_off() {
     });
     sh.send("csvm 'a'");
     sh.wait_for("the message", |s| {
-        has_row(s, "inkline: mode csvm-mode: off (not a highlight helper)")
+        has_row(s, "inkline: mode csvm-mode: off (not a mode server)")
     });
 }
 

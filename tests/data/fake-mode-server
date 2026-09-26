@@ -32,9 +32,9 @@ if [[ $mode == version ]]; then
 fi
 [[ $mode == slow ]] && sleep 0.3
 if [[ $mode == indent || $mode == slow-indent ]]; then
-    echo "inkline-highlight 1 indent"
+    echo "inkline-mode 1 indent"
 else
-    echo "inkline-highlight 1"
+    echo "inkline-mode 1"
 fi
 if [[ $mode == spew ]]; then
     # Fifty lines a write: about 20 MB/s, without pause.

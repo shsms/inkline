@@ -9,7 +9,7 @@ use crate::lexer::Kind;
 
 /// The first line a helper must print, before any words naming the extra
 /// requests it can answer.
-pub const VERSION_LINE: &str = "inkline-highlight 1";
+pub const VERSION_LINE: &str = "inkline-mode 1";
 
 /// Writes a request: `:request ID`, `:cwd LEN` + bytes, one `:arg` per
 /// argument (argument 0 is the command name), then `:done`. Each of `args`
@@ -72,14 +72,14 @@ impl<T> Read<T> {
 }
 
 /// Reads the helper's first line: `Done` with the feature words after
-/// `inkline-highlight 1` (empty for the bare line, and consuming that many
-/// bytes); `Bad("not a highlight helper")` for any other first line.
+/// `inkline-mode 1` (empty for the bare line, and consuming that many
+/// bytes); `Bad("not a mode server")` for any other first line.
 pub fn version(buf: &[u8]) -> Read<Vec<String>> {
     let Some(nl) = buf.iter().position(|&b| b == b'\n') else {
         return Read::Incomplete;
     };
     let used = nl + 1;
-    let bad = || Read::Bad("not a highlight helper".to_owned());
+    let bad = || Read::Bad("not a mode server".to_owned());
     let Ok(line) = std::str::from_utf8(&buf[..nl]) else {
         return bad();
     };
@@ -446,19 +446,20 @@ mod tests {
 
     #[test]
     fn the_version_line() {
-        assert!(matches!(version(b"inkline-high"), Read::Incomplete));
-        assert!(matches!(version(b"inkline-highlight 1\n:x"), Read::Done(f, 20) if f.is_empty()));
+        assert!(matches!(version(b"inkline-mo"), Read::Incomplete));
+        assert!(matches!(version(b"inkline-mode 1\n:x"), Read::Done(f, 15) if f.is_empty()));
         assert!(matches!(
-            version(b"inkline-highlight 1 indent later\n"),
-            Read::Done(f, 33) if f == ["indent", "later"]
+            version(b"inkline-mode 1 indent later\n"),
+            Read::Done(f, 28) if f == ["indent", "later"]
         ));
         for bad in [
             &b"hello\n"[..],
-            b"inkline-highlight 2\n",
-            b"inkline-highlight 1x\n",
-            b"inkline-highlight 10\n",
+            b"inkline-mode 2\n",
+            b"inkline-mode 1x\n",
+            b"inkline-mode 10\n",
+            b"inkline-highlight 1\n",
         ] {
-            assert!(matches!(version(bad), Read::Bad(e) if e == "not a highlight helper"));
+            assert!(matches!(version(bad), Read::Bad(e) if e == "not a mode server"));
         }
     }
 
