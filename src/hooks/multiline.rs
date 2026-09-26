@@ -6,9 +6,9 @@ use std::sync::atomic::Ordering;
 use super::{STATE, guard, status_of};
 use crate::args;
 use crate::ffi;
-use crate::helper::{self, protocol::Depths};
 use crate::indent;
 use crate::lines;
+use crate::mode_server::{self, protocol::Depths};
 use crate::render;
 use crate::syntax::{self, Status};
 
@@ -237,19 +237,19 @@ struct InScript {
 
 /// Whether the cursor at `point` in `text` is inside a quoted argument of
 /// a command that has a highlight helper, found as for colours. If so, asks
-/// the helper how deep the lines are (`helper::indent`, waiting up to
-/// `helper::INDENT_WAIT`), unless the argument is `raw`, it is an empty
+/// the helper how deep the lines are (`mode_server::indent`, waiting up to
+/// `mode_server::INDENT_WAIT`), unless the argument is `raw`, it is an empty
 /// pair of quotes, or Lisp is running. `None` when the cursor is not inside
 /// such an argument: the bash rules apply.
 fn in_script(text: &str, point: usize) -> Option<InScript> {
-    if !helper::any_registered() {
+    if !mode_server::any_registered() {
         return None;
     }
     let quote = syntax::open_quote(&text[..point])?;
     // `STATE` is borrowed only for the parse: never while waiting on the
     // helper.
     let tree = STATE.with_borrow_mut(|s| s.lexer.tree(text))?;
-    let commands = args::commands(&tree, text, helper::is_registered);
+    let commands = args::commands(&tree, text, mode_server::is_registered);
     let (command, index) = args::with_quote(&commands, quote)?;
     let command_line = lines::line_start(text, command.args[0].start()?);
     let arg = &command.args[index];
@@ -259,11 +259,11 @@ fn in_script(text: &str, point: usize) -> Option<InScript> {
         None
     } else {
         let cwd = ffi::shell_variable("PWD").unwrap_or_default().into_bytes();
-        helper::indent(
+        mode_server::indent(
             &command.name,
-            &helper::request(cwd, command),
+            &mode_server::request(cwd, command),
             (index, arg.offset_at(point)),
-            helper::INDENT_WAIT,
+            mode_server::INDENT_WAIT,
             ffi::signal_to_act_on,
         )
     };

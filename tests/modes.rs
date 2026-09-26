@@ -8,7 +8,7 @@ use common::*;
 /// An `init.el` line that registers the fake helper for `csvm`, doing `mode`.
 pub fn fake(mode: &str) -> String {
     format!(
-        "(inkline-highlight-arguments \"csvm\" (list \"{}/tests/data/fake-highlight\" \"{mode}\"))\n",
+        "(inkline-highlight-arguments \"csvm\" (list \"{}/tests/data/fake-mode-server\" \"{mode}\"))\n",
         env!("CARGO_MANIFEST_DIR")
     )
 }
@@ -177,7 +177,7 @@ fn reload_stops_helpers() {
 fn a_plain_name_is_found_in_bashs_path() {
     let dir = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(
-        format!("{}/tests/data/fake-highlight", env!("CARGO_MANIFEST_DIR")),
+        format!("{}/tests/data/fake-mode-server", env!("CARGO_MANIFEST_DIR")),
         dir.path().join("csvm-highlight"),
     )
     .unwrap();
@@ -199,7 +199,7 @@ fn a_plain_name_is_found_in_bashs_path() {
 /// `mode` and logging each request's arguments to `log`.
 fn fake_logging(mode: &str, log: &std::path::Path) -> String {
     format!(
-        "(inkline-highlight-arguments \"csvm\" (list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-highlight\" \"{mode}\"))\n",
+        "(inkline-highlight-arguments \"csvm\" (list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-mode-server\" \"{mode}\"))\n",
         log.display(),
         env!("CARGO_MANIFEST_DIR")
     )
@@ -208,7 +208,7 @@ fn fake_logging(mode: &str, log: &std::path::Path) -> String {
 /// As `fake_logging`, giving the command `colors` as its own.
 fn fake_logging_with_colors(mode: &str, log: &std::path::Path, colors: &str) -> String {
     format!(
-        "(inkline-highlight-arguments \"csvm\" (list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-highlight\" \"{mode}\") {colors})\n",
+        "(inkline-highlight-arguments \"csvm\" (list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-mode-server\" \"{mode}\") {colors})\n",
         log.display(),
         env!("CARGO_MANIFEST_DIR")
     )

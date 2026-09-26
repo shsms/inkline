@@ -13,9 +13,9 @@ use std::time::Instant;
 use crate::args::{self, CommandArgs};
 use crate::commands::{self, PathCache};
 use crate::ffi;
-use crate::helper::{self, protocol::Reply};
 use crate::highlight;
 use crate::lexer::{Kind, Lexer};
+use crate::mode_server::{self, protocol::Reply};
 use crate::pairs::{self, Action};
 use crate::render::{self, Repaint};
 use crate::suggest;
@@ -200,7 +200,7 @@ pub fn unload() {
     guard(
         || {
             disable();
-            helper::stop_all();
+            mode_server::stop_all();
             STATE.with_borrow_mut(|s| s.unloaded = true);
         },
         || (),
@@ -221,7 +221,7 @@ fn run_builtin(args: &[String]) -> c_int {
                 if on { "on" } else { "off" },
                 crate::lisp::init::status_line()
             );
-            for line in helper::status_lines() {
+            for line in mode_server::status_lines() {
                 text.push_str(&line);
                 text.push('\n');
             }
@@ -740,7 +740,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                 {
                     Vec::new()
                 } else {
-                    helper::waiting_fds()
+                    mode_server::waiting_fds()
                 }
             },
             Vec::new,
@@ -775,7 +775,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             // redraw, a pause asked for is still waited for.
             ffi::Wait::Other => guard(
                 || {
-                    if helper::read_waiting() {
+                    if mode_server::read_waiting() {
                         redraw();
                     } else if pause.is_some() {
                         STATE.with_borrow_mut(|s| s.wants_pause = true);
@@ -930,7 +930,7 @@ extern "C" fn pre_input() -> c_int {
             // A new line at the main prompt drops the helpers' replies; a
             // line read while Lisp runs is part of the line Lisp runs in.
             if ffi::reading_command() && !crate::lisp::RUNNING.load(Ordering::Relaxed) {
-                helper::forget_replies();
+                mode_server::forget_replies();
             }
             wrap_completion();
             crate::lisp::hooks::line_started();
@@ -1180,7 +1180,7 @@ fn repaint_line() -> bool {
         None
     };
     let found = ask_helpers(&line, &path);
-    let (found, sets) = highlight::with_sets(found, &colors, helper::colors);
+    let (found, sets) = highlight::with_sets(found, &colors, mode_server::colors);
     show_helper_notices(&line);
     // Read after the suggestion hook and the helper notices, which may have
     // set it.
@@ -1231,14 +1231,14 @@ fn repaint_line() -> bool {
 /// Asks the highlight helpers of the registered commands on `line` how to
 /// colour their arguments, at the main prompt while no Lisp runs: starts
 /// the helpers not started yet, looking up their programs in `path` (bash's
-/// `PATH`), and waits up to `helper::WAIT` in all for their first lines and
+/// `PATH`), and waits up to `mode_server::WAIT` in all for their first lines and
 /// replies. The commands answered in time, each with its reply, in line
 /// order. Why a helper was turned off waits for `show_helper_notices`.
 fn ask_helpers(line: &str, path: &str) -> Vec<(CommandArgs, Reply)> {
     let began = Instant::now();
     if !ffi::reading_command()
         || crate::lisp::RUNNING.load(Ordering::Relaxed)
-        || !helper::any_registered()
+        || !mode_server::any_registered()
     {
         return Vec::new();
     }
@@ -1247,19 +1247,19 @@ fn ask_helpers(line: &str, path: &str) -> Vec<(CommandArgs, Reply)> {
     let Some(tree) = STATE.with_borrow_mut(|s| s.lexer.tree(line)) else {
         return Vec::new();
     };
-    let commands = args::commands(&tree, line, helper::is_registered);
+    let commands = args::commands(&tree, line, mode_server::is_registered);
     if commands.is_empty() {
         return Vec::new();
     }
     let names: Vec<String> = commands.iter().map(|c| c.name.clone()).collect();
-    helper::prepare(&names, path, || Some(ffi::exported_environment()));
+    mode_server::prepare(&names, path, || Some(ffi::exported_environment()));
     let cwd = ffi::shell_variable("PWD").unwrap_or_default().into_bytes();
-    let asks: Vec<(String, helper::Request)> = commands
+    let asks: Vec<(String, mode_server::Request)> = commands
         .iter()
-        .map(|c| (c.name.clone(), helper::request(cwd.clone(), c)))
+        .map(|c| (c.name.clone(), mode_server::request(cwd.clone(), c)))
         .collect();
-    let wait = helper::WAIT.saturating_sub(began.elapsed());
-    let replies = helper::replies(&asks, wait, ffi::signal_to_act_on);
+    let wait = mode_server::WAIT.saturating_sub(began.elapsed());
+    let replies = mode_server::replies(&asks, wait, ffi::signal_to_act_on);
     commands
         .into_iter()
         .zip(replies)
@@ -1273,7 +1273,7 @@ fn ask_helpers(line: &str, path: &str) -> Vec<(CommandArgs, Reply)> {
 /// stays until the next key. Only at the main prompt: a line a script reads
 /// or bash's `>` prompt has nothing to do with helpers.
 fn show_helper_notices(line: &str) {
-    if !ffi::reading_command() || !helper::has_notices() {
+    if !ffi::reading_command() || !mode_server::has_notices() {
         return;
     }
     let paused = STATE.with_borrow_mut(|s| {
@@ -1284,7 +1284,7 @@ fn show_helper_notices(line: &str) {
         paused
     });
     if paused {
-        show_message(&helper::take_notices().join("; "));
+        show_message(&mode_server::take_notices().join("; "));
     }
 }
 

@@ -4,12 +4,12 @@
 pub mod args;
 pub mod colors;
 pub mod commands;
-pub mod helper;
 pub mod highlight;
 pub mod indent;
 pub mod lexer;
 pub mod lines;
 pub mod lisp;
+pub mod mode_server;
 pub mod pairs;
 pub mod render;
 pub mod suggest;

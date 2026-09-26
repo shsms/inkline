@@ -5,8 +5,8 @@ use std::ops::Range;
 
 use crate::args::{Arg, CommandArgs};
 use crate::colors::{ColorSet, Colors};
-use crate::helper::protocol::Reply;
 use crate::lexer::{Kind, Span, merge};
+use crate::mode_server::protocol::Reply;
 
 /// The line's colours with the helpers' replies painted in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -208,8 +208,8 @@ fn joined(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
 mod tests {
     use super::*;
     use crate::args;
-    use crate::helper::protocol::{ReplyError, ReplySpan};
     use crate::lexer::Lexer;
+    use crate::mode_server::protocol::{ReplyError, ReplySpan};
     use Kind::{Command, Keyword, Number, Variable};
 
     /// The `csvm` commands on `line` and bash's spans of it.

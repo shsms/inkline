@@ -1,4 +1,4 @@
-//! Helper programs that colour a command's arguments: the ones Lisp
+//! Server programs that colour a command's arguments: the ones Lisp
 //! registered, their processes, and the protocol inkline speaks with them
 //! (docs/highlight-protocol.md).
 
@@ -42,7 +42,7 @@ enum State {
     Off(String),
 }
 
-struct Helper {
+struct Server {
     /// The command name it colours.
     name: String,
     /// The program and its arguments.
@@ -91,7 +91,7 @@ thread_local! {
     /// The registered helpers, in the order their names were first
     /// registered. Borrowed only inside this module's functions, which run no
     /// Lisp.
-    static HELPERS: RefCell<Vec<Helper>> = const { RefCell::new(Vec::new()) };
+    static SERVERS: RefCell<Vec<Server>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Registers `program` as the helper for the command `name`, with the
@@ -100,7 +100,7 @@ thread_local! {
 /// colours. Otherwise the helper starts afresh: its old process, if any,
 /// sees its input end, and a message about it not yet taken is dropped.
 pub fn register(name: &str, program: Option<Vec<String>>, colors: Option<ColorSet>) {
-    HELPERS.with_borrow_mut(|helpers| {
+    SERVERS.with_borrow_mut(|helpers| {
         let at = helpers.iter().position(|h| h.name == name);
         match (at, program) {
             (Some(i), Some(program))
@@ -108,8 +108,8 @@ pub fn register(name: &str, program: Option<Vec<String>>, colors: Option<ColorSe
             {
                 helpers[i].colors = colors;
             }
-            (Some(i), Some(program)) => helpers[i] = Helper::new(name, program, colors),
-            (None, Some(program)) => helpers.push(Helper::new(name, program, colors)),
+            (Some(i), Some(program)) => helpers[i] = Server::new(name, program, colors),
+            (None, Some(program)) => helpers.push(Server::new(name, program, colors)),
             (Some(i), None) => drop(helpers.remove(i)),
             (None, None) => {}
         }
@@ -118,24 +118,24 @@ pub fn register(name: &str, program: Option<Vec<String>>, colors: Option<ColorSe
 
 /// The command `name`'s own colours, if it has a helper and was given some.
 pub fn colors(name: &str) -> Option<ColorSet> {
-    HELPERS.with_borrow(|helpers| helpers.iter().find(|h| h.name == name)?.colors.clone())
+    SERVERS.with_borrow(|helpers| helpers.iter().find(|h| h.name == name)?.colors.clone())
 }
 
 /// Whether a helper is registered for the command `name`.
 pub fn is_registered(name: &str) -> bool {
-    HELPERS.with_borrow(|helpers| helpers.iter().any(|h| h.name == name))
+    SERVERS.with_borrow(|helpers| helpers.iter().any(|h| h.name == name))
 }
 
 /// Whether any helper is registered.
 pub fn any_registered() -> bool {
-    HELPERS.with_borrow(|helpers| !helpers.is_empty())
+    SERVERS.with_borrow(|helpers| !helpers.is_empty())
 }
 
 /// Drops the replies kept so far, and the reply to any request in flight
 /// when it comes: a new line starts, and the files a reply speaks of may
 /// have changed since it was written.
 pub fn forget_replies() {
-    HELPERS.with_borrow_mut(|helpers| {
+    SERVERS.with_borrow_mut(|helpers| {
         for h in helpers.iter_mut() {
             if let State::Running(running) = &mut h.state {
                 running.kept.clear();
@@ -148,14 +148,14 @@ pub fn forget_replies() {
 /// Forgets every helper, and the messages about them not yet taken; their
 /// processes see their input end.
 pub fn stop_all() {
-    HELPERS.with_borrow_mut(Vec::clear);
+    SERVERS.with_borrow_mut(Vec::clear);
 }
 
 /// One line per helper, in registration order: `highlight NAME: running`
 /// (also while its first line is still coming), `not started`, or
 /// `off (REASON)`.
 pub fn status_lines() -> Vec<String> {
-    HELPERS.with_borrow(|helpers| {
+    SERVERS.with_borrow(|helpers| {
         helpers
             .iter()
             .map(|h| {
@@ -177,7 +177,7 @@ pub fn status_lines() -> Vec<String> {
 /// those starting. A helper this call turns off gets a message for
 /// `take_notices`.
 pub fn prepare(names: &[String], path: &str, environment: fn() -> Option<Vec<Vec<u8>>>) {
-    HELPERS.with_borrow_mut(|helpers| {
+    SERVERS.with_borrow_mut(|helpers| {
         for h in helpers.iter_mut().filter(|h| names.contains(&h.name)) {
             if let Err(reason) = h.prepare(path, environment) {
                 h.turn_off(reason);
@@ -206,7 +206,7 @@ pub fn replies(
     interrupted: fn() -> bool,
 ) -> Vec<Option<Reply>> {
     let deadline = Instant::now() + wait;
-    HELPERS.with_borrow_mut(|helpers| {
+    SERVERS.with_borrow_mut(|helpers| {
         let requests: Vec<Vec<&Request>> = helpers
             .iter()
             .map(|h| requests_for(asks, &h.name))
@@ -252,7 +252,7 @@ pub fn replies(
 /// starting, and those with a request in flight. Waiting for a key also
 /// waits on them, so that `read_waiting` can take what they send.
 pub fn waiting_fds() -> Vec<RawFd> {
-    HELPERS.with_borrow(|helpers| {
+    SERVERS.with_borrow(|helpers| {
         helpers
             .iter()
             .filter_map(|h| match &h.state {
@@ -274,7 +274,7 @@ pub fn waiting_fds() -> Vec<RawFd> {
 /// the line as it is now), a helper started running (the redraw sends it
 /// its request), or a helper was turned off.
 pub fn read_waiting() -> bool {
-    HELPERS.with_borrow_mut(|helpers| {
+    SERVERS.with_borrow_mut(|helpers| {
         let mut changed = false;
         for h in helpers.iter_mut() {
             let read = match &mut h.state {
@@ -330,7 +330,7 @@ pub fn indent(
     interrupted: fn() -> bool,
 ) -> Option<Depths> {
     let deadline = Instant::now() + wait;
-    HELPERS.with_borrow_mut(|helpers| {
+    SERVERS.with_borrow_mut(|helpers| {
         let h = helpers.iter_mut().find(|h| h.name == name)?;
         let asked = h.read_first_line().and_then(|()| match &mut h.state {
             State::Running(running) if running.indent => {
@@ -348,18 +348,18 @@ pub fn indent(
 /// Whether a helper was turned off and the message saying so is not taken
 /// yet.
 pub fn has_notices() -> bool {
-    HELPERS.with_borrow(|helpers| helpers.iter().any(|h| h.notice.is_some()))
+    SERVERS.with_borrow(|helpers| helpers.iter().any(|h| h.notice.is_some()))
 }
 
 /// Takes the messages saying helpers were turned off, in registration
 /// order.
 pub fn take_notices() -> Vec<String> {
-    HELPERS.with_borrow_mut(|helpers| helpers.iter_mut().filter_map(|h| h.notice.take()).collect())
+    SERVERS.with_borrow_mut(|helpers| helpers.iter_mut().filter_map(|h| h.notice.take()).collect())
 }
 
-impl Helper {
-    fn new(name: &str, program: Vec<String>, colors: Option<ColorSet>) -> Helper {
-        Helper {
+impl Server {
+    fn new(name: &str, program: Vec<String>, colors: Option<ColorSet>) -> Server {
+        Server {
             name: name.to_owned(),
             program,
             colors,
@@ -437,7 +437,7 @@ impl Helper {
 }
 
 impl Running {
-    /// See `Helper::advance`.
+    /// See `Server::advance`.
     ///
     /// What it read is always looked at before it returns, so a whole reply
     /// is never left in the buffer, where waiting on the socket would not
@@ -638,7 +638,7 @@ mod tests {
 
     fn fake(mode: &str) -> Option<Vec<String>> {
         Some(vec![
-            format!("{}/tests/data/fake-highlight", env!("CARGO_MANIFEST_DIR")),
+            format!("{}/tests/data/fake-mode-server", env!("CARGO_MANIFEST_DIR")),
             mode.to_owned(),
         ])
     }
@@ -654,7 +654,7 @@ mod tests {
         prepare(&names, &path(), || None);
         let deadline = Instant::now() + Duration::from_secs(2);
         let starting = || {
-            HELPERS.with_borrow(|hs| {
+            SERVERS.with_borrow(|hs| {
                 hs.iter()
                     .any(|h| h.name == name && matches!(h.state, State::Starting(_)))
             })
@@ -753,7 +753,7 @@ mod tests {
         assert_eq!(ask(&["a"], Duration::from_millis(20)), [None]);
         assert!(!read_waiting(), "nothing has come yet");
         let answered = || {
-            HELPERS
+            SERVERS
                 .with_borrow(|hs| matches!(&hs[0].state, State::Running(r) if !r.kept.is_empty()))
         };
         assert!(read_until(answered));
@@ -775,7 +775,7 @@ mod tests {
         let idle = || waiting_fds().is_empty();
         assert!(read_until(idle), "the dropped reply asks for a redraw");
         let kept = || {
-            HELPERS
+            SERVERS
                 .with_borrow(|hs| matches!(&hs[0].state, State::Running(r) if !r.kept.is_empty()))
         };
         assert!(!kept(), "the forgotten reply is not kept");
@@ -789,7 +789,7 @@ mod tests {
         prepare(&["csvm".to_owned()], &path(), || None);
         assert_eq!(waiting_fds().len(), 1, "waited on while starting");
         assert!(!read_waiting(), "its first line has not come");
-        let running = || HELPERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
+        let running = || SERVERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
         assert!(read_until(running), "moving to running asks for a redraw");
         assert!(running());
         assert!(waiting_fds().is_empty(), "nothing in flight");
@@ -802,7 +802,7 @@ mod tests {
         assert!(prepare_until_started("csvm").is_empty());
         // It exits once it has read the request this sends.
         assert_eq!(ask(&["a"], Duration::ZERO), [None]);
-        let off = || HELPERS.with_borrow(|hs| matches!(hs[0].state, State::Off(_)));
+        let off = || SERVERS.with_borrow(|hs| matches!(hs[0].state, State::Off(_)));
         assert!(read_until(off));
         assert_eq!(take_notices(), ["inkline: highlight csvm: off (exited)"]);
         assert!(waiting_fds().is_empty());
@@ -876,7 +876,7 @@ mod tests {
         register("csvm", fake("words"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(status_lines(), ["highlight csvm: running"]);
-        let running = HELPERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
+        let running = SERVERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
         assert!(running);
     }
 
@@ -1078,7 +1078,7 @@ mod tests {
 
     /// Whether a request to `name` is in flight.
     fn asked_anything(name: &str) -> bool {
-        HELPERS.with_borrow(|helpers| {
+        SERVERS.with_borrow(|helpers| {
             helpers.iter().any(|h| {
                 h.name == name && matches!(&h.state, State::Running(r) if r.in_flight.is_some())
             })

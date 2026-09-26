@@ -2,7 +2,7 @@
 //! line, closing words that move a line back out, and the indentation inside
 //! a program's script from the depths its helper gives.
 
-use crate::helper::protocol::Depths;
+use crate::mode_server::protocol::Depths;
 
 /// Words that close a block. A line starting with one moves back one step.
 const CLOSERS: &[&str] = &["done", "fi", "esac", "}", ")", "else", "elif"];

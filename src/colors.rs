@@ -157,7 +157,7 @@ impl ColorSet {
         let mut set = ColorSet::default();
         let mut seen: Vec<&str> = Vec::new();
         for (name, value) in entries {
-            let kind = crate::helper::protocol::kind_named(name);
+            let kind = crate::mode_server::protocol::kind_named(name);
             if kind.is_none() && name != "script" {
                 return Err(format!("unknown colour name {name}"));
             }

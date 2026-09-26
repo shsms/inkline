@@ -11,7 +11,6 @@ pub mod buffer;
 pub mod commands;
 pub mod emacs;
 pub mod errors;
-pub mod highlight;
 pub mod hooks;
 pub mod init;
 pub mod keydesc;
@@ -19,6 +18,7 @@ pub mod keydesc;
 pub mod keys;
 pub mod layout;
 pub mod lockout;
+pub mod modes;
 pub mod settings;
 
 thread_local! {
@@ -74,7 +74,7 @@ fn new_context() -> TulispContext {
     #[cfg(not(test))]
     commands::register(&mut ctx);
     settings::register(&mut ctx);
-    highlight::register(&mut ctx);
+    modes::register(&mut ctx);
     #[cfg(not(test))]
     keys::register(&mut ctx);
     #[cfg(not(test))]
@@ -168,7 +168,7 @@ pub fn reload() -> Result<bool, String> {
     // every later command reload again.
     BROKEN.set(false);
     keys::restore_all();
-    crate::helper::stop_all();
+    crate::mode_server::stop_all();
     start();
     let mut read_cleanly = true;
     if crate::ffi::line_editing_shell() {

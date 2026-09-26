@@ -464,7 +464,7 @@ mod tests {
 
     fn fake(mode: &str) -> Vec<String> {
         vec![
-            format!("{}/tests/data/fake-highlight", env!("CARGO_MANIFEST_DIR")),
+            format!("{}/tests/data/fake-mode-server", env!("CARGO_MANIFEST_DIR")),
             mode.to_owned(),
         ]
     }
@@ -535,7 +535,7 @@ mod tests {
     /// shell's directory, which `cargo test` sets to the crate's.
     #[test]
     fn a_relative_program_is_found_from_the_shells_directory() {
-        let program = ["tests/data/fake-highlight", "words"].map(str::to_owned);
+        let program = ["tests/data/fake-mode-server", "words"].map(str::to_owned);
         let mut p = start(&program, &path(), None).unwrap();
         assert_eq!(line(&mut p).unwrap(), "inkline-highlight 1\n");
     }

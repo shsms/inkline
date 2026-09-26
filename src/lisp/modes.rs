@@ -35,7 +35,7 @@ pub fn register(ctx: &mut TulispContext) {
                 .map(|c| parse_color_set(&c))
                 .transpose()
                 .map_err(|why| Error::invalid_argument(format!("{NAME}: {why}")))?;
-            crate::helper::register(&name.as_string()?, program, colors);
+            crate::mode_server::register(&name.as_string()?, program, colors);
             Ok(TulispObject::nil())
         },
     );
@@ -74,8 +74,8 @@ fn wrong_type(expected: &str, value: &TulispObject) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::helper;
     use crate::lisp::buffer::{TextBuffer, install, set_writable};
+    use crate::mode_server;
 
     fn eval(expr: &str) -> Result<Option<String>, String> {
         crate::lisp::eval(expr)
@@ -87,17 +87,17 @@ mod tests {
             eval(r#"(inkline-highlight-arguments "csvm" '("csvm" "--highlight"))"#),
             Ok(None)
         );
-        assert!(helper::is_registered("csvm"));
+        assert!(mode_server::is_registered("csvm"));
         assert_eq!(
             eval(r#"(inkline-highlight-arguments "csvm" (list "other"))"#),
             Ok(None)
         );
-        assert_eq!(helper::status_lines(), ["highlight csvm: not started"]);
+        assert_eq!(mode_server::status_lines(), ["highlight csvm: not started"]);
         assert_eq!(
             eval(r#"(inkline-highlight-arguments "csvm" nil)"#),
             Ok(None)
         );
-        assert!(!helper::is_registered("csvm"));
+        assert!(!mode_server::is_registered("csvm"));
     }
 
     #[test]
@@ -127,7 +127,7 @@ mod tests {
             let err = eval(expr).unwrap_err();
             assert!(err.starts_with(message), "{expr}: {err}");
         }
-        assert!(helper::status_lines().is_empty());
+        assert!(mode_server::status_lines().is_empty());
     }
 
     #[test]
@@ -146,12 +146,12 @@ mod tests {
             ),
             "{err}"
         );
-        assert!(!helper::is_registered("csvm"));
+        assert!(!mode_server::is_registered("csvm"));
     }
 
     fn command_colour(name: &str) -> String {
         use crate::colors::Colors;
-        let set = helper::colors(name).unwrap();
+        let set = mode_server::colors(name).unwrap();
         Colors::default()
             .layered(&set)
             .sgr(crate::lexer::Kind::Command)
@@ -165,13 +165,13 @@ mod tests {
             .unwrap();
         assert_eq!(command_colour("csvm"), "1;35");
         eval(r#"(inkline-highlight-arguments "csvm" '("x") "script=on grey3")"#).unwrap();
-        let set = helper::colors("csvm").unwrap();
+        let set = mode_server::colors("csvm").unwrap();
         assert_eq!(Colors::default().layered(&set).script(), "48;5;235");
         eval(r#"(inkline-highlight-arguments "csvm" '("x") nil)"#).unwrap();
-        assert_eq!(helper::colors("csvm"), None);
+        assert_eq!(mode_server::colors("csvm"), None);
         eval(r#"(inkline-highlight-arguments "csvm" '("x") '((command . "1")))"#).unwrap();
         eval(r#"(inkline-highlight-arguments "csvm" '("x"))"#).unwrap();
-        assert_eq!(helper::colors("csvm"), None, "left out: no colours");
+        assert_eq!(mode_server::colors("csvm"), None, "left out: no colours");
     }
 
     /// A bad colour set is an error that names what is wrong, and leaves
@@ -203,7 +203,7 @@ mod tests {
             .unwrap_err();
             assert!(err.contains(message), "{colors}: {err}");
         }
-        assert_eq!(helper::status_lines(), ["highlight csvm: not started"]);
+        assert_eq!(mode_server::status_lines(), ["highlight csvm: not started"]);
         assert_eq!(command_colour("csvm"), "1", "still the first registration");
     }
 }
