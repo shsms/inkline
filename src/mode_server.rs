@@ -1,8 +1,9 @@
-//! Server programs that colour a command's arguments: the ones Lisp
-//! registered, their processes, and the protocol inkline speaks with them
+//! Server programs that colour a command's arguments: the modes Lisp
+//! defined, their processes, and the protocol inkline speaks with them
 //! (docs/highlight-protocol.md).
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::os::fd::RawFd;
 use std::time::{Duration, Instant};
 
@@ -37,17 +38,17 @@ enum State {
     Starting(Process),
     /// Its first line was good.
     Running(Running),
-    /// Turned off until it is registered again or `inkline reload`, for this
-    /// reason.
+    /// Turned off until its mode is defined again or `inkline reload`, for
+    /// this reason.
     Off(String),
 }
 
 struct Server {
-    /// The command name it colours.
-    name: String,
+    /// The name of the mode it supplies.
+    mode: String,
     /// The program and its arguments.
     program: Vec<String>,
-    /// The command's own colours, over `inkline-colors`.
+    /// The mode's own colours, over `inkline-colors`.
     colors: Option<ColorSet>,
     state: State,
     /// The message saying it was turned off, until `take_notices` takes it.
@@ -88,47 +89,71 @@ enum Asked {
 }
 
 thread_local! {
-    /// The registered helpers, in the order their names were first
-    /// registered. Borrowed only inside this module's functions, which run no
+    /// The defined modes' servers, in the order the modes were first
+    /// defined. Borrowed only inside this module's functions, which run no
     /// Lisp.
     static SERVERS: RefCell<Vec<Server>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Registers `program` as the helper for the command `name`, with the
-/// command's own colours `colors`, or with `None` removes the helper. The
-/// same program again keeps a helper that is not off and only changes its
-/// colours. Otherwise the helper starts afresh: its old process, if any,
-/// sees its input end, and a message about it not yet taken is dropped.
-pub fn register(name: &str, program: Option<Vec<String>>, colors: Option<ColorSet>) {
-    SERVERS.with_borrow_mut(|helpers| {
-        let at = helpers.iter().position(|h| h.name == name);
+/// Defines the mode `mode` with `program` as its server and `colors` as its
+/// own colours, or with `None` removes the mode. The same program again
+/// keeps a server that is not off and only changes the colours. Otherwise
+/// the server starts afresh: its old process, if any, sees its input end,
+/// and a message about it not yet taken is dropped.
+pub fn define(mode: &str, program: Option<Vec<String>>, colors: Option<ColorSet>) {
+    SERVERS.with_borrow_mut(|servers| {
+        let at = servers.iter().position(|s| s.mode == mode);
         match (at, program) {
             (Some(i), Some(program))
-                if helpers[i].program == program && !matches!(helpers[i].state, State::Off(_)) =>
+                if servers[i].program == program && !matches!(servers[i].state, State::Off(_)) =>
             {
-                helpers[i].colors = colors;
+                servers[i].colors = colors;
             }
-            (Some(i), Some(program)) => helpers[i] = Server::new(name, program, colors),
-            (None, Some(program)) => helpers.push(Server::new(name, program, colors)),
-            (Some(i), None) => drop(helpers.remove(i)),
+            (Some(i), Some(program)) => servers[i] = Server::new(mode, program, colors),
+            (None, Some(program)) => servers.push(Server::new(mode, program, colors)),
+            (Some(i), None) => drop(servers.remove(i)),
             (None, None) => {}
         }
     });
 }
 
-/// The command `name`'s own colours, if it has a helper and was given some.
-pub fn colors(name: &str) -> Option<ColorSet> {
-    SERVERS.with_borrow(|helpers| helpers.iter().find(|h| h.name == name)?.colors.clone())
+/// The mode `mode`'s own colours, if it is defined and was given some.
+pub fn colors(mode: &str) -> Option<ColorSet> {
+    SERVERS.with_borrow(|servers| servers.iter().find(|s| s.mode == mode)?.colors.clone())
 }
 
-/// Whether a helper is registered for the command `name`.
-pub fn is_registered(name: &str) -> bool {
-    SERVERS.with_borrow(|helpers| helpers.iter().any(|h| h.name == name))
+/// Whether the mode `mode` is defined.
+pub fn is_defined(mode: &str) -> bool {
+    SERVERS.with_borrow(|servers| servers.iter().any(|s| s.mode == mode))
 }
 
-/// Whether any helper is registered.
-pub fn any_registered() -> bool {
-    SERVERS.with_borrow(|helpers| !helpers.is_empty())
+/// Whether any mode is defined.
+pub fn any_defined() -> bool {
+    SERVERS.with_borrow(|servers| !servers.is_empty())
+}
+
+/// The mode that the command whose name word is `word` uses: that of the
+/// first pair of `table` (`inkline-command-mode-alist`'s pairs, as
+/// `settings::command_modes` gives them) that names `word` (see `names`)
+/// and whose mode is defined.
+pub fn mode_for(word: &str, table: &[(String, String)]) -> Option<String> {
+    SERVERS.with_borrow(|servers| {
+        table
+            .iter()
+            .find(|(command, mode)| names(command, word) && servers.iter().any(|s| s.mode == *mode))
+            .map(|(_, mode)| mode.clone())
+    })
+}
+
+/// Whether the alist's `command` names the name word `word`: `word` itself,
+/// or the part of `word` after its last `/`. An empty `command` names
+/// nothing.
+fn names(command: &str, word: &str) -> bool {
+    !command.is_empty()
+        && (command == word
+            || word
+                .rsplit_once('/')
+                .is_some_and(|(_, last)| last == command))
 }
 
 /// Drops the replies kept so far, and the reply to any request in flight
@@ -151,43 +176,107 @@ pub fn stop_all() {
     SERVERS.with_borrow_mut(Vec::clear);
 }
 
-/// One line per helper, in registration order: `highlight NAME: running`
-/// (also while its first line is still coming), `not started`, or
-/// `off (REASON)`.
-pub fn status_lines() -> Vec<String> {
-    SERVERS.with_borrow(|helpers| {
-        helpers
+/// One line per defined mode, in the order the modes were first defined: `mode
+/// NAME (COMMANDS): STATE`. COMMANDS are the commands of the pairs of `table`
+/// (as for `mode_for`) that use the mode, in order, each once; STATE is
+/// `running` (also while the first line is still coming), `not started` or `off
+/// (REASON)`. Then, in `table`'s order, one line for each pair that never takes
+/// effect, each once: `command COMMAND: no mode named MODE` when its mode is
+/// not defined, `command COMMAND: uses USED, not MODE` when an earlier pair
+/// gives the command another mode, and `command "": matches nothing` for an
+/// empty COMMAND. A pair that repeats the mode an earlier pair gives its
+/// command gets no line. The work grows with the length of `table`, not with
+/// its square, so a very long alist does not hold up `inkline status`.
+pub fn status_lines(table: &[(String, String)]) -> Vec<String> {
+    SERVERS.with_borrow(|servers| {
+        let defined: HashSet<&str> = servers.iter().map(|s| s.mode.as_str()).collect();
+        // Each COMMAND's first pair whose mode is defined: its place in
+        // `table`, and its mode.
+        let mut first: HashMap<&str, (usize, &str)> = HashMap::new();
+        for (i, (command, mode)) in table.iter().enumerate() {
+            if defined.contains(mode.as_str()) {
+                first.entry(command).or_insert((i, mode));
+            }
+        }
+        // The mode the command whose name word is `word` uses, as
+        // `mode_for` finds it.
+        let used = |word: &str| -> Option<&str> {
+            let last = word.rsplit_once('/').map(|(_, last)| last);
+            [Some(word), last]
+                .into_iter()
+                .flatten()
+                .filter(|command| !command.is_empty())
+                .filter_map(|command| first.get(command))
+                .min_by_key(|(i, _)| *i)
+                .map(|(_, mode)| *mode)
+        };
+        let mut commands: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut listed = HashSet::new();
+        let mut empty_told = false;
+        let mut seen = HashSet::new();
+        let mut unused = Vec::new();
+        for (command, mode) in table {
+            if !seen.insert((command, mode)) {
+                continue;
+            }
+            let uses = used(command);
+            if let Some(uses) = uses
+                && listed.insert(command)
+            {
+                commands.entry(uses).or_default().push(command);
+            }
+            if command.is_empty() {
+                if !empty_told {
+                    unused.push(r#"command "": matches nothing"#.to_owned());
+                    empty_told = true;
+                }
+            } else if !defined.contains(mode.as_str()) {
+                unused.push(format!("command {command}: no mode named {mode}"));
+            } else if let Some(uses) = uses
+                && uses != mode
+            {
+                unused.push(format!("command {command}: uses {uses}, not {mode}"));
+            }
+        }
+        let mut lines: Vec<String> = servers
             .iter()
-            .map(|h| {
-                let state = match &h.state {
+            .map(|s| {
+                let commands = commands.get(s.mode.as_str()).map(|c| c.join(", "));
+                let state = match &s.state {
                     State::NotStarted => "not started".to_owned(),
                     State::Starting(_) | State::Running(_) => "running".to_owned(),
                     State::Off(reason) => format!("off ({reason})"),
                 };
-                format!("highlight {}: {state}", h.name)
+                format!(
+                    "mode {} ({}): {state}",
+                    s.mode,
+                    commands.unwrap_or_default()
+                )
             })
-            .collect()
+            .collect();
+        lines.extend(unused);
+        lines
     })
 }
 
-/// Gets the helpers for the command names in `names` going, without
-/// waiting: starts those not started yet, looking up programs in `path`
-/// (bash's `PATH`) and giving them the environment `environment` returns
-/// (see `process::start`), and reads what has come of the first line of
-/// those starting. A helper this call turns off gets a message for
+/// Gets the servers of the modes in `modes` going, without waiting: starts
+/// those not started yet, looking up programs in `path` (bash's `PATH`) and
+/// giving them the environment `environment` returns (see
+/// `process::start`), and reads what has come of the first line of those
+/// starting. A server this call turns off gets a message for
 /// `take_notices`.
-pub fn prepare(names: &[String], path: &str, environment: fn() -> Option<Vec<Vec<u8>>>) {
-    SERVERS.with_borrow_mut(|helpers| {
-        for h in helpers.iter_mut().filter(|h| names.contains(&h.name)) {
-            if let Err(reason) = h.prepare(path, environment) {
-                h.turn_off(reason);
+pub fn prepare(modes: &[String], path: &str, environment: fn() -> Option<Vec<Vec<u8>>>) {
+    SERVERS.with_borrow_mut(|servers| {
+        for s in servers.iter_mut().filter(|s| modes.contains(&s.mode)) {
+            if let Err(reason) = s.prepare(path, environment) {
+                s.turn_off(reason);
             }
         }
     });
 }
 
-/// The reply to each of `asks` (a helper's command name and a request), or
-/// `None` when it has not come in time.
+/// The reply to each of `asks` (a mode and a request), or `None` when it has
+/// not come in time.
 ///
 /// A kept reply to the same request answers at once. For the rest, each helper
 /// is sent one request at a time, in the order of `asks`, and replies are read
@@ -209,7 +298,7 @@ pub fn replies(
     SERVERS.with_borrow_mut(|helpers| {
         let requests: Vec<Vec<&Request>> = helpers
             .iter()
-            .map(|h| requests_for(asks, &h.name))
+            .map(|h| requests_for(asks, &h.mode))
             .collect();
         for (h, requests) in helpers.iter_mut().zip(&requests) {
             if let State::Running(running) = &mut h.state {
@@ -237,8 +326,8 @@ pub fn replies(
             }
         }
         asks.iter()
-            .map(|(name, request)| {
-                let h = helpers.iter().find(|h| h.name == *name)?;
+            .map(|(mode, request)| {
+                let h = helpers.iter().find(|h| h.mode == *mode)?;
                 match &h.state {
                     State::Running(running) => running.kept(request).cloned(),
                     State::NotStarted | State::Starting(_) | State::Off(_) => None,
@@ -296,10 +385,10 @@ pub fn read_waiting() -> bool {
     })
 }
 
-/// The requests in `asks` for the helper for `name`, in order.
-fn requests_for<'a>(asks: &'a [(String, Request)], name: &str) -> Vec<&'a Request> {
+/// The requests in `asks` for the server of the mode `mode`, in order.
+fn requests_for<'a>(asks: &'a [(String, Request)], mode: &str) -> Vec<&'a Request> {
     asks.iter()
-        .filter(|(n, _)| n == name)
+        .filter(|(m, _)| m == mode)
         .map(|(_, request)| request)
         .collect()
 }
@@ -314,16 +403,17 @@ pub fn request(cwd: Vec<u8>, command: &CommandArgs) -> Request {
     (cwd, args)
 }
 
-/// Asks the helper for `name` how deep the new line and the cursor's line
-/// are, with the cursor at `at` (an argument's index and a byte offset in
-/// its text) in `request`'s arguments. Only a running helper that named
-/// `indent` is asked. The reply to a request already in flight comes first
-/// (one request at a time), all within `wait`; a signal for which
-/// `interrupted` holds (such as C-c) ends the wait. `None` when no depths
-/// came: the helper was not asked, gave none in time, or sent only `:end`.
-/// A helper that fails is turned off, with a message for `take_notices`.
+/// Asks the server of the mode `mode` how deep the new line and the
+/// cursor's line are, with the cursor at `at` (an argument's index and a
+/// byte offset in its text) in `request`'s arguments. Only a running helper
+/// that named `indent` is asked. The reply to a request already in flight
+/// comes first (one request at a time), all within `wait`; a signal for
+/// which `interrupted` holds (such as C-c) ends the wait. `None` when no
+/// depths came: the helper was not asked, gave none in time, or sent only
+/// `:end`. A helper that fails is turned off, with a message for
+/// `take_notices`.
 pub fn indent(
-    name: &str,
+    mode: &str,
     request: &Request,
     at: (usize, usize),
     wait: Duration,
@@ -331,7 +421,7 @@ pub fn indent(
 ) -> Option<Depths> {
     let deadline = Instant::now() + wait;
     SERVERS.with_borrow_mut(|helpers| {
-        let h = helpers.iter_mut().find(|h| h.name == name)?;
+        let h = helpers.iter_mut().find(|h| h.mode == mode)?;
         let asked = h.read_first_line().and_then(|()| match &mut h.state {
             State::Running(running) if running.indent => {
                 running.ask_indent(request, at, deadline, interrupted)
@@ -358,9 +448,9 @@ pub fn take_notices() -> Vec<String> {
 }
 
 impl Server {
-    fn new(name: &str, program: Vec<String>, colors: Option<ColorSet>) -> Server {
+    fn new(mode: &str, program: Vec<String>, colors: Option<ColorSet>) -> Server {
         Server {
-            name: name.to_owned(),
+            mode: mode.to_owned(),
             program,
             colors,
             state: State::NotStarted,
@@ -429,9 +519,9 @@ impl Server {
         }
     }
 
-    /// Turns the helper off for `reason`, with a message saying so.
+    /// Turns the server off for `reason`, with a message saying so.
     fn turn_off(&mut self, reason: String) {
-        self.notice = Some(format!("inkline: highlight {}: off ({reason})", self.name));
+        self.notice = Some(format!("inkline: mode {}: off ({reason})", self.mode));
         self.state = State::Off(reason);
     }
 }
@@ -647,21 +737,21 @@ mod tests {
         std::env::var("PATH").unwrap_or_default()
     }
 
-    /// Prepares `name` until it is no longer starting, or two seconds have
-    /// passed; the messages it gave.
-    fn prepare_until_started(name: &str) -> Vec<String> {
-        let names = [name.to_owned()];
-        prepare(&names, &path(), || None);
+    /// Prepares the mode `mode` until its server is no longer starting, or
+    /// two seconds have passed; the messages it gave.
+    fn prepare_until_started(mode: &str) -> Vec<String> {
+        let modes = [mode.to_owned()];
+        prepare(&modes, &path(), || None);
         let deadline = Instant::now() + Duration::from_secs(2);
         let starting = || {
             SERVERS.with_borrow(|hs| {
                 hs.iter()
-                    .any(|h| h.name == name && matches!(h.state, State::Starting(_)))
+                    .any(|h| h.mode == mode && matches!(h.state, State::Starting(_)))
             })
         };
         while starting() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
-            prepare(&names, &path(), || None);
+            prepare(&modes, &path(), || None);
         }
         take_notices()
     }
@@ -698,7 +788,7 @@ mod tests {
     #[test]
     fn replies_come_and_are_kept() {
         use crate::lexer::Kind::{Command, Number};
-        register("csvm", fake("words"), None);
+        define("csvm", fake("words"), None);
         let got = ask(&["a 1"], Duration::from_secs(2));
         assert_eq!(got.len(), 1);
         assert_eq!(kinds(&got[0]), [Command, Number]);
@@ -709,7 +799,7 @@ mod tests {
     #[test]
     fn several_asks_of_one_helper_are_all_answered() {
         use crate::lexer::Kind::{Command, Number, Variable};
-        register("csvm", fake("words"), None);
+        define("csvm", fake("words"), None);
         let got = ask(&["a", "b c", "1"], Duration::from_secs(2));
         assert_eq!(kinds(&got[0]), [Command]);
         assert_eq!(kinds(&got[1]), [Command, Variable]);
@@ -718,11 +808,11 @@ mod tests {
 
     #[test]
     fn a_late_reply_is_not_a_failure_and_is_kept_for_its_request() {
-        register("csvm", fake("late"), None);
+        define("csvm", fake("late"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(ask(&["a"], Duration::from_millis(20)), [None]);
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
         // The reply for `a` comes while waiting for `b`'s.
         let got = ask(&["b"], Duration::from_secs(3));
         assert!(got[0].is_some());
@@ -747,7 +837,7 @@ mod tests {
 
     #[test]
     fn a_reply_that_comes_between_redraws_is_kept() {
-        register("csvm", fake("late"), None);
+        define("csvm", fake("late"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert!(waiting_fds().is_empty(), "nothing asked yet");
         assert_eq!(ask(&["a"], Duration::from_millis(20)), [None]);
@@ -766,7 +856,7 @@ mod tests {
     /// as it is now.
     #[test]
     fn a_forgotten_reply_is_dropped_and_the_line_asked_about_again() {
-        register("csvm", fake("late"), None);
+        define("csvm", fake("late"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(ask(&["a"], Duration::ZERO), [None]);
         forget_replies();
@@ -785,7 +875,7 @@ mod tests {
     #[test]
     fn a_helper_still_starting_is_waited_on() {
         // It prints its first line after 0.3 s.
-        register("csvm", fake("slow"), None);
+        define("csvm", fake("slow"), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert_eq!(waiting_fds().len(), 1, "waited on while starting");
         assert!(!read_waiting(), "its first line has not come");
@@ -798,33 +888,33 @@ mod tests {
 
     #[test]
     fn a_helper_that_exits_between_redraws_is_off() {
-        register("csvm", fake("exit"), None);
+        define("csvm", fake("exit"), None);
         assert!(prepare_until_started("csvm").is_empty());
         // It exits once it has read the request this sends.
         assert_eq!(ask(&["a"], Duration::ZERO), [None]);
         let off = || SERVERS.with_borrow(|hs| matches!(hs[0].state, State::Off(_)));
         assert!(read_until(off));
-        assert_eq!(take_notices(), ["inkline: highlight csvm: off (exited)"]);
+        assert_eq!(take_notices(), ["inkline: mode csvm: off (exited)"]);
         assert!(waiting_fds().is_empty());
     }
 
     #[test]
     fn a_helper_that_exits_is_off() {
-        register("csvm", fake("exit"), None);
+        define("csvm", fake("exit"), None);
         assert_eq!(ask(&["a"], Duration::from_secs(2)), [None]);
-        assert_eq!(take_notices(), ["inkline: highlight csvm: off (exited)"]);
-        assert_eq!(status_lines(), ["highlight csvm: off (exited)"]);
+        assert_eq!(take_notices(), ["inkline: mode csvm: off (exited)"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): off (exited)"]);
         assert_eq!(ask(&["a"], Duration::from_secs(2)), [None]);
         assert!(take_notices().is_empty());
     }
 
     #[test]
     fn a_reply_that_breaks_the_protocol_is_off() {
-        register("csvm", fake("garbage"), None);
+        define("csvm", fake("garbage"), None);
         assert_eq!(ask(&["a"], Duration::from_secs(2)), [None]);
         assert_eq!(
             take_notices(),
-            ["inkline: highlight csvm: off (bad reply: \"nonsense\")"]
+            ["inkline: mode csvm: off (bad reply: \"nonsense\")"]
         );
     }
 
@@ -833,7 +923,7 @@ mod tests {
     /// off at `MOST_UNREAD` (see `a_helper_that_writes_too_much_is_off`).
     #[test]
     fn a_helper_that_keeps_writing_does_not_hold_up_a_redraw() {
-        register("csvm", fake("spew"), None);
+        define("csvm", fake("spew"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
         assert_eq!(ask(&["a"], Duration::from_millis(15)), [None]);
@@ -843,97 +933,97 @@ mod tests {
 
     #[test]
     fn a_helper_that_writes_too_much_is_off() {
-        register("csvm", fake("spew"), None);
+        define("csvm", fake("spew"), None);
         let deadline = Instant::now() + Duration::from_secs(20);
         while !has_notices() && Instant::now() < deadline {
             ask(&["a"], Duration::from_millis(15));
         }
         assert_eq!(
             take_notices(),
-            ["inkline: highlight csvm: off (bad reply: too much output)"]
+            ["inkline: mode csvm: off (bad reply: too much output)"]
         );
     }
 
     #[test]
-    fn registering_replacing_and_removing() {
-        register("a", Some(vec!["x".to_owned()]), None);
-        register("b", Some(vec!["y".to_owned()]), None);
-        register("a", Some(vec!["z".to_owned()]), None);
-        assert!(is_registered("a") && is_registered("b") && !is_registered("c"));
+    fn defining_replacing_and_removing() {
+        define("a", Some(vec!["x".to_owned()]), None);
+        define("b", Some(vec!["y".to_owned()]), None);
+        define("a", Some(vec!["z".to_owned()]), None);
+        assert!(is_defined("a") && is_defined("b") && !is_defined("c"));
         assert_eq!(
-            status_lines(),
-            ["highlight a: not started", "highlight b: not started"]
+            status_lines(&[]),
+            ["mode a (): not started", "mode b (): not started"]
         );
-        register("a", None, None);
-        register("c", None, None);
-        assert_eq!(status_lines(), ["highlight b: not started"]);
+        define("a", None, None);
+        define("c", None, None);
+        assert_eq!(status_lines(&[]), ["mode b (): not started"]);
         stop_all();
-        assert!(!any_registered());
+        assert!(!any_defined());
     }
 
     #[test]
     fn a_helper_starts_and_names_itself() {
-        register("csvm", fake("words"), None);
+        define("csvm", fake("words"), None);
         assert!(prepare_until_started("csvm").is_empty());
-        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
         let running = SERVERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
         assert!(running);
     }
 
     #[test]
     fn only_the_names_asked_for_start() {
-        register("csvm", fake("words"), None);
-        register("other", fake("words"), None);
+        define("csvm", fake("words"), None);
+        define("other", fake("words"), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert_eq!(
-            status_lines(),
-            ["highlight csvm: running", "highlight other: not started"]
+            status_lines(&[]),
+            ["mode csvm (): running", "mode other (): not started"]
         );
     }
 
     #[test]
     fn a_missing_program_is_off_once() {
-        register("csvm", Some(vec!["no-such-helper-xyz".to_owned()]), None);
+        define("csvm", Some(vec!["no-such-helper-xyz".to_owned()]), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert!(has_notices());
-        assert_eq!(take_notices(), ["inkline: highlight csvm: off (not found)"]);
+        assert_eq!(take_notices(), ["inkline: mode csvm: off (not found)"]);
         assert!(!has_notices());
         prepare(&["csvm".to_owned()], &path(), || None);
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(), ["highlight csvm: off (not found)"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): off (not found)"]);
     }
 
     #[test]
     fn a_wrong_first_line_is_off() {
-        register("csvm", fake("version"), None);
+        define("csvm", fake("version"), None);
         assert_eq!(
             prepare_until_started("csvm"),
-            ["inkline: highlight csvm: off (not a highlight helper)"]
+            ["inkline: mode csvm: off (not a highlight helper)"]
         );
         assert_eq!(
-            status_lines(),
-            ["highlight csvm: off (not a highlight helper)"]
+            status_lines(&[]),
+            ["mode csvm (): off (not a highlight helper)"]
         );
     }
 
     #[test]
-    fn registering_again_turns_an_off_helper_back_on() {
-        register("csvm", Some(vec!["no-such-helper-xyz".to_owned()]), None);
+    fn defining_again_turns_an_off_server_back_on() {
+        define("csvm", Some(vec!["no-such-helper-xyz".to_owned()]), None);
         prepare(&["csvm".to_owned()], &path(), || None);
-        register("csvm", fake("words"), None);
-        assert_eq!(status_lines(), ["highlight csvm: not started"]);
+        define("csvm", fake("words"), None);
+        assert_eq!(status_lines(&[]), ["mode csvm (): not started"]);
         assert!(!has_notices(), "the old message is dropped");
     }
 
     #[test]
     fn removing_or_stopping_drops_the_messages_not_taken() {
         let missing = || Some(vec!["no-such-helper-xyz".to_owned()]);
-        register("a", missing(), None);
-        register("b", missing(), None);
+        define("a", missing(), None);
+        define("b", missing(), None);
         prepare(&["a".to_owned(), "b".to_owned()], &path(), || None);
-        register("a", None, None);
-        assert_eq!(take_notices(), ["inkline: highlight b: off (not found)"]);
-        register("a", missing(), None);
+        define("a", None, None);
+        assert_eq!(take_notices(), ["inkline: mode b: off (not found)"]);
+        define("a", missing(), None);
         prepare(&["a".to_owned()], &path(), || None);
         stop_all();
         assert!(!has_notices());
@@ -961,7 +1051,7 @@ mod tests {
 
     #[test]
     fn depths_come_from_a_helper_that_names_indent() {
-        register("csvm", fake("indent"), None);
+        define("csvm", fake("indent"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let wait = Duration::from_secs(2);
         assert_eq!(
@@ -983,7 +1073,7 @@ mod tests {
 
     #[test]
     fn a_helper_without_indent_is_not_asked() {
-        register("csvm", fake("words"), None);
+        define("csvm", fake("words"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
         assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
@@ -993,27 +1083,27 @@ mod tests {
 
     #[test]
     fn a_helper_that_is_not_running_is_not_asked() {
-        register("csvm", fake("indent"), None);
+        define("csvm", fake("indent"), None);
         assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
-        assert_eq!(status_lines(), ["highlight csvm: not started"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): not started"]);
     }
 
     #[test]
     fn a_reply_with_only_end_gives_no_depths() {
-        register("csvm", fake("indent"), None);
+        define("csvm", fake("indent"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(
             depths("nodepth {", 9, Duration::from_secs(2), || false),
             None
         );
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
     }
 
     /// A colour request in flight is answered first, and its reply kept.
     #[test]
     fn a_colour_reply_in_flight_comes_first() {
-        register("csvm", fake("indent"), None);
+        define("csvm", fake("indent"), None);
         assert!(prepare_until_started("csvm").is_empty());
         ask(&["a 1"], Duration::ZERO);
         assert_eq!(
@@ -1030,7 +1120,7 @@ mod tests {
     /// colours, and do not turn the helper off.
     #[test]
     fn a_late_indent_reply_is_dropped() {
-        register("csvm", fake("slow-indent"), None);
+        define("csvm", fake("slow-indent"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
         assert_eq!(depths("a {", 3, INDENT_WAIT, || false), None);
@@ -1038,12 +1128,12 @@ mod tests {
         let got = ask(&["b"], Duration::from_secs(3));
         assert!(got[0].is_some(), "colours after the late depths");
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
     }
 
     #[test]
     fn an_interrupt_ends_the_indent_wait() {
-        register("csvm", fake("slow-indent"), None);
+        define("csvm", fake("slow-indent"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
         assert_eq!(depths("a {", 3, Duration::from_secs(2), || true), None);
@@ -1059,7 +1149,7 @@ mod tests {
     #[test]
     fn c_c_during_the_indent_wait() {
         use std::sync::atomic::Ordering::Relaxed;
-        register("csvm", fake("slow-indent"), None);
+        define("csvm", fake("slow-indent"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let c_c = std::thread::spawn(|| {
             std::thread::sleep(Duration::from_millis(50));
@@ -1073,14 +1163,14 @@ mod tests {
         assert!(asked_anything("csvm"), "the C-c came during the wait");
         assert!(took < Duration::from_millis(300), "took {took:?}");
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
     }
 
-    /// Whether a request to `name` is in flight.
-    fn asked_anything(name: &str) -> bool {
+    /// Whether a request to the server of the mode `mode` is in flight.
+    fn asked_anything(mode: &str) -> bool {
         SERVERS.with_borrow(|helpers| {
             helpers.iter().any(|h| {
-                h.name == name && matches!(&h.state, State::Running(r) if r.in_flight.is_some())
+                h.mode == mode && matches!(&h.state, State::Running(r) if r.in_flight.is_some())
             })
         })
     }
@@ -1089,7 +1179,7 @@ mod tests {
     /// could not be used.
     #[test]
     fn nothing_is_sent_after_the_indent_wait() {
-        register("csvm", fake("indent"), None);
+        define("csvm", fake("indent"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(depths("a {", 3, Duration::ZERO, || false), None);
         assert!(!asked_anything("csvm"));
@@ -1098,7 +1188,7 @@ mod tests {
 
     #[test]
     fn a_broken_depth_line_turns_the_helper_off() {
-        register(
+        define(
             "csvm",
             indenting_sh("printf ':depth x 1\\n:end 1\\n'; cat >/dev/null"),
             None,
@@ -1107,23 +1197,23 @@ mod tests {
         assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
         assert_eq!(
             take_notices(),
-            ["inkline: highlight csvm: off (bad reply: \":depth x 1\")"]
+            ["inkline: mode csvm: off (bad reply: \":depth x 1\")"]
         );
     }
 
     #[test]
     fn a_helper_that_exits_while_asked_for_depths_is_off() {
-        register("csvm", indenting_sh("exit 0"), None);
+        define("csvm", indenting_sh("exit 0"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
-        assert_eq!(take_notices(), ["inkline: highlight csvm: off (exited)"]);
+        assert_eq!(take_notices(), ["inkline: mode csvm: off (exited)"]);
     }
 
     /// A helper that writes lines without end, and never its depths, does
     /// not hold up the new line past the wait.
     #[test]
     fn a_helper_that_keeps_writing_does_not_hold_up_the_indent_wait() {
-        register("csvm", indenting_sh("while :; do echo :x; done"), None);
+        define("csvm", indenting_sh("while :; do echo :x; done"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
         assert_eq!(depths("a {", 3, INDENT_WAIT, || false), None);
@@ -1137,26 +1227,244 @@ mod tests {
 
     #[test]
     fn the_same_program_again_keeps_the_helper_and_changes_its_colours() {
-        register("csvm", fake("words"), Some(set("35")));
+        define("csvm", fake("words"), Some(set("35")));
         assert!(prepare_until_started("csvm").is_empty());
-        register("csvm", fake("words"), Some(set("36")));
-        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        define("csvm", fake("words"), Some(set("36")));
+        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
         assert_eq!(colors("csvm"), Some(set("36")));
-        register("csvm", fake("words"), None);
-        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        define("csvm", fake("words"), None);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
         assert_eq!(colors("csvm"), None);
-        register("csvm", fake("late"), None);
-        assert_eq!(status_lines(), ["highlight csvm: not started"]);
+        define("csvm", fake("late"), None);
+        assert_eq!(status_lines(&[]), ["mode csvm (): not started"]);
     }
 
     #[test]
     fn the_same_program_again_turns_an_off_helper_back_on() {
         let missing = || Some(vec!["no-such-helper-xyz".to_owned()]);
-        register("csvm", missing(), None);
+        define("csvm", missing(), None);
         prepare(&["csvm".to_owned()], &path(), || None);
-        assert_eq!(status_lines(), ["highlight csvm: off (not found)"]);
-        register("csvm", missing(), None);
-        assert_eq!(status_lines(), ["highlight csvm: not started"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): off (not found)"]);
+        define("csvm", missing(), None);
+        assert_eq!(status_lines(&[]), ["mode csvm (): not started"]);
         assert!(!has_notices(), "the old message is dropped");
+    }
+
+    fn table(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(c, m)| ((*c).to_owned(), (*m).to_owned()))
+            .collect()
+    }
+
+    fn some_program() -> Option<Vec<String>> {
+        Some(vec!["x".to_owned()])
+    }
+
+    #[test]
+    fn a_command_finds_its_mode_by_its_word_or_last_path_part() {
+        define("csvm-mode", some_program(), None);
+        define("path-mode", some_program(), None);
+        let t = table(&[
+            ("./target/debug/csvm", "path-mode"),
+            ("csvm", "csvm-mode"),
+            ("c", "csvm-mode"),
+        ]);
+        let mode = |word: &str| mode_for(word, &t);
+        assert_eq!(mode("csvm").as_deref(), Some("csvm-mode"));
+        assert_eq!(mode("c").as_deref(), Some("csvm-mode"));
+        assert_eq!(mode("/usr/local/bin/csvm").as_deref(), Some("csvm-mode"));
+        assert_eq!(
+            mode("./target/debug/csvm").as_deref(),
+            Some("path-mode"),
+            "the first pair that names the word wins"
+        );
+        assert_eq!(
+            mode("target/debug/csvm").as_deref(),
+            Some("csvm-mode"),
+            "a pair with a path names only that exact word"
+        );
+        for word in ["csvmx", "xcsvm", "csvm/", "dir/", "", "C"] {
+            assert_eq!(mode(word), None, "{word:?}");
+        }
+    }
+
+    #[test]
+    fn a_pair_with_an_undefined_mode_is_skipped() {
+        define("b-mode", some_program(), None);
+        define("a-mode", some_program(), None);
+        let t = table(&[
+            ("csvm", "no-such-mode"),
+            ("csvm", "b-mode"),
+            ("csvm", "a-mode"),
+        ]);
+        assert_eq!(mode_for("csvm", &t).as_deref(), Some("b-mode"));
+        define("b-mode", None, None);
+        assert_eq!(mode_for("csvm", &t).as_deref(), Some("a-mode"));
+        assert_eq!(mode_for("csvm", &[]), None);
+    }
+
+    #[test]
+    fn an_empty_command_names_nothing() {
+        define("a-mode", some_program(), None);
+        let t = table(&[("", "a-mode")]);
+        assert_eq!(mode_for("", &t), None);
+        assert_eq!(mode_for("dir/", &t), None);
+    }
+
+    #[test]
+    fn status_names_the_commands_of_each_mode() {
+        define("csvm-mode", some_program(), None);
+        define(
+            "other-mode",
+            Some(vec!["no-such-program-xyz".to_owned()]),
+            None,
+        );
+        prepare(&["other-mode".to_owned()], &path(), || None);
+        take_notices();
+        let t = table(&[
+            ("csvm", "csvm-mode"),
+            ("c", "cvsm-mode"),
+            ("c", "csvm-mode"),
+            ("csvm", "csvm-mode"),
+            ("c", "cvsm-mode"),
+        ]);
+        assert_eq!(
+            status_lines(&t),
+            [
+                "mode csvm-mode (csvm, c): not started",
+                "mode other-mode (): off (not found)",
+                "command c: no mode named cvsm-mode",
+            ]
+        );
+    }
+
+    #[test]
+    fn status_lists_each_command_under_the_mode_it_uses() {
+        define("a", some_program(), None);
+        define("b", some_program(), None);
+        let t = table(&[
+            ("c", "a"),
+            ("c", "b"),
+            ("csvm", "a"),
+            ("/usr/bin/csvm", "b"),
+            ("x", "b"),
+        ]);
+        assert_eq!(mode_for("/usr/bin/csvm", &t).as_deref(), Some("a"));
+        assert_eq!(
+            status_lines(&t),
+            [
+                "mode a (c, csvm, /usr/bin/csvm): not started",
+                "mode b (x): not started",
+                "command c: uses a, not b",
+                "command /usr/bin/csvm: uses a, not b",
+            ]
+        );
+        // A pair for the whole path before the one for its last part, and
+        // a path that has no pair for its last part.
+        let t = table(&[
+            ("/usr/bin/csvm", "b"),
+            ("csvm", "a"),
+            ("./target/debug/csvm", "b"),
+            ("/opt/x", "a"),
+        ]);
+        assert_eq!(
+            status_lines(&t),
+            [
+                "mode a (csvm, ./target/debug/csvm, /opt/x): not started",
+                "mode b (/usr/bin/csvm): not started",
+                "command ./target/debug/csvm: uses a, not b",
+            ]
+        );
+    }
+
+    #[test]
+    fn status_says_an_empty_command_matches_nothing() {
+        define("a", some_program(), None);
+        let t = table(&[("", "a"), ("", "no-such-mode"), ("c", "a")]);
+        assert_eq!(
+            status_lines(&t),
+            ["mode a (c): not started", r#"command "": matches nothing"#]
+        );
+    }
+
+    /// Many different pairs whose mode is not defined, and many whose
+    /// command the earlier pair for `csvm` already gives another mode: each
+    /// is found without a search through the ones before.
+    #[test]
+    fn status_of_a_long_alist_comes_quickly() {
+        define("csvm-mode", some_program(), None);
+        define("other-mode", some_program(), None);
+        let t: Vec<(String, String)> = (0..100_000)
+            .map(|i| (format!("c{i}"), "no-such-mode".to_owned()))
+            .chain([("csvm".to_owned(), "csvm-mode".to_owned())])
+            .chain((0..100_000).map(|i| (format!("d{i}/csvm"), "other-mode".to_owned())))
+            .collect();
+        let began = Instant::now();
+        let lines = status_lines(&t);
+        let took = began.elapsed();
+        assert_eq!(lines.len(), 200_002);
+        assert!(
+            lines[0].starts_with("mode csvm-mode (csvm, d0/csvm, d1/csvm, "),
+            "{}",
+            &lines[0][..80]
+        );
+        assert_eq!(lines[1], "mode other-mode (): not started");
+        assert_eq!(lines[2], "command c0: no mode named no-such-mode");
+        assert_eq!(
+            lines[200_001],
+            "command d99999/csvm: uses csvm-mode, not other-mode"
+        );
+        assert!(took < Duration::from_secs(2), "took {took:?}");
+    }
+
+    /// A request for `NAME SCRIPT`.
+    fn request_named(name: &str, script: &str) -> Request {
+        (
+            b"/".to_vec(),
+            vec![(false, name.to_owned()), (false, script.to_owned())],
+        )
+    }
+
+    #[test]
+    fn commands_that_use_one_mode_share_its_server() {
+        use crate::lexer::Kind::{Command, Number};
+        define("csvm-mode", fake("words"), None);
+        prepare(&["csvm-mode".to_owned()], &path(), || None);
+        let asks = [
+            ("csvm-mode".to_owned(), request_named("csvm", "a 1")),
+            ("csvm-mode".to_owned(), request_named("c", "a 1")),
+        ];
+        let got = replies(&asks, Duration::from_secs(2), || false);
+        assert_eq!(kinds(&got[0]), [Command, Number]);
+        assert_eq!(kinds(&got[1]), [Command, Number]);
+        let sent = SERVERS.with_borrow(|s| {
+            let State::Running(r) = &s[0].state else {
+                panic!("the server is not running");
+            };
+            r.last_id
+        });
+        assert_eq!(sent, 2, "one process answered both commands");
+        assert!(take_notices().is_empty());
+    }
+
+    #[test]
+    fn a_server_turned_off_is_off_for_every_command_of_its_mode() {
+        define("csvm-mode", fake("exit"), None);
+        let asks = [
+            ("csvm-mode".to_owned(), request_named("csvm", "a")),
+            ("csvm-mode".to_owned(), request_named("c", "b")),
+        ];
+        prepare(&["csvm-mode".to_owned()], &path(), || None);
+        assert_eq!(
+            replies(&asks, Duration::from_secs(2), || false),
+            [None, None]
+        );
+        assert_eq!(take_notices(), ["inkline: mode csvm-mode: off (exited)"]);
+        assert_eq!(
+            replies(&asks, Duration::from_secs(2), || false),
+            [None, None]
+        );
+        assert!(take_notices().is_empty());
     }
 }

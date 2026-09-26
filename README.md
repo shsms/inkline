@@ -269,7 +269,8 @@ helper: a mode that answers inkline's questions, such as `csvm
 
 ```elisp
 ;; ~/.config/inkline/init.el
-(inkline-highlight-arguments "csvm" '("csvm" "--highlight"))
+(inkline-define-mode 'csvm-mode '("csvm" "--highlight"))
+(setq inkline-command-mode-alist '(("csvm" . csvm-mode)))
 ```
 
 Then, wherever a `csvm` command is on the line (in a pipeline, after `&&`,
@@ -313,7 +314,7 @@ of a `$min`, of the quote marks and of the error underline, stay as
 
 ```elisp
 ;; ~/.config/inkline/init.el
-(inkline-highlight-arguments "csvm" '("csvm" "--highlight")
+(inkline-define-mode 'csvm-mode '("csvm" "--highlight")
   '((command . "bold magenta") (variable . "cyan") (number . "yellow")
     (script . "on grey3")))
 ```

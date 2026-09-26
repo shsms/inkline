@@ -221,7 +221,7 @@ fn run_builtin(args: &[String]) -> c_int {
                 if on { "on" } else { "off" },
                 crate::lisp::init::status_line()
             );
-            for line in mode_server::status_lines() {
+            for line in mode_server::status_lines(&crate::lisp::settings::command_modes()) {
                 text.push_str(&line);
                 text.push('\n');
             }
@@ -1179,7 +1179,7 @@ fn repaint_line() -> bool {
     } else {
         None
     };
-    let found = ask_helpers(&line, &path);
+    let found = ask_mode_servers(&line, &path);
     let (found, sets) = highlight::with_sets(found, &colors, mode_server::colors);
     show_helper_notices(&line);
     // Read after the suggestion hook and the helper notices, which may have
@@ -1228,42 +1228,52 @@ fn repaint_line() -> bool {
     })
 }
 
-/// Asks the highlight helpers of the registered commands on `line` how to
+/// Asks the mode servers of the commands on `line` that use a mode how to
 /// colour their arguments, at the main prompt while no Lisp runs: starts
-/// the helpers not started yet, looking up their programs in `path` (bash's
-/// `PATH`), and waits up to `mode_server::WAIT` in all for their first lines and
-/// replies. The commands answered in time, each with its reply, in line
-/// order. Why a helper was turned off waits for `show_helper_notices`.
-fn ask_helpers(line: &str, path: &str) -> Vec<(CommandArgs, Reply)> {
+/// the servers not started yet, looking up their programs in `path`
+/// (bash's `PATH`), and waits up to `mode_server::WAIT` in all for their
+/// first lines and replies. The commands answered in time, each with its
+/// mode and its reply, in line order. Why a server was turned off waits for
+/// `show_helper_notices`.
+fn ask_mode_servers(line: &str, path: &str) -> Vec<(String, CommandArgs, Reply)> {
     let began = Instant::now();
     if !ffi::reading_command()
         || crate::lisp::RUNNING.load(Ordering::Relaxed)
-        || !mode_server::any_registered()
+        || !mode_server::any_defined()
     {
         return Vec::new();
     }
+    let table = crate::lisp::settings::command_modes();
+    if table.is_empty() {
+        return Vec::new();
+    }
     // `STATE` is borrowed only for the parse: never while waiting on a
-    // helper.
+    // server.
     let Some(tree) = STATE.with_borrow_mut(|s| s.lexer.tree(line)) else {
         return Vec::new();
     };
-    let commands = args::commands(&tree, line, mode_server::is_registered);
-    if commands.is_empty() {
+    let found: Vec<(String, CommandArgs)> = args::commands(&tree, line, |word| {
+        mode_server::mode_for(word, &table).is_some()
+    })
+    .into_iter()
+    .filter_map(|c| Some((mode_server::mode_for(&c.name, &table)?, c)))
+    .collect();
+    if found.is_empty() {
         return Vec::new();
     }
-    let names: Vec<String> = commands.iter().map(|c| c.name.clone()).collect();
-    mode_server::prepare(&names, path, || Some(ffi::exported_environment()));
+    let modes: Vec<String> = found.iter().map(|(mode, _)| mode.clone()).collect();
+    mode_server::prepare(&modes, path, || Some(ffi::exported_environment()));
     let cwd = ffi::shell_variable("PWD").unwrap_or_default().into_bytes();
-    let asks: Vec<(String, mode_server::Request)> = commands
+    let asks: Vec<(String, mode_server::Request)> = found
         .iter()
-        .map(|c| (c.name.clone(), mode_server::request(cwd.clone(), c)))
+        .map(|(mode, c)| (mode.clone(), mode_server::request(cwd.clone(), c)))
         .collect();
     let wait = mode_server::WAIT.saturating_sub(began.elapsed());
     let replies = mode_server::replies(&asks, wait, ffi::signal_to_act_on);
-    commands
+    found
         .into_iter()
         .zip(replies)
-        .filter_map(|(command, reply)| Some((command, reply?)))
+        .filter_map(|((mode, command), reply)| Some((mode, command, reply?)))
         .collect()
 }
 

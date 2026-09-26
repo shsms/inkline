@@ -138,9 +138,9 @@ impl Default for Colors {
     }
 }
 
-/// A command's own colours (`inkline-highlight-arguments`' third
-/// argument): SGR codes for some of the nine kinds a helper sends and for
-/// `script`. The ones left out come from `inkline-colors`.
+/// A mode's own colours (`inkline-define-mode`'s third argument): SGR codes
+/// for some of the nine kinds a mode server sends and for `script`. The ones
+/// left out come from `inkline-colors`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ColorSet {
     /// By `Kind as usize`; `Unknown` is never set.

@@ -236,21 +236,28 @@ struct InScript {
 }
 
 /// Whether the cursor at `point` in `text` is inside a quoted argument of
-/// a command that has a highlight helper, found as for colours. If so, asks
-/// the helper how deep the lines are (`mode_server::indent`, waiting up to
+/// a command that uses a mode, found as for colours. If so, asks the mode's
+/// server how deep the lines are (`mode_server::indent`, waiting up to
 /// `mode_server::INDENT_WAIT`), unless the argument is `raw`, it is an empty
 /// pair of quotes, or Lisp is running. `None` when the cursor is not inside
 /// such an argument: the bash rules apply.
 fn in_script(text: &str, point: usize) -> Option<InScript> {
-    if !mode_server::any_registered() {
+    if !mode_server::any_defined() {
         return None;
     }
     let quote = syntax::open_quote(&text[..point])?;
+    let table = crate::lisp::settings::command_modes();
+    if table.is_empty() {
+        return None;
+    }
     // `STATE` is borrowed only for the parse: never while waiting on the
-    // helper.
+    // server.
     let tree = STATE.with_borrow_mut(|s| s.lexer.tree(text))?;
-    let commands = args::commands(&tree, text, mode_server::is_registered);
+    let commands = args::commands(&tree, text, |word| {
+        mode_server::mode_for(word, &table).is_some()
+    });
     let (command, index) = args::with_quote(&commands, quote)?;
+    let mode = mode_server::mode_for(&command.name, &table)?;
     let command_line = lines::line_start(text, command.args[0].start()?);
     let arg = &command.args[index];
     let first_line = lines::line_start(text, arg.start()?);
@@ -260,7 +267,7 @@ fn in_script(text: &str, point: usize) -> Option<InScript> {
     } else {
         let cwd = ffi::shell_variable("PWD").unwrap_or_default().into_bytes();
         mode_server::indent(
-            &command.name,
+            &mode,
             &mode_server::request(cwd, command),
             (index, arg.offset_at(point)),
             mode_server::INDENT_WAIT,

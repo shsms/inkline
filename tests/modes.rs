@@ -5,12 +5,27 @@ mod common;
 
 use common::*;
 
-/// An `init.el` line that registers the fake helper for `csvm`, doing `mode`.
-pub fn fake(mode: &str) -> String {
+/// The fake mode server doing `does`, as a Lisp list of strings.
+fn fake_program(does: &str) -> String {
     format!(
-        "(inkline-highlight-arguments \"csvm\" (list \"{}/tests/data/fake-mode-server\" \"{mode}\"))\n",
+        "(list \"{}/tests/data/fake-mode-server\" \"{does}\")",
         env!("CARGO_MANIFEST_DIR")
     )
+}
+
+/// Lisp, on one line, that defines `csvm-mode` with `program` and then
+/// `rest` as its other arguments, and has `csvm` use it.
+fn csvm_mode(program: &str, rest: &str) -> String {
+    format!(
+        "(inkline-define-mode 'csvm-mode {program}{rest}) \
+         (setq inkline-command-mode-alist '((\"csvm\" . csvm-mode)))\n"
+    )
+}
+
+/// An `init.el` line that defines `csvm-mode` as the fake mode server doing
+/// `does`, and has `csvm` use it.
+pub fn fake(does: &str) -> String {
+    csvm_mode(&fake_program(does), "")
 }
 
 /// An rc line for plain underlines, which the test terminal can see.
@@ -60,25 +75,30 @@ fn status_rows(sh: &mut Shell) -> Vec<String> {
 }
 
 #[test]
-fn status_shows_each_helper() {
+fn status_shows_each_mode() {
     let mut sh = Shell::start(Options {
-        init_el: Some(fake("words")),
+        init_el: Some(format!(
+            "{}(setq inkline-command-mode-alist \
+             '((\"csvm\" . csvm-mode) (\"c\" . csvm-mode) (\"x\" . cvsm-mode)))\n",
+            fake("words")
+        )),
         ..Options::default()
     });
-    status_row(&mut sh, "highlight csvm: not started");
+    status_row(&mut sh, "mode csvm-mode (csvm, c): not started");
+    status_row(&mut sh, "command x: no mode named cvsm-mode");
 }
 
 #[test]
 fn a_missing_program_is_off_with_its_reason() {
     let mut sh = Shell::start(Options {
-        init_el: Some("(inkline-highlight-arguments \"csvm\" '(\"no-such-helper-xyz\"))\n".into()),
+        init_el: Some(csvm_mode("'(\"no-such-program-xyz\")", "")),
         ..Options::default()
     });
     sh.send("csvm 'a'");
     sh.wait_for("the message", |s| {
-        has_row(s, "inkline: highlight csvm: off (not found)")
+        has_row(s, "inkline: mode csvm-mode: off (not found)")
     });
-    status_row(&mut sh, "highlight csvm: off (not found)");
+    status_row(&mut sh, "mode csvm-mode (csvm): off (not found)");
 }
 
 #[test]
@@ -89,7 +109,7 @@ fn a_wrong_first_line_is_off() {
     });
     sh.send("csvm 'a'");
     sh.wait_for("the message", |s| {
-        has_row(s, "inkline: highlight csvm: off (not a highlight helper)")
+        has_row(s, "inkline: mode csvm-mode: off (not a highlight helper)")
     });
 }
 
@@ -111,11 +131,14 @@ fn the_helper_is_not_one_of_bashs_jobs() {
         "{}",
         dump(&s)
     );
-    status_row(&mut sh, "highlight csvm: running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running");
 }
 
+/// Defining the mode again with another program starts afresh; removing it
+/// leaves the alist's pair naming a mode that is not there, and the next
+/// line gets no colours from it.
 #[test]
-fn registering_again_and_removing() {
+fn defining_again_and_removing() {
     let mut sh = Shell::start(Options {
         // Wide enough for the type error on one row.
         cols: 120,
@@ -124,7 +147,7 @@ fn registering_again_and_removing() {
     });
     sh.send("csvm 'a'");
     sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'a'");
-    status_row(&mut sh, "highlight csvm: running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running");
     run(
         &mut sh,
         &format!(
@@ -132,18 +155,26 @@ fn registering_again_and_removing() {
             fake("version").trim_end().replace('\'', "'\\''")
         ),
     );
-    status_row(&mut sh, "highlight csvm: not started");
+    status_row(&mut sh, "mode csvm-mode (csvm): not started");
     run(
         &mut sh,
-        "inkline eval '(inkline-highlight-arguments \"csvm\" nil)'",
+        "inkline eval '(inkline-define-mode (quote csvm-mode) nil)'",
     );
     let rows = status_rows(&mut sh);
-    assert!(!rows.iter().any(|r| r.starts_with("highlight")), "{rows:?}");
-    sh.send("inkline eval '(inkline-highlight-arguments 1 nil)'\r");
+    assert_eq!(
+        rows[1..],
+        ["command csvm: no mode named csvm-mode"],
+        "{rows:?}"
+    );
+    sh.send("\x15csvm 'select b'");
+    sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'select b'");
+    let s = sh.settle();
+    assert!(!fg_is(&s, "select", COMMAND), "{}", dump(&s));
+    sh.send("\x15inkline eval '(inkline-define-mode 1 nil)'\r");
     sh.wait_for("the type error", |s| {
         has_row(
             s,
-            "inkline: Wrong type argument: stringp, 1 (in (inkline-highlight-arguments 1 nil))",
+            "inkline: Wrong type argument: symbolp, 1 (in (inkline-define-mode 1 nil))",
         )
     });
 }
@@ -154,23 +185,28 @@ fn reload_stops_helpers() {
         init_el: Some(fake("words")),
         ..Options::default()
     });
-    // `init.el` does not register this one: only `stop_all` removes it.
+    // `init.el` does not define this one: only `stop_all` removes it.
     run(
         &mut sh,
         &format!(
-            "inkline eval '{}'",
-            fake("words").trim_end().replace("\"csvm\"", "\"other\"")
+            "inkline eval '(inkline-define-mode (quote other-mode) {}) \
+             (push (cons \"other\" (quote other-mode)) inkline-command-mode-alist)'",
+            fake_program("words")
         ),
     );
-    status_row(&mut sh, "highlight other: not started");
+    status_row(&mut sh, "mode other-mode (other): not started");
     sh.send("\x15other 'a'");
     sh.wait_for("typed", |s| cursor_row(s) == "$ other 'a'");
-    status_row(&mut sh, "highlight other: running");
+    status_row(&mut sh, "mode other-mode (other): running");
     // Keys typed ahead while `inkline reload` runs are sometimes lost: `run`
     // waits for the next prompt.
     run(&mut sh, "inkline reload");
     let rows = status_rows(&mut sh);
-    assert_eq!(rows[1..], ["highlight csvm: not started"], "{rows:?}");
+    assert_eq!(
+        rows[1..],
+        ["mode csvm-mode (csvm): not started"],
+        "{rows:?}"
+    );
 }
 
 #[test]
@@ -178,40 +214,39 @@ fn a_plain_name_is_found_in_bashs_path() {
     let dir = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(
         format!("{}/tests/data/fake-mode-server", env!("CARGO_MANIFEST_DIR")),
-        dir.path().join("csvm-highlight"),
+        dir.path().join("csvm-server"),
     )
     .unwrap();
     // Not exported: only bash's own `PATH` holds the directory, never the
     // environment of the process.
     let mut sh = Shell::start(Options {
         before_inkline: format!("export -n PATH\nPATH={}:$PATH\n", dir.path().display()),
-        init_el: Some(
-            "(inkline-highlight-arguments \"csvm\" '(\"csvm-highlight\" \"words\"))\n".into(),
-        ),
+        init_el: Some(csvm_mode("'(\"csvm-server\" \"words\")", "")),
         ..Options::default()
     });
     sh.send("csvm 'a'");
     sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'a'");
-    status_row(&mut sh, "highlight csvm: running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running");
 }
 
-/// An `init.el` line that registers the fake helper for `csvm`, doing
-/// `mode` and logging each request's arguments to `log`.
-fn fake_logging(mode: &str, log: &std::path::Path) -> String {
+/// The fake mode server doing `does` and logging to `log`, as a Lisp list
+/// of strings.
+fn logging_program(does: &str, log: &std::path::Path) -> String {
     format!(
-        "(inkline-highlight-arguments \"csvm\" (list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-mode-server\" \"{mode}\"))\n",
+        "(list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-mode-server\" \"{does}\")",
         log.display(),
         env!("CARGO_MANIFEST_DIR")
     )
 }
 
-/// As `fake_logging`, giving the command `colors` as its own.
-fn fake_logging_with_colors(mode: &str, log: &std::path::Path, colors: &str) -> String {
-    format!(
-        "(inkline-highlight-arguments \"csvm\" (list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-mode-server\" \"{mode}\") {colors})\n",
-        log.display(),
-        env!("CARGO_MANIFEST_DIR")
-    )
+/// As `fake`, with the server logging each request's arguments to `log`.
+fn fake_logging(does: &str, log: &std::path::Path) -> String {
+    csvm_mode(&logging_program(does, log), "")
+}
+
+/// As `fake_logging`, giving the mode `colors` as its own.
+fn fake_logging_with_colors(does: &str, log: &std::path::Path, colors: &str) -> String {
+    csvm_mode(&logging_program(does, log), &format!(" {colors}"))
 }
 
 /// Waits until the fake helper has logged `line`.
@@ -407,6 +442,88 @@ fn two_commands_on_one_line() {
     });
 }
 
+/// Commands that use one mode share its one server, which gets each
+/// command's own name word as argument 0. A word with a path uses the pair
+/// for its last part.
+#[test]
+fn commands_that_use_one_mode_share_its_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        cols: 120,
+        init_el: Some(format!(
+            "{}(push '(\"c\" . csvm-mode) inkline-command-mode-alist)\n",
+            fake_logging("words", &log)
+        )),
+        ..Options::default()
+    });
+    sh.send("csvm 'one' | c 'two' | ./bin/csvm 'three'");
+    sh.wait_for("all three", |s| {
+        fg_is(s, "one", COMMAND) && fg_is(s, "two", COMMAND) && fg_is(s, "three", COMMAND)
+    });
+    wait_for_log(&log, "final:c");
+    wait_for_log(&log, "final:./bin/csvm");
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        logged.lines().filter(|l| l.starts_with("CSVM_X:")).count(),
+        1,
+        "one server started:\n{logged}"
+    );
+    status_row(&mut sh, "mode csvm-mode (c, csvm): running");
+}
+
+/// A pair pushed onto `inkline-command-mode-alist` at the prompt takes
+/// effect on the next line, without `inkline reload`.
+#[test]
+fn a_push_at_the_prompt_colours_the_next_line() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "(inkline-define-mode 'csvm-mode {})\n",
+            fake_program("words")
+        )),
+        ..Options::default()
+    });
+    sh.send("csvm 'one'");
+    sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'one'");
+    let s = sh.settle();
+    assert!(!fg_is(&s, "one", COMMAND), "{}", dump(&s));
+    run(
+        &mut sh,
+        "inkline eval '(push (cons \"csvm\" (quote csvm-mode)) inkline-command-mode-alist)'",
+    );
+    sh.send("\x15csvm 'two'");
+    sh.wait_for("the mode's colours", |s| fg_is(s, "two", COMMAND));
+}
+
+/// A bad `inkline-command-mode-alist` is reported, and no command uses a
+/// mode while it stays bad.
+#[test]
+fn a_bad_alist_is_reported() {
+    let mut sh = Shell::start(Options {
+        cols: 120,
+        init_el: Some(fake("words")),
+        ..Options::default()
+    });
+    run(
+        &mut sh,
+        "inkline eval '(setq inkline-command-mode-alist 5)'",
+    );
+    let s = sh.screen();
+    assert!(
+        has_row(
+            &s,
+            "inkline: inkline-command-mode-alist: expected a list of (\"COMMAND\" . MODE) pairs"
+        ),
+        "{}",
+        dump(&s)
+    );
+    sh.send("\x15csvm 'one'");
+    sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'one'");
+    let s = sh.settle();
+    assert!(!fg_is(&s, "one", COMMAND), "{}", dump(&s));
+    status_row(&mut sh, "mode csvm-mode (): not started");
+}
+
 /// A new line forgets the replies kept for the one before: the files they
 /// speak of may have changed since. The same line recalled is asked about
 /// again.
@@ -454,7 +571,7 @@ fn a_users_descriptor_is_left_alone(fd: u32) {
     sh.wait_for("colours", |s| fg_is(s, "sort", Color::Idx(2)));
     run(&mut sh, &format!("echo hi >&{fd}"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hi\n");
-    status_row(&mut sh, "highlight csvm: running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running");
 }
 
 #[test]
@@ -494,7 +611,7 @@ fn a_socket_taken_over_is_left_to_the_user() {
     );
     sh.send("\x15csvm 'sort b'");
     sh.wait_for("off", |s| {
-        has_row(s, "inkline: highlight csvm: off (connection lost)")
+        has_row(s, "inkline: mode csvm-mode: off (connection lost)")
     });
     run(&mut sh, "echo hi >&$n");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hi\n");
@@ -508,7 +625,7 @@ fn a_helper_that_exits_is_turned_off() {
     });
     sh.send("csvm 'a'");
     sh.wait_for("off", |s| {
-        has_row(s, "inkline: highlight csvm: off (exited)")
+        has_row(s, "inkline: mode csvm-mode: off (exited)")
     });
     sh.send(" 'b'");
     sh.send("\x15echo still here\r");
@@ -523,7 +640,7 @@ fn garbage_turns_a_helper_off() {
     });
     sh.send("csvm 'a'");
     sh.wait_for("off", |s| {
-        has_row(s, "inkline: highlight csvm: off (bad reply: \"nonsense\")")
+        has_row(s, "inkline: mode csvm-mode: off (bad reply: \"nonsense\")")
     });
 }
 
@@ -707,14 +824,15 @@ fn an_error_with_no_place_shows_only_its_message() {
 fn a_notice_comes_before_an_errors_message() {
     let mut sh = Shell::start(Options {
         init_el: Some(format!(
-            "{}(inkline-highlight-arguments \"nosuch\" '(\"no-such-helper-xyz\"))\n",
+            "{}(inkline-define-mode 'nosuch-mode '(\"no-such-program-xyz\")) \
+             (push '(\"nosuch\" . nosuch-mode) inkline-command-mode-alist)\n",
             fake("error")
         )),
         rc: PLAIN_UNDERLINE.into(),
         ..Options::default()
     });
     sh.send("nosuch a; csvm 'bad a' x");
-    let notice = "inkline: highlight nosuch: off (not found)";
+    let notice = "inkline: mode nosuch-mode: off (not found)";
     let error = "csvm: unknown command 'bad'";
     let s = sh.wait_for("the notice", |s| has_row(s, notice));
     assert!(underlined_on_row(&s, 0, "bad"), "{}", dump(&s));
@@ -733,9 +851,9 @@ const COMMAND: Color = Color::Idx(2);
 const VARIABLE: Color = Color::Idx(4);
 
 /// An `init.el` with `inkline-indent` 2 and the fake helper for `csvm`
-/// doing `mode`, logging to `log`.
-fn indenting(mode: &str, log: &std::path::Path) -> String {
-    format!("(setq inkline-indent 2)\n{}", fake_logging(mode, log))
+/// doing `does`, logging to `log`.
+fn indenting(does: &str, log: &std::path::Path) -> String {
+    format!("(setq inkline-indent 2)\n{}", fake_logging(does, log))
 }
 
 /// Types `csvm 'warm'`, waits for its colours, and empties the line: the
@@ -768,14 +886,14 @@ fn assert_no_indent_request(log: &std::path::Path) {
     assert!(!logged.lines().any(|l| l.starts_with("at:")), "{logged}");
 }
 
-/// Starts a shell with `inkline-indent` 2 and the fake doing `mode`, and
+/// Starts a shell with `inkline-indent` 2 and the fake doing `does`, and
 /// warms the helper up. The log's directory must live as long as the
 /// shell.
-fn indenting_shell(mode: &str) -> (Shell, tempfile::TempDir, std::path::PathBuf) {
+fn indenting_shell(does: &str) -> (Shell, tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
     let mut sh = Shell::start(Options {
-        init_el: Some(indenting(mode, &log)),
+        init_el: Some(indenting(does, &log)),
         ..Options::default()
     });
     warm_up(&mut sh);
@@ -1131,7 +1249,7 @@ fn no_depths_in_time_keeps_the_line_above() {
     // C-u would clear only the last line of the command: C-c drops it all.
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
-    status_row(&mut sh, "highlight csvm: running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running");
 }
 
 #[test]
@@ -1144,7 +1262,7 @@ fn c_c_while_waiting_for_depths() {
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
     sh.send("echo still here\r");
     sh.wait_for("bash is alive", |s| has_row(s, "still here"));
-    status_row(&mut sh, "highlight csvm: running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running");
 }
 
 #[test]
@@ -1239,4 +1357,24 @@ fn a_lisp_command_asks_for_no_depths() {
     sh.send("\x18j");
     sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
     assert_no_indent_request(&log);
+}
+
+/// A command that uses a mode through a second name gets depths from the
+/// mode's server too.
+#[test]
+fn a_second_command_of_a_mode_gets_depths() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{}(push '(\"c\" . csvm-mode) inkline-command-mode-alist)\n",
+            indenting("indent", &log)
+        )),
+        ..Options::default()
+    });
+    warm_up(&mut sh);
+    type_then(&mut sh, "c \"head", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    wait_for_log(&log, "at:1 4");
 }

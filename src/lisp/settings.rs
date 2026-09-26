@@ -128,9 +128,9 @@ pub fn parse_colors(v: &TulispObject) -> Result<Colors, String> {
     ColorsSource::read(v)?.colors()
 }
 
-/// A command's own colours (`inkline-highlight-arguments`' third
-/// argument), in the forms `inkline-colors` takes. Unlike `inkline-colors`,
-/// a string with an entry that cannot be read is an error.
+/// A mode's own colours (`inkline-define-mode`'s third argument), in the
+/// forms `inkline-colors` takes. Unlike `inkline-colors`, a string with an
+/// entry that cannot be read is an error.
 pub fn parse_color_set(v: &TulispObject) -> Result<ColorSet, String> {
     if v.stringp() {
         return ColorSet::parse(&v.as_string().map_err(|e| e.desc())?);

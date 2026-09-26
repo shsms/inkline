@@ -30,8 +30,8 @@ pub struct Painted {
     pub error: Option<(Option<Range<usize>>, String)>,
 }
 
-/// A command a helper answered for, with the index of its own colours in
-/// the sets `with_sets` returns, if it has any.
+/// A command a mode server answered for, with the index of its mode's own
+/// colours in the sets `with_sets` returns, if it has any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Answered {
     pub command: CommandArgs,
@@ -39,23 +39,24 @@ pub struct Answered {
     pub set: Option<usize>,
 }
 
-/// Each of `found` with the index of its command's own colours, and those
-/// colours: one whole `Colors` per command name that has some (`set_of`
-/// gives them by name), `base` (`inkline-colors`) with the name's colours
-/// on top, in line order.
+/// Each of `found` (the mode a command uses, the command, and the reply its
+/// mode server sent) with the index of the mode's own colours, and those
+/// colours: one whole `Colors` per mode that has some (`set_of` gives them
+/// by mode name), `base` (`inkline-colors`) with the mode's colours on top,
+/// in line order.
 pub fn with_sets(
-    found: Vec<(CommandArgs, Reply)>,
+    found: Vec<(String, CommandArgs, Reply)>,
     base: &Colors,
     set_of: impl Fn(&str) -> Option<ColorSet>,
 ) -> (Vec<Answered>, Vec<Colors>) {
-    let mut names: Vec<String> = Vec::new();
+    let mut modes: Vec<String> = Vec::new();
     let mut sets: Vec<Colors> = Vec::new();
     let mut answered = Vec::with_capacity(found.len());
-    for (command, reply) in found {
-        let set = match names.iter().position(|n| *n == command.name) {
+    for (mode, command, reply) in found {
+        let set = match modes.iter().position(|m| *m == mode) {
             Some(i) => Some(i),
-            None => set_of(&command.name).map(|own| {
-                names.push(command.name.clone());
+            None => set_of(&mode).map(|own| {
+                modes.push(mode.clone());
                 sets.push(base.layered(&own));
                 sets.len() - 1
             }),
@@ -429,21 +430,29 @@ mod tests {
     }
 
     #[test]
-    fn each_name_with_colours_gets_one_set() {
-        let line = "csvm 'a' | other 'b' | csvm 'c'";
+    fn each_mode_with_colours_gets_one_set() {
+        let line = "csvm 'a' | other 'b' | c 'c'";
         let mut lexer = Lexer::new();
         let tree = lexer.tree(line).unwrap();
-        let commands = args::commands(&tree, line, |n| n == "csvm" || n == "other");
+        let commands = args::commands(&tree, line, |n| matches!(n, "csvm" | "other" | "c"));
         let found: Vec<_> = commands
             .into_iter()
-            .map(|c| (c, reply(vec![], None)))
+            .map(|c| {
+                let mode = if c.name == "other" {
+                    "other-mode"
+                } else {
+                    "csvm-mode"
+                };
+                (mode.to_owned(), c, reply(vec![], None))
+            })
             .collect();
         let own = ColorSet::from_entries(&[("command".to_owned(), "35".to_owned())]).unwrap();
         let base = Colors::default();
-        let (answered, sets) =
-            with_sets(found, &base, |name| (name == "csvm").then(|| own.clone()));
+        let (answered, sets) = with_sets(found, &base, |mode| {
+            (mode == "csvm-mode").then(|| own.clone())
+        });
         let got: Vec<Option<usize>> = answered.iter().map(|a| a.set).collect();
-        assert_eq!(got, [Some(0), None, Some(0)]);
+        assert_eq!(got, [Some(0), None, Some(0)], "csvm and c share one set");
         assert_eq!(sets.len(), 1);
         assert_eq!(sets[0].sgr(Kind::Command), "35");
         assert_eq!(sets[0].sgr(Kind::String), base.sgr(Kind::String));
