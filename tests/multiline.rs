@@ -428,6 +428,87 @@ fn one_undo_brings_back_the_dropped_blanks() {
     });
 }
 
+/// Blanks inside a string are its text, so they stay on both sides.
+#[test]
+fn blanks_stay_inside_a_string() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("for x in a; do\r");
+    sh.wait_for("the new line", |s| s.cursor_position() == (1, 4));
+    // C-v keeps `"` from being paired; C-b goes back between the blanks.
+    sh.send("echo \x16\"a    b\x02\x02\x02");
+    sh.wait_for("the cursor between the blanks", |s| {
+        s.cursor_position() == (1, 13)
+    });
+    sh.send("\r");
+    sh.wait_for("the line in the string", |s| {
+        row_text(s, 2) == "  b" && s.cursor_position() == (2, 0)
+    });
+    sh.send("\x02");
+    sh.wait_for("the end of the line above", |s| {
+        s.cursor_position() == (1, 13)
+    });
+}
+
+#[test]
+fn blanks_stay_inside_a_here_document() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("for x in a; do\r");
+    sh.wait_for("the new line", |s| s.cursor_position() == (1, 4));
+    sh.send("cat <<EOF\r");
+    sh.wait_for("the body line", |s| s.cursor_position() == (2, 0));
+    sh.send("a    b\x02\x02\x02");
+    sh.wait_for("the cursor between the blanks", |s| {
+        s.cursor_position() == (2, 3)
+    });
+    sh.send("\r");
+    sh.wait_for("the next body line", |s| {
+        row_text(s, 3) == "  b" && s.cursor_position() == (3, 0)
+    });
+    sh.send("\x02");
+    sh.wait_for("the end of the line above", |s| {
+        s.cursor_position() == (2, 3)
+    });
+}
+
+#[test]
+fn pasted_text_keeps_its_trailing_blanks() {
+    let mut sh = Shell::start(Options {
+        rc: "bind 'set enable-bracketed-paste off'\n".into(),
+        ..Options::default()
+    });
+    sh.send("for x in a b; do   \r  echo $x");
+    sh.wait_for("the pasted lines", |s| row_text(s, 1) == "  echo $x");
+    // C-b over the second line and the newline, to the end of the first.
+    sh.send(&"\x02".repeat(10));
+    sh.wait_for("the end of the first line", |s| {
+        s.cursor_position() == (0, 21)
+    });
+}
+
+/// With `inkline-indent` 0 nothing is indented, and no blanks go either.
+#[test]
+fn blanks_stay_with_inkline_indent_0() {
+    let mut sh = Shell::start(Options {
+        rc: "inkline eval '(setq inkline-indent 0)' >/dev/null\n".into(),
+        ..Options::default()
+    });
+    sh.send(
+        "if true; then      echo hi; fi\x01\
+         \x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06",
+    );
+    sh.wait_for("the cursor between the blanks", |s| {
+        s.cursor_position() == (0, 18)
+    });
+    sh.send(CTRL_J);
+    sh.wait_for("the new line", |s| {
+        row_text(s, 1) == "   echo hi; fi" && s.cursor_position() == (1, 0)
+    });
+    sh.send("\x02");
+    sh.wait_for("the end of the first line", |s| {
+        s.cursor_position() == (0, 18)
+    });
+}
+
 #[test]
 fn alt_enter_sends_the_command_as_it_is() {
     let mut sh = Shell::start(Options::default());
