@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::os::fd::RawFd;
 use std::time::{Duration, Instant};
 
+use crate::colors::ColorSet;
 use process::Process;
 use protocol::{Read, Reply};
 
@@ -41,6 +42,8 @@ struct Helper {
     name: String,
     /// The program and its arguments.
     program: Vec<String>,
+    /// The command's own colours, over `inkline-colors`.
+    colors: Option<ColorSet>,
     state: State,
     /// The message saying it was turned off, until `take_notices` takes it.
     notice: Option<String>,
@@ -72,20 +75,31 @@ thread_local! {
     static HELPERS: RefCell<Vec<Helper>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Registers `program` as the helper for the command `name`, or with `None`
-/// removes the helper. A helper registered again starts afresh; its old
-/// process, if any, sees its input end, and a message about it not yet
-/// taken is dropped.
-pub fn register(name: &str, program: Option<Vec<String>>) {
+/// Registers `program` as the helper for the command `name`, with the
+/// command's own colours `colors`, or with `None` removes the helper. The
+/// same program again keeps a helper that is not off and only changes its
+/// colours. Otherwise the helper starts afresh: its old process, if any,
+/// sees its input end, and a message about it not yet taken is dropped.
+pub fn register(name: &str, program: Option<Vec<String>>, colors: Option<ColorSet>) {
     HELPERS.with_borrow_mut(|helpers| {
         let at = helpers.iter().position(|h| h.name == name);
         match (at, program) {
-            (Some(i), Some(program)) => helpers[i] = Helper::new(name, program),
-            (None, Some(program)) => helpers.push(Helper::new(name, program)),
+            (Some(i), Some(program))
+                if helpers[i].program == program && !matches!(helpers[i].state, State::Off(_)) =>
+            {
+                helpers[i].colors = colors;
+            }
+            (Some(i), Some(program)) => helpers[i] = Helper::new(name, program, colors),
+            (None, Some(program)) => helpers.push(Helper::new(name, program, colors)),
             (Some(i), None) => drop(helpers.remove(i)),
             (None, None) => {}
         }
     });
+}
+
+/// The command `name`'s own colours, if it has a helper and was given some.
+pub fn colors(name: &str) -> Option<ColorSet> {
+    HELPERS.with_borrow(|helpers| helpers.iter().find(|h| h.name == name)?.colors.clone())
 }
 
 /// Whether a helper is registered for the command `name`.
@@ -284,10 +298,11 @@ pub fn take_notices() -> Vec<String> {
 }
 
 impl Helper {
-    fn new(name: &str, program: Vec<String>) -> Helper {
+    fn new(name: &str, program: Vec<String>, colors: Option<ColorSet>) -> Helper {
         Helper {
             name: name.to_owned(),
             program,
+            colors,
             state: State::NotStarted,
             notice: None,
         }
@@ -555,7 +570,7 @@ mod tests {
     #[test]
     fn replies_come_and_are_kept() {
         use crate::lexer::Kind::{Command, Number};
-        register("csvm", fake("words"));
+        register("csvm", fake("words"), None);
         let got = ask(&["a 1"], Duration::from_secs(2));
         assert_eq!(got.len(), 1);
         assert_eq!(kinds(&got[0]), [Command, Number]);
@@ -566,7 +581,7 @@ mod tests {
     #[test]
     fn several_asks_of_one_helper_are_all_answered() {
         use crate::lexer::Kind::{Command, Number, Variable};
-        register("csvm", fake("words"));
+        register("csvm", fake("words"), None);
         let got = ask(&["a", "b c", "1"], Duration::from_secs(2));
         assert_eq!(kinds(&got[0]), [Command]);
         assert_eq!(kinds(&got[1]), [Command, Variable]);
@@ -575,7 +590,7 @@ mod tests {
 
     #[test]
     fn a_late_reply_is_not_a_failure_and_is_kept_for_its_request() {
-        register("csvm", fake("late"));
+        register("csvm", fake("late"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(ask(&["a"], Duration::from_millis(20)), [None]);
         assert!(take_notices().is_empty());
@@ -604,7 +619,7 @@ mod tests {
 
     #[test]
     fn a_reply_that_comes_between_redraws_is_kept() {
-        register("csvm", fake("late"));
+        register("csvm", fake("late"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert!(waiting_fds().is_empty(), "nothing asked yet");
         assert_eq!(ask(&["a"], Duration::from_millis(20)), [None]);
@@ -623,7 +638,7 @@ mod tests {
     /// as it is now.
     #[test]
     fn a_forgotten_reply_is_dropped_and_the_line_asked_about_again() {
-        register("csvm", fake("late"));
+        register("csvm", fake("late"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(ask(&["a"], Duration::ZERO), [None]);
         forget_replies();
@@ -642,7 +657,7 @@ mod tests {
     #[test]
     fn a_helper_still_starting_is_waited_on() {
         // It prints its first line after 0.3 s.
-        register("csvm", fake("slow"));
+        register("csvm", fake("slow"), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert_eq!(waiting_fds().len(), 1, "waited on while starting");
         assert!(!read_waiting(), "its first line has not come");
@@ -655,7 +670,7 @@ mod tests {
 
     #[test]
     fn a_helper_that_exits_between_redraws_is_off() {
-        register("csvm", fake("exit"));
+        register("csvm", fake("exit"), None);
         assert!(prepare_until_started("csvm").is_empty());
         // It exits once it has read the request this sends.
         assert_eq!(ask(&["a"], Duration::ZERO), [None]);
@@ -667,7 +682,7 @@ mod tests {
 
     #[test]
     fn a_helper_that_exits_is_off() {
-        register("csvm", fake("exit"));
+        register("csvm", fake("exit"), None);
         assert_eq!(ask(&["a"], Duration::from_secs(2)), [None]);
         assert_eq!(take_notices(), ["inkline: highlight csvm: off (exited)"]);
         assert_eq!(status_lines(), ["highlight csvm: off (exited)"]);
@@ -677,7 +692,7 @@ mod tests {
 
     #[test]
     fn a_reply_that_breaks_the_protocol_is_off() {
-        register("csvm", fake("garbage"));
+        register("csvm", fake("garbage"), None);
         assert_eq!(ask(&["a"], Duration::from_secs(2)), [None]);
         assert_eq!(
             take_notices(),
@@ -690,7 +705,7 @@ mod tests {
     /// off at `MOST_UNREAD` (see `a_helper_that_writes_too_much_is_off`).
     #[test]
     fn a_helper_that_keeps_writing_does_not_hold_up_a_redraw() {
-        register("csvm", fake("spew"));
+        register("csvm", fake("spew"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
         assert_eq!(ask(&["a"], Duration::from_millis(15)), [None]);
@@ -700,7 +715,7 @@ mod tests {
 
     #[test]
     fn a_helper_that_writes_too_much_is_off() {
-        register("csvm", fake("spew"));
+        register("csvm", fake("spew"), None);
         let deadline = Instant::now() + Duration::from_secs(20);
         while !has_notices() && Instant::now() < deadline {
             ask(&["a"], Duration::from_millis(15));
@@ -713,16 +728,16 @@ mod tests {
 
     #[test]
     fn registering_replacing_and_removing() {
-        register("a", Some(vec!["x".to_owned()]));
-        register("b", Some(vec!["y".to_owned()]));
-        register("a", Some(vec!["z".to_owned()]));
+        register("a", Some(vec!["x".to_owned()]), None);
+        register("b", Some(vec!["y".to_owned()]), None);
+        register("a", Some(vec!["z".to_owned()]), None);
         assert!(is_registered("a") && is_registered("b") && !is_registered("c"));
         assert_eq!(
             status_lines(),
             ["highlight a: not started", "highlight b: not started"]
         );
-        register("a", None);
-        register("c", None);
+        register("a", None, None);
+        register("c", None, None);
         assert_eq!(status_lines(), ["highlight b: not started"]);
         stop_all();
         assert!(!any_registered());
@@ -730,7 +745,7 @@ mod tests {
 
     #[test]
     fn a_helper_starts_and_names_itself() {
-        register("csvm", fake("words"));
+        register("csvm", fake("words"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(status_lines(), ["highlight csvm: running"]);
         let running = HELPERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
@@ -739,8 +754,8 @@ mod tests {
 
     #[test]
     fn only_the_names_asked_for_start() {
-        register("csvm", fake("words"));
-        register("other", fake("words"));
+        register("csvm", fake("words"), None);
+        register("other", fake("words"), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert_eq!(
             status_lines(),
@@ -750,7 +765,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_off_once() {
-        register("csvm", Some(vec!["no-such-helper-xyz".to_owned()]));
+        register("csvm", Some(vec!["no-such-helper-xyz".to_owned()]), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert!(has_notices());
         assert_eq!(take_notices(), ["inkline: highlight csvm: off (not found)"]);
@@ -762,7 +777,7 @@ mod tests {
 
     #[test]
     fn a_wrong_first_line_is_off() {
-        register("csvm", fake("version"));
+        register("csvm", fake("version"), None);
         assert_eq!(
             prepare_until_started("csvm"),
             ["inkline: highlight csvm: off (not a highlight helper)"]
@@ -775,9 +790,9 @@ mod tests {
 
     #[test]
     fn registering_again_turns_an_off_helper_back_on() {
-        register("csvm", Some(vec!["no-such-helper-xyz".to_owned()]));
+        register("csvm", Some(vec!["no-such-helper-xyz".to_owned()]), None);
         prepare(&["csvm".to_owned()], &path(), || None);
-        register("csvm", fake("words"));
+        register("csvm", fake("words"), None);
         assert_eq!(status_lines(), ["highlight csvm: not started"]);
         assert!(!has_notices(), "the old message is dropped");
     }
@@ -785,14 +800,43 @@ mod tests {
     #[test]
     fn removing_or_stopping_drops_the_messages_not_taken() {
         let missing = || Some(vec!["no-such-helper-xyz".to_owned()]);
-        register("a", missing());
-        register("b", missing());
+        register("a", missing(), None);
+        register("b", missing(), None);
         prepare(&["a".to_owned(), "b".to_owned()], &path(), || None);
-        register("a", None);
+        register("a", None, None);
         assert_eq!(take_notices(), ["inkline: highlight b: off (not found)"]);
-        register("a", missing());
+        register("a", missing(), None);
         prepare(&["a".to_owned()], &path(), || None);
         stop_all();
         assert!(!has_notices());
+    }
+
+    fn set(command: &str) -> ColorSet {
+        ColorSet::from_entries(&[("command".to_owned(), command.to_owned())]).unwrap()
+    }
+
+    #[test]
+    fn the_same_program_again_keeps_the_helper_and_changes_its_colours() {
+        register("csvm", fake("words"), Some(set("35")));
+        assert!(prepare_until_started("csvm").is_empty());
+        register("csvm", fake("words"), Some(set("36")));
+        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        assert_eq!(colors("csvm"), Some(set("36")));
+        register("csvm", fake("words"), None);
+        assert_eq!(status_lines(), ["highlight csvm: running"]);
+        assert_eq!(colors("csvm"), None);
+        register("csvm", fake("late"), None);
+        assert_eq!(status_lines(), ["highlight csvm: not started"]);
+    }
+
+    #[test]
+    fn the_same_program_again_turns_an_off_helper_back_on() {
+        let missing = || Some(vec!["no-such-helper-xyz".to_owned()]);
+        register("csvm", missing(), None);
+        prepare(&["csvm".to_owned()], &path(), || None);
+        assert_eq!(status_lines(), ["highlight csvm: off (not found)"]);
+        register("csvm", missing(), None);
+        assert_eq!(status_lines(), ["highlight csvm: not started"]);
+        assert!(!has_notices(), "the old message is dropped");
     }
 }

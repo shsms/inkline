@@ -4,17 +4,23 @@
 use tulisp::{Error, TulispContext, TulispObject};
 
 use super::buffer::refuse_when_read_only;
+use super::settings::parse_color_set;
 
 const NAME: &str = "inkline-highlight-arguments";
 
-/// Defines `(inkline-highlight-arguments NAME PROGRAM)`: `PROGRAM`, a list of
-/// non-empty strings, becomes the helper for the command `NAME`; `nil`
-/// removes it. Refused in `inkline-suggestion-functions`, which may only
-/// read.
+/// Defines `(inkline-highlight-arguments NAME PROGRAM &optional COLORS)`:
+/// `PROGRAM`, a list of non-empty strings, becomes the helper for the
+/// command `NAME`; `nil` removes it. `COLORS`, in the forms
+/// `inkline-colors` takes, are the command's own colours; left out or
+/// `nil`, it has none. A bad `COLORS` is an error, and nothing changes.
+/// Refused in `inkline-suggestion-functions`, which may only read.
 pub fn register(ctx: &mut TulispContext) {
     ctx.defun(
         NAME,
-        |name: TulispObject, program: TulispObject| -> Result<TulispObject, Error> {
+        |name: TulispObject,
+         program: TulispObject,
+         colors: Option<TulispObject>|
+         -> Result<TulispObject, Error> {
             refuse_when_read_only(NAME)?;
             if !name.stringp() {
                 return Err(wrong_type("stringp", &name));
@@ -24,7 +30,12 @@ pub fn register(ctx: &mut TulispContext) {
             } else {
                 Some(program_words(&program)?)
             };
-            crate::helper::register(&name.as_string()?, program);
+            let colors = colors
+                .filter(|c| !c.null())
+                .map(|c| parse_color_set(&c))
+                .transpose()
+                .map_err(|why| Error::invalid_argument(format!("{NAME}: {why}")))?;
+            crate::helper::register(&name.as_string()?, program, colors);
             Ok(TulispObject::nil())
         },
     );
@@ -136,5 +147,63 @@ mod tests {
             "{err}"
         );
         assert!(!helper::is_registered("csvm"));
+    }
+
+    fn command_colour(name: &str) -> String {
+        use crate::colors::Colors;
+        let set = helper::colors(name).unwrap();
+        Colors::default()
+            .layered(&set)
+            .sgr(crate::lexer::Kind::Command)
+            .to_owned()
+    }
+
+    #[test]
+    fn a_command_gets_colours_of_its_own() {
+        use crate::colors::Colors;
+        eval(r#"(inkline-highlight-arguments "csvm" '("x") '((command . "bold magenta")))"#)
+            .unwrap();
+        assert_eq!(command_colour("csvm"), "1;35");
+        eval(r#"(inkline-highlight-arguments "csvm" '("x") "script=on grey3")"#).unwrap();
+        let set = helper::colors("csvm").unwrap();
+        assert_eq!(Colors::default().layered(&set).script(), "48;5;235");
+        eval(r#"(inkline-highlight-arguments "csvm" '("x") nil)"#).unwrap();
+        assert_eq!(helper::colors("csvm"), None);
+        eval(r#"(inkline-highlight-arguments "csvm" '("x") '((command . "1")))"#).unwrap();
+        eval(r#"(inkline-highlight-arguments "csvm" '("x"))"#).unwrap();
+        assert_eq!(helper::colors("csvm"), None, "left out: no colours");
+    }
+
+    /// A bad colour set is an error that names what is wrong, and leaves
+    /// the command as it was.
+    #[test]
+    fn bad_colours_register_nothing() {
+        eval(r#"(inkline-highlight-arguments "csvm" '("x") '((command . "bold")))"#).unwrap();
+        for (colors, message) in [
+            (
+                r#"'((command . "bold magneta"))"#,
+                r#"inkline-highlight-arguments: command: unknown colour word "magneta""#,
+            ),
+            (
+                r#""command=bold magneta""#,
+                r#"inkline-highlight-arguments: command: unknown colour word "magneta""#,
+            ),
+            (
+                r#"'((suggestion . "1"))"#,
+                "inkline-highlight-arguments: unknown colour name suggestion",
+            ),
+            (
+                "5",
+                r#"inkline-highlight-arguments: expected a list of (NAME . "VALUE") pairs or a string"#,
+            ),
+        ] {
+            let err = eval(&format!(
+                r#"(inkline-highlight-arguments "csvm" '("y") {colors})"#
+            ))
+            .unwrap_err();
+            assert!(err.contains(message), "{colors}: {err}");
+        }
+        assert_eq!(helper::status_lines(), ["highlight csvm: not started"]);
+        assert_eq!(command_colour("csvm"), "1", "still the first registration");
     }
 }
