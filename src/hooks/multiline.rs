@@ -404,13 +404,16 @@ pub(super) extern "C" fn next_line_or_search(count: c_int, key: c_int) -> c_int 
 }
 
 /// Whether `f` is one of the Up and Down commands, so a run of them keeps
-/// its column.
+/// its column; `menu-next` and `menu-previous` count too, as they fall back
+/// to these commands with no menu.
 fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
-    let ours: [ffi::CommandFn; 4] = [
+    let ours: [ffi::CommandFn; 6] = [
         previous_line_or_history,
         next_line_or_history,
         previous_line_or_search,
         next_line_or_search,
+        super::menu_previous,
+        super::menu_next,
     ];
     f.is_some_and(|f| ours.iter().any(|&o| std::ptr::fn_addr_eq(o, f)))
 }
@@ -424,7 +427,8 @@ fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
 /// directly; without `continuing_search` a run of `-or-search` presses would
 /// restart the search from the newest entry every time instead of moving
 /// through the matches. `search_continues` is only trusted when the last key
-/// ran one of these four commands, the same condition `goal_column` uses.
+/// ran one of the Up and Down commands (`is_vertical`), the same condition
+/// `goal_column` uses.
 fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
     let (count, up) = if count < 0 {
         (-count, !up)

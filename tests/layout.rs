@@ -157,6 +157,8 @@ fn history_search_on_up_becomes_line_or_search() {
     let mut sh = Shell::start(Options {
         inputrc: Some("\"\\e[A\": history-search-backward\n".into()),
         history: vec!["echo one", "ls two", "echo two"],
+        // Tall enough for the whole `inkline keys` list.
+        rows: 40,
         ..Options::default()
     });
     // The suggestion is "echo two"; the second Up skips "ls two".

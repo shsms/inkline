@@ -300,3 +300,110 @@ fn a_menu_drawn_while_lisp_runs_is_not_kept() {
         cursor_row(s) == "$ git switch" && row_text(s, 1) == "l  switch"
     });
 }
+
+const C_N: &str = "\x0e";
+const C_P: &str = "\x10";
+
+/// Whether row `row` is drawn in reverse video.
+fn picked(s: &vt100::Screen, row: u16) -> bool {
+    s.cell(row, 0).is_some_and(|c| c.inverse())
+}
+
+fn two_items() -> Shell {
+    menu_showing(
+        with_history(vec!["git stash", "git status"]),
+        "git st",
+        "h  git status",
+    )
+}
+
+#[test]
+fn ctrl_n_and_ctrl_p_move_the_pick() {
+    let mut sh = two_items();
+    assert!(!picked(&sh.screen(), 1));
+    sh.send(C_N);
+    sh.wait_for("the top picked", |s| picked(s, 1) && !picked(s, 2));
+    sh.send(C_N);
+    let s = sh.wait_for("the second picked", |s| picked(s, 2));
+    assert_eq!(
+        cursor_row(&s),
+        "$ git stash",
+        "the grey text follows the pick"
+    );
+    sh.send(C_P);
+    sh.wait_for("back to the top", |s| picked(s, 1));
+}
+
+/// A count moves the pick that many rows, though the menu is off the screen
+/// while the count is typed.
+#[test]
+fn a_count_moves_the_pick_that_many_rows() {
+    let mut sh = two_items();
+    sh.send(&format!("\x1b2{C_N}"));
+    sh.wait_for("the second picked", |s| {
+        picked(s, 2) && !picked(s, 1) && cursor_row(s) == "$ git stash"
+    });
+}
+
+#[test]
+fn ctrl_p_starts_at_the_bottom() {
+    let mut sh = two_items();
+    sh.send(C_P);
+    sh.wait_for("the bottom picked", |s| picked(s, 2));
+}
+
+#[test]
+fn ctrl_p_walks_history_without_a_menu() {
+    let mut sh = Shell::start(with_init(
+        "(setq inkline-show-menu nil)",
+        vec!["echo old", "ls"],
+    ));
+    sh.send("echo");
+    sh.wait_for("the grey text", |s| cursor_row(s) == "$ echo old");
+    sh.send(C_P);
+    sh.wait_for("the newest entry", |s| cursor_row(s) == "$ ls");
+}
+
+#[test]
+fn a_users_own_binding_is_left_alone() {
+    let mut sh = Shell::start(Options {
+        before_inkline: "bind '\"\\C-n\": backward-char'\n".into(),
+        history: vec!["git status"],
+        ..Options::default()
+    });
+    sh.send("git st");
+    sh.wait_for("the menu", |s| row_text(s, 1) == "h  git status");
+    sh.send(C_N);
+    sh.wait_for("the cursor moved back", |s| s.cursor_position() == (0, 7));
+}
+
+#[test]
+fn up_moves_between_lines_while_the_menu_shows() {
+    // `\x0a` is C-j: it adds a line to the command.
+    let mut sh = menu_showing(with_init(WORDS, vec![]), "echo a\x0aecho s", "l  switch");
+    sh.send("\x1b[A");
+    sh.wait_for("the cursor on the first line", |s| {
+        s.cursor_position().0 == 0
+    });
+}
+
+/// Moving the pick is not a move between lines: the next Up keeps the
+/// cursor's own column, not one from an earlier run of Up and Down.
+#[test]
+fn up_after_a_pick_keeps_the_cursors_column() {
+    let mut sh = Shell::start(with_init(WORDS, vec![]));
+    sh.send("echo aaaaaaaaaaaa\x0aecho");
+    sh.wait_for("two lines", |s| s.cursor_position().0 == 1);
+    sh.send("\x1b[A");
+    sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
+    sh.send("\x1b[B");
+    sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
+    sh.send(" s");
+    let s = sh.wait_for("the menu", |s| row_text(s, 2) == "l  switch");
+    let col = s.cursor_position().1;
+    sh.send(C_N);
+    sh.wait_for("the pick", |s| picked(s, 2));
+    sh.send("\x1b[A");
+    let s = sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
+    assert_eq!(s.cursor_position(), (0, col), "{}", dump(&s));
+}

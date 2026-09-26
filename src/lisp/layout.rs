@@ -7,16 +7,23 @@ pub enum Group {
     Suggestions,
     MultiLine,
     Pairing,
+    Menu,
 }
 
 impl Group {
-    pub const ALL: [Group; 3] = [Group::Suggestions, Group::MultiLine, Group::Pairing];
+    pub const ALL: [Group; 4] = [
+        Group::Suggestions,
+        Group::MultiLine,
+        Group::Pairing,
+        Group::Menu,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Group::Suggestions => "suggestions",
             Group::MultiLine => "multi-line",
             Group::Pairing => "pairing",
+            Group::Menu => "menu",
         }
     }
 
@@ -50,7 +57,7 @@ const fn e(
     }
 }
 
-use Group::{MultiLine, Pairing, Suggestions};
+use Group::{Menu, MultiLine, Pairing, Suggestions};
 
 pub const LAYOUT: &[Entry] = &[
     e(
@@ -90,12 +97,6 @@ pub const LAYOUT: &[Entry] = &[
             &["previous-history", ""],
         )
     },
-    e(
-        MultiLine,
-        "C-p",
-        "previous-line-or-history",
-        &["previous-history"],
-    ),
     Entry {
         instead: Some(("history-search-forward", "next-line-or-search")),
         ..e(
@@ -105,7 +106,6 @@ pub const LAYOUT: &[Entry] = &[
             &["next-history", ""],
         )
     },
-    e(MultiLine, "C-n", "next-line-or-history", &["next-history"]),
     e(MultiLine, "C-a", "line-start", &["beginning-of-line"]),
     e(
         MultiLine,
@@ -131,6 +131,8 @@ pub const LAYOUT: &[Entry] = &[
     e(Pairing, "]", "insert-close", &["self-insert"]),
     e(Pairing, "}", "insert-close", &["self-insert"]),
     e(Pairing, "DEL", "delete-pair", &["backward-delete-char"]),
+    e(Menu, "C-n", "menu-next", &["next-history"]),
+    e(Menu, "C-p", "menu-previous", &["previous-history"]),
 ];
 
 #[cfg(not(test))]

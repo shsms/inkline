@@ -204,6 +204,8 @@ pub fn load() {
                 ffi::add_command(c"kill-to-line-start", multiline::kill_to_line_start);
                 ffi::add_command(c"comment-lines", multiline::comment_lines);
                 ffi::add_command(c"accept-as-is", accept_as_is);
+                ffi::add_command(c"menu-next", menu_next);
+                ffi::add_command(c"menu-previous", menu_previous);
                 ffi::add_command(c"inkline-lisp-key", crate::lisp::commands::SHARED);
             });
             crate::lisp::start_for_shell();
@@ -1323,6 +1325,19 @@ fn menu_for(line: &str, point: usize) -> Menu {
     }
 }
 
+/// Whether the last draw in plain editing showed the menu, and it is for
+/// the line and cursor as they are now.
+fn showing_menu() -> bool {
+    let (Some(line), point) = (ffi::line(), ffi::point()) else {
+        return false;
+    };
+    STATE.with_borrow(|s| {
+        s.menu
+            .as_ref()
+            .is_some_and(|m| m.shown && m.is_for(&line, point))
+    })
+}
+
 /// Asks the mode servers of the commands on `line` that use a mode how to
 /// colour their arguments, at the main prompt while no Lisp runs: starts
 /// the servers not started yet, looking up their programs in `path`
@@ -1455,6 +1470,46 @@ extern "C" fn accept_suggestion_word(count: c_int, key: c_int) -> c_int {
 
 extern "C" fn accept_suggestion(count: c_int, key: c_int) -> c_int {
     accept(count, key, suggest::all, multiline::end_of_line)
+}
+
+/// `C-n`: picks the next item of the menu the last draw in plain editing
+/// showed; with no menu, moves down a line or through history.
+pub(super) extern "C" fn menu_next(count: c_int, key: c_int) -> c_int {
+    move_pick(count, key, true, multiline::next_line_or_history)
+}
+
+/// `C-p`: picks the item above in the menu the last draw in plain editing
+/// showed; with no menu, moves up a line or through history.
+pub(super) extern "C" fn menu_previous(count: c_int, key: c_int) -> c_int {
+    move_pick(count, key, false, multiline::previous_line_or_history)
+}
+
+/// Moves the menu's pick `count` rows, or runs `fallback` when no menu
+/// shows for the line and cursor as they are. A pick move ends a run of Up
+/// and Down: the next one starts from the cursor's own column and a new
+/// history search.
+fn move_pick(
+    count: c_int,
+    key: c_int,
+    down: bool,
+    fallback: extern "C" fn(c_int, c_int) -> c_int,
+) -> c_int {
+    let moved = guard(
+        || {
+            showing_menu()
+                && STATE.with_borrow_mut(|s| {
+                    let Some(menu) = s.menu.as_mut() else {
+                        return false;
+                    };
+                    menu.step(down, i64::from(count));
+                    s.goal_column = None;
+                    s.search_continues = false;
+                    true
+                })
+        },
+        || false,
+    );
+    if moved { 0 } else { fallback(count, key) }
 }
 
 /// Inserts the part of the suggestion `take` picks. Without a suggestion for
