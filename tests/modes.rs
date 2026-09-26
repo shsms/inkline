@@ -1191,17 +1191,83 @@ fn enter_moves_a_closing_line_out() {
     });
 }
 
+/// In a shell whose fake mode server indents, types `csvm "head`, C-j, then
+/// `| sort x` six spaces further in than inkline put it (eight in all), and
+/// C-j again. `log` is the fake's log. Returns the screen once the third
+/// line is there.
+fn split_a_line_indented_by_hand(sh: &mut Shell, log: &std::path::Path) -> vt100::Screen {
+    type_then(sh, "csvm \"head", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    type_then(sh, "      | sort x", "sort", COMMAND);
+    sh.send(CTRL_J);
+    let s = sh.wait_for("the third line", |s| s.cursor_position() == (2, 2));
+    // `head`, the newline, eight spaces and `| sort x`.
+    wait_for_log(log, "at:1 21");
+    s
+}
+
+/// A mode server that sends `-` for the cursor's line leaves it as the user
+/// indented it, and the new line still gets its depth.
 #[test]
-fn one_undo_takes_back_the_new_line_and_the_move_out() {
-    let (mut sh, _dir, _log) = indenting_shell("indent");
-    type_then(&mut sh, "csvm 'fn f {", "fn", COMMAND);
+fn a_dash_leaves_a_line_indented_by_hand() {
+    let (mut sh, _dir, log) = indenting_shell("dash-indent");
+    let s = split_a_line_indented_by_hand(&mut sh, &log);
+    assert_eq!(
+        rows(&s, 3),
+        ["$ csvm \"head", "        | sort x", "  \""],
+        "{}",
+        dump(&s)
+    );
+    // C-u would clear only the last line of the command: C-c drops it all.
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    status_row(&mut sh, "mode csvm-mode (csvm): running");
+}
+
+/// The same keys with a server that gives the cursor's line a number move that
+/// line out to it.
+#[test]
+fn a_number_moves_a_line_indented_by_hand_out() {
+    let (mut sh, _dir, log) = indenting_shell("indent");
+    let s = split_a_line_indented_by_hand(&mut sh, &log);
+    assert_eq!(
+        rows(&s, 3),
+        ["$ csvm \"head", "  | sort x", "  \""],
+        "{}",
+        dump(&s)
+    );
+}
+
+/// In a shell whose fake mode server indents, types `csvm 'fn f {`, C-j,
+/// `a`, C-j and `}`: the cursor is after a `}` four spaces in.
+fn type_a_closing_brace(sh: &mut Shell) {
+    type_then(sh, "csvm 'fn f {", "fn", COMMAND);
     sh.send(CTRL_J);
     sh.wait_for("inside the body", |s| s.cursor_position() == (1, 4));
-    type_then(&mut sh, "a", "a", VARIABLE);
+    type_then(sh, "a", "a", VARIABLE);
     sh.send(CTRL_J);
     sh.wait_for("still inside", |s| s.cursor_position() == (2, 4));
     sh.send("}");
     sh.wait_for("the brace", |s| row_text(s, 2) == "    }'");
+}
+
+/// A server that sends `-` for other lines still moves a line that starts by
+/// closing a group out.
+#[test]
+fn a_closing_line_moves_out_with_a_dash_server() {
+    let (mut sh, _dir, _log) = indenting_shell("dash-indent");
+    type_a_closing_brace(&mut sh);
+    sh.send(CTRL_J);
+    sh.wait_for("the brace moved out", |s| {
+        s.cursor_position() == (3, 2) && row_text(s, 2) == "  }"
+    });
+}
+
+#[test]
+fn one_undo_takes_back_the_new_line_and_the_move_out() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    type_a_closing_brace(&mut sh);
     sh.send(CTRL_J);
     sh.wait_for("the brace moved out", |s| row_text(s, 2) == "  }");
     sh.send("\x1f");
