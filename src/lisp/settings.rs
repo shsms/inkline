@@ -7,6 +7,7 @@ use tulisp::{TulispContext, TulispObject};
 
 use super::values::{items, read_int, read_str};
 use crate::colors::{ColorSet, Colors};
+use crate::menu::Style;
 
 const DEFINITIONS: &str = "
 (defvar inkline-indent 4)
@@ -14,6 +15,10 @@ const DEFINITIONS: &str = "
 (defvar inkline-history-cursor 'start)
 (defvar inkline-colors nil)
 (defvar inkline-command-mode-alist nil)
+(defvar inkline-show-menu t)
+(defvar inkline-show-suggestion t)
+(defvar inkline-menu-lines 8)
+(defvar inkline-completion-style 'prefix)
 ";
 
 struct Symbols {
@@ -22,6 +27,10 @@ struct Symbols {
     history_cursor: TulispObject,
     colors: TulispObject,
     command_modes: TulispObject,
+    show_menu: TulispObject,
+    show_suggestion: TulispObject,
+    menu_lines: TulispObject,
+    completion_style: TulispObject,
 }
 
 #[derive(Default)]
@@ -90,6 +99,10 @@ pub fn register(ctx: &mut TulispContext) {
         history_cursor: ctx.intern("inkline-history-cursor"),
         colors: ctx.intern("inkline-colors"),
         command_modes: ctx.intern("inkline-command-mode-alist"),
+        show_menu: ctx.intern("inkline-show-menu"),
+        show_suggestion: ctx.intern("inkline-show-suggestion"),
+        menu_lines: ctx.intern("inkline-menu-lines"),
+        completion_style: ctx.intern("inkline-completion-style"),
     };
     SYMBOLS.with_borrow_mut(|s| *s = Some(symbols));
     CACHE.with_borrow_mut(|c| *c = Cache::default());
@@ -118,6 +131,24 @@ pub fn parse_cursor(v: &TulispObject) -> Result<bool, String> {
     match v.to_string().as_str() {
         "start" => Ok(false),
         "end" => Ok(true),
+        _ => bad(),
+    }
+}
+
+/// A setting that is on or off: `nil` is off, anything else on.
+pub fn parse_flag(v: &TulispObject) -> Result<bool, String> {
+    Ok(!v.null())
+}
+
+/// The symbol `prefix` or `fuzzy`.
+pub fn parse_style(v: &TulispObject) -> Result<Style, String> {
+    let bad = || Err("expected prefix or fuzzy".to_owned());
+    if !v.symbolp() {
+        return bad();
+    }
+    match v.to_string().as_str() {
+        "prefix" => Ok(Style::Prefix),
+        "fuzzy" => Ok(Style::Fuzzy),
         _ => bad(),
     }
 }
@@ -372,6 +403,34 @@ pub fn command_modes() -> Vec<(String, String)> {
     )
 }
 
+/// Whether `inkline-show-menu` is on.
+pub fn show_menu() -> bool {
+    read("inkline-show-menu", |s| &s.show_menu, parse_flag, true)
+}
+
+/// Whether `inkline-show-suggestion` is on.
+pub fn show_suggestion() -> bool {
+    read(
+        "inkline-show-suggestion",
+        |s| &s.show_suggestion,
+        parse_flag,
+        true,
+    )
+}
+
+pub fn menu_lines() -> usize {
+    read("inkline-menu-lines", |s| &s.menu_lines, parse_lines, 8)
+}
+
+pub fn completion_style() -> Style {
+    read(
+        "inkline-completion-style",
+        |s| &s.completion_style,
+        parse_style,
+        Style::Prefix,
+    )
+}
+
 /// Reads every setting and returns the bad values not reported before, as
 /// `NAME: why` lines.
 pub fn problems() -> Vec<String> {
@@ -380,6 +439,10 @@ pub fn problems() -> Vec<String> {
     history_cursor_end();
     colors();
     command_modes();
+    show_menu();
+    show_suggestion();
+    menu_lines();
+    completion_style();
     CACHE.with_borrow_mut(|c| std::mem::take(&mut c.pending))
 }
 
@@ -554,6 +617,50 @@ mod tests {
         assert_eq!(
             parse_color_set(&value(&mut ctx, r#"'((command . "1") . 5)"#)),
             Err(BAD_COLORS.to_owned())
+        );
+    }
+
+    #[test]
+    fn menu_setting_values() {
+        use crate::menu::Style;
+        let mut ctx = TulispContext::new();
+        assert_eq!(parse_flag(&value(&mut ctx, "nil")), Ok(false));
+        assert_eq!(parse_flag(&value(&mut ctx, "t")), Ok(true));
+        assert_eq!(parse_flag(&value(&mut ctx, "5")), Ok(true));
+        assert_eq!(parse_style(&value(&mut ctx, "'prefix")), Ok(Style::Prefix));
+        assert_eq!(parse_style(&value(&mut ctx, "'fuzzy")), Ok(Style::Fuzzy));
+        let bad = Err("expected prefix or fuzzy".to_owned());
+        assert_eq!(parse_style(&value(&mut ctx, "'other")), bad);
+        assert_eq!(parse_style(&value(&mut ctx, r#""fuzzy""#)), bad);
+    }
+
+    #[test]
+    fn menu_settings_have_their_defaults_and_follow_the_variables() {
+        use crate::menu::Style;
+        crate::lisp::start();
+        assert!(show_menu());
+        assert!(show_suggestion());
+        assert_eq!(menu_lines(), 8);
+        assert_eq!(completion_style(), Style::Prefix);
+        crate::lisp::eval(
+            "(progn (setq inkline-show-menu nil inkline-show-suggestion nil
+                          inkline-menu-lines 3 inkline-completion-style 'fuzzy) nil)",
+        )
+        .unwrap();
+        assert!(!show_menu());
+        assert!(!show_suggestion());
+        assert_eq!(menu_lines(), 3);
+        assert_eq!(completion_style(), Style::Fuzzy);
+        crate::lisp::eval("(progn (setq inkline-menu-lines 0 inkline-completion-style 'x) nil)")
+            .unwrap();
+        assert_eq!(menu_lines(), 8);
+        assert_eq!(completion_style(), Style::Prefix);
+        assert_eq!(
+            problems(),
+            vec![
+                "inkline-menu-lines: expected a number of at least 1".to_owned(),
+                "inkline-completion-style: expected prefix or fuzzy".to_owned(),
+            ]
         );
     }
 
