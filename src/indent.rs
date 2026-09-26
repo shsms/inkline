@@ -1,5 +1,8 @@
 //! Where the lines of a multi-line command start: the indentation for a new
-//! line, and closing words that move a line back out.
+//! line, closing words that move a line back out, and the indentation inside
+//! a program's script from the depths its helper gives.
+
+use crate::helper::protocol::Depths;
 
 /// Words that close a block. A line starting with one moves back one step.
 const CLOSERS: &[&str] = &["done", "fi", "esac", "}", ")", "else", "elif"];
@@ -51,6 +54,68 @@ pub fn outdent(line: &str, step: usize) -> usize {
 /// The spaces and tabs `line` starts with.
 pub fn indentation(line: &str) -> &str {
     &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
+}
+
+/// The most nesting levels a helper's depth counts for: a larger depth is
+/// taken as this, so a wrong reply cannot make a huge line.
+pub const MOST_DEPTH: usize = 20;
+
+/// The indentation of a line at `depth` inside a program's script: `base`,
+/// the indentation of the line the command's name is on, then one `step`
+/// of spaces for being inside the script and one per level of `depth`.
+pub fn for_depth(base: &str, depth: usize, step: usize) -> String {
+    format!("{base}{}", " ".repeat((1 + depth.min(MOST_DEPTH)) * step))
+}
+
+/// How a new line inside a program's script is indented.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ScriptLine {
+    /// The indentation the cursor's line moves out to, when it moves.
+    pub moved_out: Option<String>,
+    /// The new line's indentation.
+    pub new_line: String,
+}
+
+/// How a new line at `point` in `text` is indented, inside a script whose
+/// command's name is on the line that starts at `command_line` and whose
+/// argument starts on the line that starts at `first_line` (the script's
+/// first line). With the helper's `depths`, the new line gets `NEW`'s
+/// indentation; the cursor's line moves out to `CURRENT`'s when the cursor
+/// is past its first non-blank character, it is not the script's first
+/// line, and that is less far in than it is now (a line is never pushed
+/// further in). Without depths nothing moves, and the new line gets depth
+/// 0's indentation when the cursor is on the script's first line, and the
+/// cursor's line's own indentation below it.
+pub fn script_line(
+    text: &str,
+    point: usize,
+    command_line: usize,
+    first_line: usize,
+    depths: Option<Depths>,
+    step: usize,
+) -> ScriptLine {
+    let start = crate::lines::line_start(text, point);
+    let present = indentation(&text[start..]);
+    let base = indentation(&text[command_line..]);
+    let Some(depths) = depths else {
+        let new_line = if start == first_line {
+            for_depth(base, 0, step)
+        } else {
+            present.to_owned()
+        };
+        return ScriptLine {
+            moved_out: None,
+            new_line,
+        };
+    };
+    let current = for_depth(base, depths.current, step);
+    let moves = start != first_line
+        && point > start + present.len()
+        && crate::lines::width(&current) < crate::lines::width(present);
+    ScriptLine {
+        moved_out: moves.then_some(current),
+        new_line: for_depth(base, depths.new, step),
+    }
 }
 
 /// `base` less one step: up to `step` spaces, or one tab, from its end.
@@ -172,6 +237,128 @@ mod tests {
 
     fn new(text: &str) -> String {
         for_new_line(text, text.len(), 4)
+    }
+
+    fn depths(new: usize, current: usize) -> Option<Depths> {
+        Some(Depths { new, current })
+    }
+
+    #[test]
+    fn depths_become_spaces() {
+        assert_eq!(for_depth("", 0, 2), "  ");
+        assert_eq!(for_depth("", 2, 2), "      ");
+        assert_eq!(
+            for_depth("    ", 0, 4),
+            "        ",
+            "from the command's line"
+        );
+        assert_eq!(for_depth("\t", 1, 2), "\t    ", "a tab stays");
+    }
+
+    #[test]
+    fn for_depth_is_capped() {
+        assert_eq!(for_depth("", 100_000, 2).len(), (1 + MOST_DEPTH) * 2);
+    }
+
+    #[test]
+    fn the_new_line_gets_the_new_depth() {
+        let text = "  csvm \"head";
+        let got = script_line(text, text.len(), 0, 0, depths(0, 0), 2);
+        assert_eq!(
+            got,
+            ScriptLine {
+                moved_out: None,
+                new_line: "    ".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_closing_line_moves_out() {
+        let text = "csvm \"a (\n    b\n    ) c";
+        let got = script_line(text, text.len(), 0, 0, depths(0, 0), 2);
+        assert_eq!(
+            got,
+            ScriptLine {
+                moved_out: Some("  ".into()),
+                new_line: "  ".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_line_is_never_pushed_in() {
+        let text = "csvm \"a\n  b";
+        let got = script_line(text, text.len(), 0, 0, depths(3, 3), 2);
+        assert_eq!(got.moved_out, None);
+        assert_eq!(got.new_line, "        ");
+    }
+
+    #[test]
+    fn a_cursor_in_the_indentation_moves_nothing() {
+        let text = "csvm \"a (\n    ) c";
+        let got = script_line(text, 12, 0, 0, depths(0, 0), 2);
+        assert_eq!(got.moved_out, None);
+    }
+
+    #[test]
+    fn without_depths_the_cursors_line_is_copied() {
+        let text = "csvm \"a\n   b";
+        let got = script_line(text, text.len(), 0, 0, None, 2);
+        assert_eq!(
+            got,
+            ScriptLine {
+                moved_out: None,
+                new_line: "   ".into()
+            }
+        );
+        let text = "  x\n  csvm \"a\n b";
+        let got = script_line(text, text.len(), 4, 4, None, 2);
+        assert_eq!(
+            got.new_line, " ",
+            "below the command's line, even less far in"
+        );
+    }
+
+    #[test]
+    fn without_depths_the_first_line_is_one_step_in() {
+        let got = script_line("  csvm \"a", 9, 0, 0, None, 2);
+        assert_eq!(
+            got,
+            ScriptLine {
+                moved_out: None,
+                new_line: "    ".into()
+            }
+        );
+        let text = "if x; then\n\tcsvm \"a";
+        let got = script_line(text, text.len(), 11, 11, None, 2);
+        assert_eq!(got.new_line, "\t  ", "from the command's own line");
+    }
+
+    /// A script whose quote opens on a line below the command's name.
+    const BELOW: &str = "  csvm \\\n      \"head x";
+
+    #[test]
+    fn the_scripts_first_line_is_where_its_argument_starts() {
+        let first = BELOW.find('\n').unwrap() + 1;
+        let got = script_line(BELOW, BELOW.len(), 0, first, depths(0, 0), 2);
+        assert_eq!(
+            got,
+            ScriptLine {
+                moved_out: None,
+                new_line: "    ".into()
+            },
+            "never moved, and depths count from the command's line"
+        );
+        let got = script_line(BELOW, BELOW.len(), 0, first, None, 2);
+        assert_eq!(
+            got,
+            ScriptLine {
+                moved_out: None,
+                new_line: "    ".into()
+            },
+            "without depths, one step in from the command's line"
+        );
     }
 
     #[test]
