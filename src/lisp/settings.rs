@@ -13,6 +13,7 @@ const DEFINITIONS: &str = "
 (defvar inkline-suggestion-lines 5)
 (defvar inkline-history-cursor 'start)
 (defvar inkline-colors nil)
+(defvar inkline-command-mode-alist nil)
 ";
 
 struct Symbols {
@@ -20,6 +21,7 @@ struct Symbols {
     suggestion_lines: TulispObject,
     history_cursor: TulispObject,
     colors: TulispObject,
+    command_modes: TulispObject,
 }
 
 #[derive(Default)]
@@ -87,6 +89,7 @@ pub fn register(ctx: &mut TulispContext) {
         suggestion_lines: ctx.intern("inkline-suggestion-lines"),
         history_cursor: ctx.intern("inkline-history-cursor"),
         colors: ctx.intern("inkline-colors"),
+        command_modes: ctx.intern("inkline-command-mode-alist"),
     };
     SYMBOLS.with_borrow_mut(|s| *s = Some(symbols));
     CACHE.with_borrow_mut(|c| *c = Cache::default());
@@ -164,12 +167,51 @@ fn color_pairs(v: &TulispObject) -> Result<Vec<(String, String)>, String> {
     Ok(entries)
 }
 
+const BAD_MODES: &str = "expected a list of (\"COMMAND\" . MODE) pairs";
+
+/// The pairs of `inkline-command-mode-alist`'s value `v`, as (command, mode
+/// name): each entry a pair of a string and a symbol other than `nil` and
+/// `t`. Anything else, in any entry, is an error.
+pub fn parse_command_modes(v: &TulispObject) -> Result<Vec<(String, String)>, String> {
+    if !v.listp() {
+        return Err(BAD_MODES.to_owned());
+    }
+    let mut pairs = Vec::new();
+    let mut entries = items(v);
+    for entry in entries.by_ref() {
+        if !entry.consp() {
+            return Err(BAD_MODES.to_owned());
+        }
+        let (Ok(command), Ok(mode)) = (entry.car(), entry.cdr()) else {
+            return Err(BAD_MODES.to_owned());
+        };
+        let (Some(command), Some(mode)) = (read_str(&command), read_mode(&mode)) else {
+            return Err(BAD_MODES.to_owned());
+        };
+        pairs.push((command, mode));
+    }
+    if !entries.proper() {
+        return Err(BAD_MODES.to_owned());
+    }
+    Ok(pairs)
+}
+
 /// A symbol's name or a string's content. `None` for anything else.
 fn read_name(o: &TulispObject) -> Option<String> {
     if o.symbolp() {
         Some(o.to_string())
     } else {
         read_str(o)
+    }
+}
+
+/// A symbol's name, when the symbol is neither `nil` nor `t`: the rule a
+/// mode name follows. `None` for anything else, a string included.
+fn read_mode(o: &TulispObject) -> Option<String> {
+    if o.symbolp() && !o.null() && !o.eq(&TulispObject::t()) {
+        Some(o.to_string())
+    } else {
+        None
     }
 }
 
@@ -319,6 +361,17 @@ pub fn colors() -> Colors {
     colors
 }
 
+/// The pairs of `inkline-command-mode-alist`, as (command, mode name), in
+/// order. A bad value gives no pairs.
+pub fn command_modes() -> Vec<(String, String)> {
+    read(
+        "inkline-command-mode-alist",
+        |s| &s.command_modes,
+        parse_command_modes,
+        Vec::new(),
+    )
+}
+
 /// Reads every setting and returns the bad values not reported before, as
 /// `NAME: why` lines.
 pub fn problems() -> Vec<String> {
@@ -326,6 +379,7 @@ pub fn problems() -> Vec<String> {
     suggestion_lines();
     history_cursor_end();
     colors();
+    command_modes();
     CACHE.with_borrow_mut(|c| std::mem::take(&mut c.pending))
 }
 
@@ -503,10 +557,155 @@ mod tests {
         );
     }
 
-    /// Long enough that a comparison that recursed once per list element
-    /// would overflow a test thread's 2 MB stack. The second read of such a
-    /// list is the one that compares it with what was kept.
+    #[test]
+    fn command_mode_values() {
+        let mut ctx = TulispContext::new();
+        assert_eq!(parse_command_modes(&value(&mut ctx, "nil")), Ok(Vec::new()));
+        assert_eq!(
+            parse_command_modes(&value(
+                &mut ctx,
+                r#"'(("csvm" . csvm-mode) ("c" . csvm-mode) ("x" . :k))"#
+            )),
+            Ok(vec![
+                ("csvm".to_owned(), "csvm-mode".to_owned()),
+                ("c".to_owned(), "csvm-mode".to_owned()),
+                ("x".to_owned(), ":k".to_owned()),
+            ])
+        );
+        let bad = Err(BAD_MODES.to_owned());
+        for text in [
+            "5",
+            r#""csvm""#,
+            r#"'(5)"#,
+            r#"'(("csvm" . "csvm-mode"))"#,
+            r#"'((csvm . csvm-mode))"#,
+            r#"'(("csvm"))"#,
+            r#"'(("csvm" . t))"#,
+            r#"'(("csvm" csvm-mode))"#,
+            r#"'(("csvm" . csvm-mode) . 5)"#,
+            r#"(let ((l (list (cons "c" 'm)))) (setcdr l l) l)"#,
+        ] {
+            assert_eq!(parse_command_modes(&value(&mut ctx, text)), bad, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_command_mode_alist_is_read_when_used() {
+        crate::lisp::start();
+        assert!(command_modes().is_empty());
+        // Built with `list` and `cons`, not quoted, so `setcar` below may
+        // change it.
+        crate::lisp::eval(r#"(setq inkline-command-mode-alist (list (cons "csvm" 'csvm-mode)))"#)
+            .unwrap();
+        assert_eq!(
+            command_modes(),
+            vec![("csvm".to_owned(), "csvm-mode".to_owned())]
+        );
+        crate::lisp::eval(r#"(push (cons "c" 'csvm-mode) inkline-command-mode-alist)"#).unwrap();
+        assert_eq!(
+            command_modes(),
+            vec![
+                ("c".to_owned(), "csvm-mode".to_owned()),
+                ("csvm".to_owned(), "csvm-mode".to_owned()),
+            ]
+        );
+        crate::lisp::eval(r#"(setcar (car inkline-command-mode-alist) "d")"#).unwrap();
+        assert_eq!(
+            command_modes()[0].0,
+            "d",
+            "a change inside the list is seen"
+        );
+        assert!(problems().is_empty());
+    }
+
+    #[test]
+    fn a_bad_alist_is_reported_once_and_ignored_until_it_changes() {
+        crate::lisp::start();
+        crate::lisp::eval(r#"(setq inkline-command-mode-alist '(("csvm" . csvm-mode)))"#).unwrap();
+        assert_eq!(command_modes().len(), 1);
+        crate::lisp::eval("(push 5 inkline-command-mode-alist)").unwrap();
+        assert!(command_modes().is_empty(), "the whole value is ignored");
+        assert!(command_modes().is_empty());
+        assert_eq!(
+            problems(),
+            vec![
+                r#"inkline-command-mode-alist: expected a list of ("COMMAND" . MODE) pairs"#
+                    .to_owned()
+            ]
+        );
+        assert!(problems().is_empty(), "reported once");
+        crate::lisp::eval("(setq inkline-command-mode-alist (cdr inkline-command-mode-alist))")
+            .unwrap();
+        assert_eq!(command_modes().len(), 1, "a good value again is used");
+    }
+
+    #[test]
+    fn a_string_mode_is_reported() {
+        crate::lisp::start();
+        crate::lisp::eval(r#"(setq inkline-command-mode-alist '(("c" . m)))"#).unwrap();
+        assert_eq!(command_modes(), vec![("c".to_owned(), "m".to_owned())]);
+        crate::lisp::eval(r#"(setq inkline-command-mode-alist '(("c" . "m")))"#).unwrap();
+        assert!(command_modes().is_empty(), "a string is not a mode name");
+        assert_eq!(
+            problems(),
+            vec![
+                r#"inkline-command-mode-alist: expected a list of ("COMMAND" . MODE) pairs"#
+                    .to_owned()
+            ]
+        );
+        assert!(problems().is_empty(), "reported once");
+    }
+
+    #[test]
+    fn a_mode_changed_in_place_to_a_string_is_reported() {
+        crate::lisp::start();
+        crate::lisp::eval(r#"(setq inkline-command-mode-alist (list (cons "c" 'm)))"#).unwrap();
+        assert_eq!(command_modes(), vec![("c".to_owned(), "m".to_owned())]);
+        crate::lisp::eval(r#"(setcdr (car inkline-command-mode-alist) "m")"#).unwrap();
+        assert!(command_modes().is_empty(), "a string is not a mode name");
+        assert_eq!(
+            problems(),
+            vec![
+                r#"inkline-command-mode-alist: expected a list of ("COMMAND" . MODE) pairs"#
+                    .to_owned()
+            ]
+        );
+        assert!(problems().is_empty(), "reported once");
+    }
+
+    #[test]
+    fn a_circular_alist_set_twice_is_reported_once() {
+        crate::lisp::start();
+        let circular =
+            r#"(setq inkline-command-mode-alist (let ((l (list (cons "c" 'm)))) (setcdr l l) l))"#;
+        for reports in [1, 0] {
+            crate::lisp::eval(circular).unwrap();
+            assert!(command_modes().is_empty());
+            assert!(command_modes().is_empty());
+            assert_eq!(problems().len(), reports);
+        }
+    }
+
+    /// Long enough that walking a list by recursion, once per element,
+    /// would overflow a test thread's 2 MB stack. For `inkline-colors`, the
+    /// second read is the one that compares the list with what was kept.
     const LONG_LIST: i64 = 200_000;
+
+    #[test]
+    fn a_long_alist_is_read_without_recursion() {
+        crate::lisp::start();
+        crate::lisp::eval(&format!(
+            r#"(setq inkline-command-mode-alist
+                   (let ((l nil) (i 0))
+                     (while (< i {LONG_LIST})
+                       (setq l (cons (cons "c" 'm) l))
+                       (setq i (1+ i)))
+                     l))"#
+        ))
+        .unwrap();
+        assert_eq!(command_modes().len(), LONG_LIST as usize);
+        assert_eq!(command_modes().len(), LONG_LIST as usize, "read again");
+    }
 
     #[test]
     fn a_long_colour_list_is_compared_without_recursion() {
@@ -570,5 +769,42 @@ mod tests {
         crate::lisp::eval("(progn (setcdr inkline-colors quotes-itself) nil)").unwrap();
         assert_eq!(colors(), Colors::default(), "an end that is not a list");
         assert_eq!(problems().len(), 3);
+    }
+
+    #[test]
+    fn an_alist_that_holds_itself_is_reported() {
+        use crate::lisp::values::{HOLDS_ITSELF, QUOTES_ITSELF};
+        crate::lisp::start();
+        set("quotes-itself", QUOTES_ITSELF);
+        for alist in [
+            format!("(list (cons {HOLDS_ITSELF} 'm))"),
+            r#"(list (cons "c" 'm) quotes-itself)"#.to_owned(),
+            r#"(cons (cons "c" 'm) quotes-itself)"#.to_owned(),
+        ] {
+            set("inkline-command-mode-alist", &alist);
+            assert!(command_modes().is_empty(), "{alist}");
+        }
+        assert_eq!(problems().len(), 3);
+    }
+
+    #[test]
+    fn a_command_string_changed_in_place_is_seen() {
+        crate::lisp::start();
+        // `99` and `100` are the character codes of `c` and `d`; tulisp has
+        // no character literals.
+        crate::lisp::eval(
+            r#"(setq inkline-command-mode-alist (list (cons (make-string 3 99) 'csvm-mode)))"#,
+        )
+        .unwrap();
+        assert_eq!(
+            command_modes(),
+            vec![("ccc".to_owned(), "csvm-mode".to_owned())]
+        );
+        crate::lisp::eval("(aset (car (car inkline-command-mode-alist)) 0 100)").unwrap();
+        assert_eq!(
+            command_modes(),
+            vec![("dcc".to_owned(), "csvm-mode".to_owned())],
+            "a string changed in place is seen"
+        );
     }
 }
