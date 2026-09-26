@@ -312,16 +312,16 @@ look:
 ```
 
 `(script . "")` turns it off. The mode server's colours use the usual keys, and
-`number` and `function` (see "Colours" below).
+`number`, `function` and `separator` (see "Colours" below).
 
 The third argument to `inkline-define-mode` gives the mode colours of its
 own, in the forms `inkline-colors` takes. They are used only inside the
-arguments of the commands that use the mode, for the nine kinds a mode
+arguments of the commands that use the mode, for the ten kinds a mode
 server sends (`command`, `keyword`, `option`, `operator`, `string`,
-`number`, `variable`, `function` and `comment`) and for `script`; a name
-they leave out uses `inkline-colors`. Bash's own colours inside the script,
-such as the colour of a `$min`, of the quote marks and of the error
-underline, stay as `inkline-colors` sets them.
+`number`, `variable`, `function`, `comment` and `separator`) and for
+`script`; a name they leave out uses `inkline-colors`. Bash's own colours
+inside the script, such as the colour of a `$min`, of the quote marks and
+of the error underline, stay as `inkline-colors` sets them.
 
 ```elisp
 ;; ~/.config/inkline/init.el
@@ -330,7 +330,7 @@ underline, stay as `inkline-colors` sets them.
     (script . "on grey3")))
 ```
 
-A bad colour, or a name other than those ten, is an error, and nothing
+A bad colour, or a name other than those eleven, is an error, and nothing
 changes. Defining the mode again with the same program keeps its mode
 server running and only changes the colours, from the next draw; leaving the
 third argument out drops them.
@@ -525,6 +525,14 @@ that entry.
 give parts of an argument. `script` is added on top of every colour inside
 an argument a mode server coloured: dim (`2`) by default, or a background
 such as `on grey4`.
+
+`separator` colours a mark between parts: bash's `|` and `|&` in a
+pipeline and a `;` that ends a command, and what a mode server sends as a
+separator, such as the `|` between the stages of a csvm script. It has no
+colour of its own until you set it: a separator is drawn with the
+`operator` colour. Inside a mode's script, the mode's own `separator` comes
+first, then the one in `inkline-colors`, then the `operator` colour, found
+the same way. `&&`, `||`, `&` and redirections stay `operator`.
 
 `error` sets the syntax-error underline. By default it is a plain underline
 (`4`) followed by a wavy red one (`4:3`, then `58:5:1`), so terminals that do

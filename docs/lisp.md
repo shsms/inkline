@@ -25,11 +25,14 @@ change takes effect on the next key.
   alist of `(NAME . "VALUE")` pairs, or a string in `LS_COLORS`'s format. A
   value is SGR codes or colour words, such as `"bold magenta"` or
   `"on grey4"`. The names are `command`, `unknown`, `keyword`, `option`,
-  `string`, `variable`, `operator`, `comment`, `suggestion` and `error`, and
-  three that only [command modes](#command-modes) use: `number`
-  (default `36`), `function` (default `32`) and `script` (default `2`), the
-  style added on top of every colour inside an argument a mode server
-  coloured. See the README's "Colours" section for the colour words.
+  `string`, `variable`, `operator`, `comment`, `suggestion` and `error`;
+  `separator`, for bash's `|` and `|&` in a pipeline and a `;` that ends a
+  command and for a mode server's separators, drawn with the `operator`
+  colour when it is not set; and three that only
+  [command modes](#command-modes) use: `number` (default `36`), `function`
+  (default `32`) and `script` (default `2`), the style added on top of
+  every colour inside an argument a mode server coloured. See the README's
+  "Colours" section for the colour words.
 - `inkline-command-mode-alist` (default `nil`): which commands use which
   [command mode](#command-modes).
 
@@ -460,14 +463,15 @@ README's ["Command modes"](../README.md#command-modes), and
   - `COLORS` gives the mode colours of its own, in the forms
     `inkline-colors` takes: an alist of `(NAME . "VALUE")` pairs or a
     string in `LS_COLORS`'s format, such as `'((command . "bold magenta")
-    (script . "on grey3"))`. The names are the nine kinds a mode server
+    (script . "on grey3"))`. The names are the ten kinds a mode server
     sends (`command`, `keyword`, `option`, `operator`, `string`, `number`,
-    `variable`, `function`, `comment`) and `script`. They are used only
-    inside the arguments of the commands that use the mode, and a name left
-    out uses `inkline-colors`. A value that cannot be read, or any other
-    name, is an error (`inkline-define-mode: WHY`), in the string form too,
-    and nothing changes. Left out or `nil`, the mode has no colours of its
-    own.
+    `variable`, `function`, `comment`, `separator`) and `script`. They are
+    used only inside the arguments of the commands that use the mode, and
+    a name left out uses `inkline-colors`. A `separator` set in neither
+    takes the `operator` colour, found the same way. A value that cannot
+    be read, or any other name, is an error (`inkline-define-mode: WHY`),
+    in the string form too, and nothing changes. Left out or `nil`, the
+    mode has no colours of its own.
   - Defining a mode again with the same `PROGRAM` keeps its running server
     and only changes its colours, from the next draw. A different `PROGRAM`
     replaces the server: the old process is stopped, and a new one starts

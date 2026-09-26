@@ -113,8 +113,11 @@ The server answers on its stdout:
 - Zero or more `:span` lines, in any order. `ARG` is the argument's index.
   `START` and `END` are byte offsets into that argument's `BYTES`, with
   `START < END <= LEN`. `KIND` is one of `command`, `keyword`, `option`,
-  `operator`, `string`, `number`, `variable`, `function` and `comment`;
-  each is drawn with the `inkline-colors` key of the same name.
+  `operator`, `string`, `number`, `variable`, `function`, `comment` and
+  `separator`; each is drawn with the `inkline-colors` key of the same
+  name. `separator` is for a mark between parts, such as the `|` between
+  a pipeline's stages; when the user has not set its colour, it is drawn
+  with the `operator` colour.
 - At most one `:error` line, with `START <= END` and `END <= LEN`. `MESSAGE`
   is the rest of the line after the space that follows `END`: one line of
   text. The space is there even when `MESSAGE` is empty (`:error 1 0 2 `);
@@ -154,7 +157,7 @@ gets. The server answers:
 ```
 :span 1 0 4 command
 :span 1 5 7 variable
-:span 1 8 9 operator
+:span 1 8 9 separator
 :span 1 10 14 command
 :span 1 15 16 number
 :end 1
@@ -177,7 +180,7 @@ and the server answers with an error on bytes 5 to 8, `idd`:
 ```
 :span 1 0 4 command
 :span 1 5 8 variable
-:span 1 9 10 operator
+:span 1 9 10 separator
 :span 1 11 15 command
 :span 1 16 17 number
 :error 1 5 8 unknown column 'idd'
@@ -398,14 +401,14 @@ first line, reading `:cwd` and each `:arg` by its length with `read -N`
 (under `LC_ALL=C`, so that bash counts bytes, not characters), and writing
 the `:span`, `:error` and `:end` lines. Its first argument picks what it
 does, so that it can also break the protocol for tests; `words` is the plain
-case. `indent` also names `indent` and answers `:indent` requests,
-counting the brackets `{`, `(`, `}` and `)`; `dash-indent` does the same,
-but sends `-` for the cursor's line unless it starts with `}` or `)`. Try
-it by hand:
+case, and `separator` is the same but sends `separator` for `|`. `indent`
+also names `indent` and answers `:indent` requests, counting the brackets
+`{`, `(`, `}` and `)`; `dash-indent` does the same, but sends `-` for the
+cursor's line unless it starts with `}` or `)`. Try it by hand:
 
 ```bash
 printf ':request 1\n:cwd 1\n/\n:arg final 4\ncsvm\n:arg final 16\nsort id | head 5\n:done\n' |
-    tests/data/fake-mode-server words
+    tests/data/fake-mode-server separator
 ```
 
 It prints `inkline-mode 1`, the five `:span` lines of the example above,
