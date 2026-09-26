@@ -235,9 +235,19 @@ pub fn heredoc_open(before: &str) -> bool {
 /// Whether a line starting after `before` is inside a quote that `before`
 /// leaves open: `'…'`, `"…"`, `$'…'` or `$"…"`. A backquoted command is code.
 pub fn quote_open(before: &str) -> bool {
-    scan::scan(&format!("{before}\n"))
-        .open_quote
-        .is_some_and(|q| before.as_bytes().get(q) != Some(&b'`'))
+    open_quote(before).is_some()
+}
+
+/// Where the quote that `before` leaves open starts (see `quote_open`): the
+/// byte of its quote mark, the `'` or `"` after the `$` of `$'…'` and
+/// `$"…"`.
+pub fn open_quote(before: &str) -> Option<usize> {
+    let q = scan::scan(&format!("{before}\n")).open_quote?;
+    match before.as_bytes().get(q) {
+        Some(b'`') => None,
+        Some(b'$') => Some(q + 1),
+        _ => Some(q),
+    }
 }
 
 fn walk<'a>(n: Node<'a>, f: &mut impl FnMut(Node<'a>)) {
@@ -847,6 +857,15 @@ fn analyse(tree: &Tree, src: &str, open_brace: bool) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn where_the_open_quote_starts() {
+        assert_eq!(open_quote("csvm \"head"), Some(5));
+        assert_eq!(open_quote("csvm 'a' \"b\n  c"), Some(9));
+        assert_eq!(open_quote("x $'a"), Some(3), "the quote mark after `$`");
+        assert_eq!(open_quote("csvm 'a'"), None);
+        assert_eq!(open_quote("echo `a"), None, "a backquoted command is code");
+    }
 
     #[test]
     fn the_underline_covers_the_whole_word() {

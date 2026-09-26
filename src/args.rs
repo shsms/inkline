@@ -23,6 +23,25 @@ pub struct Arg {
     pub quotes: Vec<usize>,
 }
 
+impl Arg {
+    /// The first byte of the line this argument was typed as: its first
+    /// quote mark or kept byte.
+    pub fn start(&self) -> Option<usize> {
+        self.map
+            .first()
+            .copied()
+            .into_iter()
+            .chain(self.quotes.first().copied())
+            .min()
+    }
+
+    /// Where a cursor at byte `point` of the line is in `text`: the number
+    /// of bytes of `text` typed before `point`.
+    pub fn offset_at(&self, point: usize) -> usize {
+        self.map.partition_point(|&b| b < point)
+    }
+}
+
 /// A `command` node's name and arguments, in the order they were typed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandArgs {
@@ -261,6 +280,17 @@ pub fn commands(tree: &Tree, line: &str, registered: impl Fn(&str) -> bool) -> V
         &mut found,
     );
     found
+}
+
+/// The command in `commands` with an argument that holds the quote mark at
+/// byte `quote` of the line, and that argument's index.
+pub fn with_quote(commands: &[CommandArgs], quote: usize) -> Option<(&CommandArgs, usize)> {
+    commands.iter().find_map(|c| {
+        c.args
+            .iter()
+            .position(|a| a.quotes.contains(&quote))
+            .map(|i| (c, i))
+    })
 }
 
 /// The line `commands` reads, and its characters with their byte offsets,
@@ -734,6 +764,48 @@ mod tests {
 
     fn un(line: &str) -> Arg {
         unquote(line, 0..line.len())
+    }
+
+    /// The `csvm` commands on `line`.
+    fn csvm(line: &str) -> Vec<CommandArgs> {
+        let tree = Lexer::new().tree(line).unwrap();
+        commands(&tree, line, |name| name == "csvm")
+    }
+
+    #[test]
+    fn the_argument_that_holds_a_quote() {
+        let line = "echo 'x' | csvm -e \"head\n  | sort\" 'y'";
+        let found = csvm(line);
+        let (command, index) = with_quote(&found, line.find('"').unwrap()).unwrap();
+        assert_eq!((command.name.as_str(), index), ("csvm", 2));
+        assert_eq!(command.args[0].start(), Some(line.find("csvm").unwrap()));
+        assert!(with_quote(&found, 5).is_none(), "echo's quote");
+        let open = "csvm \"head";
+        assert_eq!(
+            with_quote(&csvm(open), 5).map(|(_, i)| i),
+            Some(1),
+            "still open"
+        );
+    }
+
+    #[test]
+    fn the_offset_counts_the_programs_bytes() {
+        // The program gets `a"é b`: the backslash is not one of its bytes.
+        let line = "csvm \"a\\\"é b\"";
+        let found = csvm(line);
+        let arg = &found[0].args[1];
+        assert_eq!(arg.text, "a\"é b");
+        assert_eq!(arg.offset_at(6), 0, "before `a`");
+        assert_eq!(arg.offset_at(7), 1, "after `a`");
+        assert_eq!(arg.offset_at(8), 1, "between the backslash and its `\"`");
+        assert_eq!(arg.offset_at(9), 2, "after `\\\"`");
+        assert_eq!(arg.offset_at(11), 4, "after `é`, two bytes");
+        assert_eq!(arg.offset_at(13), 6, "at the closing quote: the end");
+        assert_eq!(
+            csvm("'csvm' x")[0].args[0].start(),
+            Some(0),
+            "the quote mark"
+        );
     }
 
     #[test]
