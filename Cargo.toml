@@ -16,7 +16,7 @@ libc = "0.2"
 # holds that file to bash. Update the two crates together and rerun the tests.
 tree-sitter = "=0.27.0"
 tree-sitter-bash = "=0.25.1"
-tulisp = { path = "../tulisp" }
+tulisp = { git = "https://github.com/shsms/tulisp/", rev = "90525ae5156152093e80e2781412fd0b05e0c368" }
 unicode-width = "0.2"
 
 [build-dependencies]

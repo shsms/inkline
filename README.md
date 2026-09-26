@@ -13,9 +13,8 @@ below).
 
 ## Building
 
-Needs a Rust toolchain and a C compiler (for tree-sitter). Until tulisp has
-its own release, it also needs tulisp checked out next to inkline, as
-`../tulisp`.
+Needs a Rust toolchain and a C compiler (for tree-sitter). Until tulisp has its
+own release, cargo fetches it from its git repository, at a fixed revision.
 
 ```sh
 make install    # builds and copies libinkline.so to ~/.local/lib
