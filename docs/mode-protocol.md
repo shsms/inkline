@@ -1,64 +1,66 @@
-# The highlight helper protocol
+# The inkline mode protocol
 
-A highlight helper is a program that tells inkline how to colour the
-arguments of one command. It is usually the command's own program, run in a
-special mode, such as `csvm --highlight`: it parses the arguments with the
-program's own parser, so the colours always match the language. This page is
-for people who write one. See the README's
-["Colouring a program's arguments"](../README.md#colouring-a-programs-arguments)
-for how a user sets one up, and [`docs/lisp.md`](lisp.md#highlight-helpers)
-for `inkline-highlight-arguments`.
+A mode server is a program that supplies a command mode: it tells inkline
+how to colour the arguments of the commands that use the mode, what errors
+they hold, and how far in a new line of a script goes. It is usually the
+command's own program, run in a special mode, such as `csvm --inkline-mode`:
+it parses the arguments with the program's own parser, so the colours always
+match the language. This page is for people who write one. See the README's
+["Command modes"](../README.md#command-modes) for how a user sets one up, and
+[`docs/lisp.md`](lisp.md#command-modes) for `inkline-define-mode` and
+`inkline-command-mode-alist`.
 
 This is version 1 of the protocol. All numbers are decimal ASCII. Lengths
 and offsets count bytes, not characters: `é` is two bytes. Every line ends
 with one newline byte (`\n`), never `\r\n`. Fields on a line are separated by
 single spaces.
 
-## How inkline runs a helper
+## How inkline runs a mode server
 
-- inkline starts the helper the first time a line holds its command, with
-  the program and arguments given to `inkline-highlight-arguments`. A program
-  name without a `/` is looked up in bash's `PATH`. The helper's environment
-  is what bash exports at that moment, as for a program bash runs then.
-- The helper's stdin and stdout are one socket, connected to inkline. Its
+- inkline starts the mode server the first time a line holds a command that
+  uses its mode, with the program and arguments given to
+  `inkline-define-mode`. One server answers for every command that uses its
+  mode. A program name without a `/` is looked up in bash's `PATH`. The
+  server's environment is what bash exports at that moment, as for a
+  program bash runs then.
+- The server's stdin and stdout are one socket, connected to inkline. Its
   stderr is `/dev/null`, so anything it writes there is lost; to debug,
   write to a file of your own.
-- The helper is not bash's child: bash's `jobs` and `wait` never see it. It
+- The server is not bash's child: bash's `jobs` and `wait` never see it. It
   runs in a session of its own, so `C-c` at the prompt does not reach it.
-- The helper keeps running while the shell does, and answers one request
-  after another. When bash exits, or the helper is stopped (`inkline
-  reload`, `enable -d inkline`, the command registered again with another
-  program or its helper removed with `nil`, or the helper turned off for one
-  of the reasons below), inkline closes its end of the socket, and the
-  helper reads the end of its input. There is no signal: the end of input
-  is the only sign to exit. A subshell that bash forked while the helper
-  ran, such as `while :; do sleep 100; done &`, holds a copy of inkline's
-  end, so the helper then sees the end of its input only once that subshell
-  ends too.
-- The helper starts in `/`, so it never keeps a directory in use. Run the
+- The server keeps running while the shell does, and answers one request
+  after another. When bash exits, or the server is stopped (`inkline
+  reload`, `enable -d inkline`, its mode defined again with another program
+  or removed with `nil`, or the server turned off for one of the reasons
+  below), inkline closes its end of the socket, and the server reads the
+  end of its input. There is no signal: the end of input is the only sign
+  to exit. A subshell that bash forked while the server ran, such as
+  `while :; do sleep 100; done &`, holds a copy of inkline's end, so the
+  server then sees the end of its input only once that subshell ends too.
+- The server starts in `/`, so it never keeps a directory in use. Run the
   program's own parser on the text the program would get, and use the
   directory in each request (`:cwd`) to find files: that is the shell's
   directory at the time of the request.
 
 ## The first line
 
-As soon as it starts, the helper writes this line on its stdout:
+As soon as it starts, the server writes this line on its stdout:
 
 ```
-inkline-highlight 1
+inkline-mode 1
 ```
 
-The line may name extra requests the helper can answer, as words after the
-`1`, each after a single space: `inkline-highlight 1 indent`. inkline accepts
-the words, and only ever sends a helper the kinds of request it named.
+The line may name extra requests the server can answer, as words after the
+`1`, each after a single space: `inkline-mode 1 indent`. inkline accepts
+the words, and only ever sends a server the kinds of request it named.
 Version 1 defines one extra request, `indent` (see "Indenting a new line"
-below). A helper that does not answer it sends the line with no words;
+below). A server that does not answer it sends the line with no words;
 inkline ignores words it does not know. Any other first line turns the
-helper off (`not a highlight helper`).
+server off (`not a mode server`).
 
 ## A request
 
-inkline writes a request on the helper's stdin:
+inkline writes a request on the server's stdin:
 
 ```
 :request ID
@@ -70,12 +72,14 @@ BYTES
 :done
 ```
 
-- `ID` counts up from 1, for each helper process. Colour requests and
+- `ID` counts up from 1, for each server process. Colour requests and
   indent requests share the count.
 - `:cwd` gives the shell's current directory (bash's `PWD`); it is empty
   when `PWD` is unset.
 - There is one `:arg` for each word of the command, in order. Argument 0 is
-  the command name.
+  the command's name as typed, after quotes are removed, such as `csvm`,
+  `c` or `./target/debug/csvm`: several commands may use one mode, so a
+  server should not count on one name.
 - `BYTES` is exactly `LEN` bytes, then one newline, which is not part of it.
   The bytes may hold anything, newlines included, so read `LEN` bytes, not a
   line.
@@ -93,12 +97,12 @@ BYTES
 
 Redirections, such as `>out` or `2>&1`, and `VAR=x` words before the command
 name are not arguments. inkline sends a request only when it has none in
-flight to that helper, colour or indent, so a helper never has more than
+flight to that server, colour or indent, so a server never has more than
 one request to answer at a time.
 
 ## A reply
 
-The helper answers on its stdout:
+The server answers on its stdout:
 
 ```
 :span ARG START END KIND
@@ -145,7 +149,7 @@ data.csv
 ```
 
 Argument 1 is `sort id | head 5`, without its quote marks: that is what csvm
-gets. The helper answers:
+gets. The server answers:
 
 ```
 :span 1 0 4 command
@@ -168,7 +172,7 @@ except for `:request 2` and the argument (now 17 bytes):
 sort idd | head 5
 ```
 
-and the helper answers with an error on bytes 5 to 8, `idd`:
+and the server answers with an error on bytes 5 to 8, `idd`:
 
 ```
 :span 1 0 4 command
@@ -189,7 +193,7 @@ is:
 ```
 
 Its offsets count from the first `"`. inkline never paints the quote marks,
-and `$n` keeps bash's own colour, so the helper can colour the rest.
+and `$n` keeps bash's own colour, so the server can colour the rest.
 
 ## What inkline does with a reply
 
@@ -200,32 +204,33 @@ and `$n` keeps bash's own colour, so the helper can colour the rest.
 - Every character of an argument that got at least one span is drawn with
   the `script` style on top (dim, by default), except its quote marks and,
   in a `final` argument, the backslashes bash removes.
-- The error is underlined once the user pauses typing, as a bash syntax
-  error is, and `NAME: MESSAGE` (the command's name, then the message) shows
-  under the line for as long as the underline does. An empty range
-  (`START = END`) underlines the character after it, or the argument's last
-  character when it is at the end. An error with no place, with a range
-  outside the argument, or with `START > END` shows only its message. An
-  error is not shown while the cursor is right at the end of its range
-  (the user is still typing it), inside a `raw` argument (bash will change
-  that text), or when bash sees a syntax error on the line.
+- The error is underlined once the user pauses typing, as a bash syntax error
+  is, and `NAME: MESSAGE` (the command's name as typed, after quotes are
+  removed, then the message) shows under the line for as long as the underline
+  does. An empty range (`START = END`) underlines the character after it, or the
+  argument's last character when it is at the end. An error with no place, with
+  a range outside the argument, or with `START > END` shows only its message. An
+  error is not shown while the cursor is right at the end of its range (the user
+  is still typing it), inside a `raw` argument (bash will change that text), or
+  when bash sees a syntax error on the line.
 - inkline waits at most 15 ms for a reply each time it draws the line. A
   reply that comes later is not a failure: inkline paints it when it comes,
   if the arguments are still on the line.
 - inkline keeps a reply and uses it again, without asking, while the same
-  arguments and directory are on the line. So a change to a file the helper
+  arguments and directory are on the line. So a change to a file the server
   reads, such as a CSV file's header, may show only once the arguments
   change, or on the next line: each new line at the prompt asks again.
 
 ## Indenting a new line (`indent`)
 
-A helper that names `indent` on its first line (`inkline-highlight 1
+A server that names `indent` on its first line (`inkline-mode 1
 indent`) can also say how far in a new line goes inside an argument, such as
 a script. inkline asks it when C-j, or Enter on an unfinished command, adds
-a line with the cursor inside a quoted `final` argument of the helper's
-command, the helper is running, `inkline-indent` is above 0, no text is
-being pasted, and the line is not added from Lisp (by a Lisp command or a
-hook). It never sends this request to a helper that did not name `indent`.
+a line with the cursor inside a quoted `final` argument of a command that
+uses the server's mode, the server is running, `inkline-indent` is above 0,
+no text is being pasted, and the line is not added from Lisp (by a Lisp
+command or a hook). It never sends this request to a server that did not
+name `indent`.
 
 The request:
 
@@ -255,11 +260,11 @@ The reply:
 - `NEW` is the nesting depth of the line that starts at `OFFSET`, the new
   line; `CURRENT` is the depth of the line the cursor is on, the one being
   split. Both are plain decimal numbers; 0 is the argument's top level.
-- A helper that cannot tell, for example because `OFFSET` is not in a part
+- A server that cannot tell, for example because `OFFSET` is not in a part
   it indents, sends only `:end ID`.
 - A `:depth` whose fields are not two plain decimal numbers, or hold a
   number too large to read, a second `:depth`, a line that does not start
-  with `:`, or `:end` with the wrong `ID` turns the helper off
+  with `:`, or `:end` with the wrong `ID` turns the server off
   (`bad reply: "LINE"`). Other lines starting with `:` are ignored.
 
 What inkline does with it, with `step` the value of `inkline-indent` and
@@ -310,7 +315,7 @@ fn f(n) {
 :done
 ```
 
-The helper answers that both lines are inside one group:
+The server answers that both lines are inside one group:
 
 ```
 :depth 1 1
@@ -318,14 +323,14 @@ The helper answers that both lines are inside one group:
 ```
 
 and the new line starts with `(1 + 1) × 2` = 4 spaces. When the user then
-types `}` and presses C-j, the helper answers `:depth 0 0` (the `}` closes
+types `}` and presses C-j, the server answers `:depth 0 0` (the `}` closes
 the group), so the `}` line moves out to 2 spaces, and the new line starts
 there too.
 
 ## What inkline ignores
 
 So that later versions can add to a reply, inkline ignores, without turning
-the helper off:
+the server off:
 
 - a `:span` with a `KIND` it does not know;
 - a `:span` that overlaps a span kept before it in the same argument;
@@ -334,34 +339,34 @@ the helper off:
 - any other line starting with `:` whose keyword it does not know, such as
   `:hint something`.
 
-## What turns a helper off
+## What turns a mode server off
 
-A helper that fails is turned off until the user registers it again or runs
-`inkline reload`. The user sees `inkline: highlight NAME: off (REASON)` under
-the line once they pause typing, and `inkline status` shows `highlight NAME:
-off (REASON)`. The reasons:
+A mode server that fails is turned off until the user defines its mode again
+or runs `inkline reload`. The user sees `inkline: mode MODE: off (REASON)`
+under the line once they pause typing, and `inkline status` shows `mode MODE
+(COMMANDS): off (REASON)`. The reasons:
 
 - `not found`: the program is not on bash's `PATH`, or does not exist.
 - `cannot run: …`: the program exists but cannot be started, with the
   system's reason.
-- `not a highlight helper`: its first line is not `inkline-highlight 1`,
-  alone or followed by words.
+- `not a mode server`: its first line is not `inkline-mode 1`, alone or
+  followed by words.
 - `bad reply: "LINE"`: this line of the reply, cut to 40 bytes, breaks the
   protocol. That is a line that does not start with `:` (an empty line
   too); `:span`, `:error`, `:depth` or `:end` with fields that do not
   parse; a second `:error` or `:depth` in one reply; or `:end` with the
   wrong `ID`.
-- `bad reply: too much output`: the helper wrote more than 1 MiB without
+- `bad reply: too much output`: the server wrote more than 1 MiB without
   finishing its first line or a reply.
-- `bad reply: request not read`: the helper stopped reading its input, and
+- `bad reply: request not read`: the server stopped reading its input, and
   a request could not be written within a second.
-- `exited`: the helper exited, or closed its end of the socket.
+- `exited`: the server exited, or closed its end of the socket.
 - `connection lost`: a command in the shell closed inkline's end of the
   socket. inkline keeps it on the highest free descriptor below 256 (or
   below the limit on open files, when that is lower), where bash keeps its
   own.
 
-## The rules a helper must keep
+## The rules a mode server must keep
 
 - Write the first line as soon as it starts, before reading anything.
 - Answer every request, `:indent` ones too, in order, with exactly one
@@ -372,28 +377,29 @@ off (REASON)`. The reasons:
 - Write nothing else: no text before the first line or between replies.
 - Keep reading requests: never stop reading stdin while the shell runs.
 - Exit when stdin ends.
-- Never write to the terminal, and never read from it. The helper has no
+- Never write to the terminal, and never read from it. The server has no
   terminal to use.
 
 ## A working example
 
-[`tests/data/fake-highlight`](../tests/data/fake-highlight) is the small
-bash helper that inkline's own tests use. It shows the whole loop: the first
-line, reading `:cwd` and each `:arg` by its length with `read -N` (under
-`LC_ALL=C`, so that bash counts bytes, not characters), and writing the
-`:span`, `:error` and `:end` lines. Its first argument picks what it does,
-so that it can also break the protocol for tests; `words` is the plain
+[`tests/data/fake-mode-server`](../tests/data/fake-mode-server) is the small
+bash mode server that inkline's own tests use. It shows the whole loop: the
+first line, reading `:cwd` and each `:arg` by its length with `read -N`
+(under `LC_ALL=C`, so that bash counts bytes, not characters), and writing
+the `:span`, `:error` and `:end` lines. Its first argument picks what it
+does, so that it can also break the protocol for tests; `words` is the plain
 case. `indent` also names `indent` and answers `:indent` requests, counting
 the brackets `{`, `(`, `}` and `)`. Try it by hand:
 
 ```bash
 printf ':request 1\n:cwd 1\n/\n:arg final 4\ncsvm\n:arg final 16\nsort id | head 5\n:done\n' |
-    tests/data/fake-highlight words
+    tests/data/fake-mode-server words
 ```
 
-It prints `inkline-highlight 1`, the five `:span` lines of the example above,
-and `:end 1`. To use it in a shell, register it in `init.el`:
+It prints `inkline-mode 1`, the five `:span` lines of the example above,
+and `:end 1`. To use it in a shell, define a mode for it in `init.el`:
 
 ```elisp
-(inkline-highlight-arguments "csvm" '("/path/to/inkline/tests/data/fake-highlight" "words"))
+(inkline-define-mode 'fake-mode '("/path/to/inkline/tests/data/fake-mode-server" "words"))
+(push '("csvm" . fake-mode) inkline-command-mode-alist)
 ```

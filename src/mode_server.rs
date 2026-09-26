@@ -1,6 +1,6 @@
 //! Command modes and the mode servers that supply them: the modes Lisp
 //! defined, their servers' processes, and the protocol inkline speaks with
-//! them (docs/highlight-protocol.md).
+//! them (docs/mode-protocol.md).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

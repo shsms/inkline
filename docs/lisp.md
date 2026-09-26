@@ -12,10 +12,10 @@ Set with `setq` in `init.el`; read again each time they are used, so a
 change takes effect on the next key.
 
 - `inkline-indent` (default `4`): spaces per indentation step, an integer
-  from 0 to 16, for bash code and inside the script of any command that has
-  a [highlight helper](#highlight-helpers), whether or not the helper can
-  indent; `0` turns off both indenting new lines and moving closing words
-  back out.
+  from 0 to 16, for bash code and inside the script of any command that
+  uses a [command mode](#command-modes), whether or not its mode server
+  can indent; `0` turns off both indenting new lines and moving closing
+  words back out.
 - `inkline-suggestion-lines` (default `5`): the most lines of a multi-line
   suggestion to show, an integer of at least 1.
 - `inkline-history-cursor` (default `start`): the symbol `start` or `end`,
@@ -26,10 +26,12 @@ change takes effect on the next key.
   value is SGR codes or colour words, such as `"bold magenta"` or
   `"on grey4"`. The names are `command`, `unknown`, `keyword`, `option`,
   `string`, `variable`, `operator`, `comment`, `suggestion` and `error`, and
-  three that only [highlight helpers](#highlight-helpers) use: `number`
+  three that only [command modes](#command-modes) use: `number`
   (default `36`), `function` (default `32`) and `script` (default `2`), the
-  style added on top of every colour inside an argument a helper coloured.
-  See the README's "Colours" section for the colour words.
+  style added on top of every colour inside an argument a mode server
+  coloured. See the README's "Colours" section for the colour words.
+- `inkline-command-mode-alist` (default `nil`): which commands use which
+  [command mode](#command-modes).
 
 ## Keys
 
@@ -324,7 +326,7 @@ functions.
   `print`, `princ`, `prin1`, `ding`, `kill-region`, `copy-region-as-kill`,
   `delete-char` with `KILLFLAG`, `keymap-global-set`, `keymap-global-unset`,
   `inkline-unbind-defaults`, `inkline-set-readline-variable` and
-  `inkline-highlight-arguments`.
+  `inkline-define-mode`.
 - A function that fails, also with `user-error`, is removed from the hook.
   `inkline: NAME: TEXT (removed from inkline-suggestion-functions)` shows under
   the line. After a `quit`, no later function is asked, and that text of the
@@ -439,46 +441,74 @@ the line is read-only: see [Hooks](#hooks). When the line being edited is
 not valid UTF-8 (text in another encoding was typed or pasted), every
 function above raises "the line is not UTF-8" and changes nothing.
 
-## Highlight helpers
+## Command modes
 
-A highlight helper is a program that tells inkline how to colour the
-arguments of one command, such as the script in `csvm 'sort id' data.csv`.
-See the README's
-["Colouring a program's arguments"](../README.md#colouring-a-programs-arguments),
-and [`docs/highlight-protocol.md`](highlight-protocol.md) for writing one.
+A command mode gives the arguments of the commands that use it their own
+colours, indentation and error checks, such as for the script in `csvm 'sort
+id' data.csv`. Its mode server is the program that supplies them. See the
+README's ["Command modes"](../README.md#command-modes), and
+[`docs/mode-protocol.md`](mode-protocol.md) for writing a mode server.
 
-- `(inkline-highlight-arguments NAME PROGRAM &optional COLORS)` — makes
-  `PROGRAM` the helper for the command `NAME`, a string. `PROGRAM` is a list
-  of non-empty strings: the program, then its arguments, such as `'("csvm"
-  "--highlight")`. A program name without a `/` is looked up in bash's
-  `PATH` when the helper starts; `~` and variables in `PROGRAM` are not
-  expanded. Returns `nil`. A `NAME` that is not a string, or a `PROGRAM`
-  that is neither such a list nor `nil`, is a `wrong-type-argument` error.
-  - `COLORS` gives the command colours of its own, in the forms
+- `(inkline-define-mode NAME PROGRAM &optional COLORS)` — defines the mode
+  `NAME`, a symbol other than `nil` and `t`, with `PROGRAM` as its mode
+  server. `PROGRAM` is a list of non-empty strings: the program, then its
+  arguments, such as `'("csvm" "--inkline-mode")`. A program name without a
+  `/` is looked up in bash's `PATH` when the server starts; `~` and
+  variables in `PROGRAM` are not expanded. Returns `nil`. A `NAME` that is
+  not such a symbol, or a `PROGRAM` that is neither such a list nor `nil`,
+  is a `wrong-type-argument` error.
+  - `COLORS` gives the mode colours of its own, in the forms
     `inkline-colors` takes: an alist of `(NAME . "VALUE")` pairs or a
     string in `LS_COLORS`'s format, such as `'((command . "bold magenta")
-    (script . "on grey3"))`. The names are the nine kinds a helper sends
-    (`command`, `keyword`, `option`, `operator`, `string`, `number`,
+    (script . "on grey3"))`. The names are the nine kinds a mode server
+    sends (`command`, `keyword`, `option`, `operator`, `string`, `number`,
     `variable`, `function`, `comment`) and `script`. They are used only
-    inside that command's arguments, and a name left out uses
-    `inkline-colors`. A value that cannot be read, or any other name, is an
-    error (`inkline-highlight-arguments: WHY`), in the string form too, and
-    nothing changes. Left out or `nil`, the command has no colours of its
+    inside the arguments of the commands that use the mode, and a name left
+    out uses `inkline-colors`. A value that cannot be read, or any other
+    name, is an error (`inkline-define-mode: WHY`), in the string form too,
+    and nothing changes. Left out or `nil`, the mode has no colours of its
     own.
-  - `NAME` matches a command word that is exactly `NAME` once its quotes
-    are removed. An alias is not expanded: `alias c=csvm` needs
-    `(inkline-highlight-arguments "c" …)` too.
-  - Registering a `NAME` again with the same `PROGRAM` keeps its running
-    helper and only changes its colours, from the next draw. A different
-    `PROGRAM` replaces the helper: the old process is stopped, and a new one
-    starts the next time a line holds the command. Registering again, with
-    any `PROGRAM`, turns back on a helper that failed. To restart a running
-    helper, remove it, then register it again.
-  - `(inkline-highlight-arguments NAME nil)` removes the helper for `NAME`.
-  - `inkline reload` stops every helper and forgets them; `init.el` then
-    registers them again.
+  - Defining a mode again with the same `PROGRAM` keeps its running server
+    and only changes its colours, from the next draw. A different `PROGRAM`
+    replaces the server: the old process is stopped, and a new one starts
+    the next time a line holds a command that uses the mode. Defining again,
+    with any `PROGRAM`, turns back on a server that failed. To restart a
+    running server, remove the mode, then define it again.
+  - `(inkline-define-mode NAME nil)` removes the mode.
+  - `inkline reload` forgets every mode and stops their servers; `init.el`
+    then defines them again.
   - Not allowed in `inkline-suggestion-functions` (see
     [Hooks](#inkline-suggestion-functions)).
+- `inkline-command-mode-alist` (default `nil`) — which commands use which
+  mode: a list of `("COMMAND" . MODE)` pairs, `COMMAND` a string and `MODE`
+  a symbol, such as `'(("csvm" . csvm-mode) ("c" . csvm-mode))`.
+  - A command uses the first pair whose `COMMAND` is its name as typed,
+    after quotes are removed, or the part of that name after its last `/`.
+    So `"csvm"` covers `csvm`, `'csvm'`, `./target/debug/csvm` and
+    `/usr/local/bin/csvm`, and a pair for `"./target/debug/csvm"` covers
+    only that exact name. A name that bash will still change, such as
+    `$prog`, uses no mode, and an empty `COMMAND` matches nothing. An alias
+    is not expanded: `alias c=csvm` needs `("c" . csvm-mode)` too.
+  - A pair whose `MODE` is not defined is skipped, so a later pair for the
+    same command can match. So the variable may be set before the modes
+    are defined.
+  - `inkline status` lists each mode with the commands that use it, and
+    each pair that never takes effect: one whose `MODE` is not defined
+    (`command c: no mode named cvsm-mode`), one whose command an earlier
+    pair already gives another mode (`command c: uses a-mode, not
+    b-mode`), and one with an empty `COMMAND` (`command "": matches
+    nothing`).
+  - Several commands may use one mode: they share its one server and its
+    colours.
+  - It is read each time the line is drawn, like `inkline-colors`: a `setq`
+    or `push` takes effect from the next draw. `add-to-list` skips a pair
+    already in the list, since it compares with `member`, as in
+    `(add-to-list 'inkline-command-mode-alist '("c" . csvm-mode))`; `push`
+    works too, but adds its pair again each time it runs.
+  - A value that is not a list of such pairs (a string `COMMAND` and a
+    symbol `MODE` other than `nil` and `t`) is reported once
+    (`inkline-command-mode-alist: expected a list of ("COMMAND" . MODE)
+    pairs`), and no command uses a mode until the value changes.
 
 ## Other functions
 

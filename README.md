@@ -245,10 +245,10 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
 - **Syntax errors.** A command bash would reject is underlined in wavy red
   when you pause typing, on the word bash would complain about. The word you
   are typing is never underlined.
-- **Program arguments.** A program can colour its own arguments, such as the
+- **Command modes.** A program can colour its own arguments, such as the
   script in `csvm 'sort id | head 5' data.csv`, underline its own errors in
-  them, and say how far in a new line of a script goes; see "Colouring a
-  program's arguments" below.
+  them, and say how far in a new line of a script goes; see "Command modes"
+  below.
 
 While the terminal's echo is off, as in `read -e -s`, inkline leaves the line to
 readline: no colours, no suggestion and no pairing.
@@ -259,22 +259,31 @@ show a single frame per key. Terminals without it ignore the markers, and there
 the grey text and new characters can flicker briefly as readline and inkline
 draw in turn.
 
-## Colouring a program's arguments
+## Command modes
+
+A **command mode** gives the arguments of the commands that use it their own
+colours, indentation and error checks, like an Emacs major mode. A **mode
+server** is the program that supplies it, such as `csvm --inkline-mode`.
+inkline and the mode server talk over the **inkline mode protocol**
+([`docs/mode-protocol.md`](docs/mode-protocol.md)).
 
 Some programs take a small language as an argument, such as the script in
-`csvm 'select amount > 1000 | sort id' data.csv`. inkline can ask the
-program itself how to colour it. The program must come with a highlight
-helper: a mode that answers inkline's questions, such as `csvm
---highlight`. Name the command and its helper in `init.el`:
+`csvm 'select amount > 1000 | sort id' data.csv`. A mode lets inkline ask the
+program itself about it. Define the mode, and say which commands use it, in
+`init.el`:
 
 ```elisp
 ;; ~/.config/inkline/init.el
-(inkline-define-mode 'csvm-mode '("csvm" "--highlight"))
-(setq inkline-command-mode-alist '(("csvm" . csvm-mode)))
+(inkline-define-mode 'csvm-mode '("csvm" "--inkline-mode")
+  '((command . "bold magenta") (script . "on grey3")))
+
+(setq inkline-command-mode-alist
+      '(("csvm" . csvm-mode)
+        ("c"    . csvm-mode)))
 ```
 
-Then, wherever a `csvm` command is on the line (in a pipeline, after `&&`,
-inside `$( … )`, on any line of a multi-line command):
+Then, wherever a `csvm` or `c` command is on the line (in a pipeline, after
+`&&`, inside `$( … )`, on any line of a multi-line command):
 
 - The parts of the script get colours, as the program's own parser sees
   them: its commands, operators, numbers, column names and so on.
@@ -284,12 +293,14 @@ inside `$( … )`, on any line of a multi-line command):
   keeps bash's colour.
 - An error the program finds, such as a mistyped command or an unknown
   column, is underlined like a syntax error when you pause typing, and
-  `csvm: MESSAGE` shows under the line for as long as the underline does. An
-  error with no place in the arguments shows only its message. The word you
-  are typing is never underlined. There is no error in an argument that
-  bash will still change, such as one with a `$x`, a `*` or a leading `~`,
-  and no error when bash sees a syntax error on the line: then bash's error
-  is underlined instead.
+  `csvm: MESSAGE` (the command's name as typed, after quotes are removed,
+  such as `c:` for `c`) shows under the line for as long as the underline
+  does. An error with no place
+  in the arguments shows only its message. The word you are typing is
+  never underlined. There is no error in an argument that bash will still
+  change, such as one with a `$x`, a `*` or a leading `~`, and no error
+  when bash sees a syntax error on the line: then bash's error is
+  underlined instead.
 
 The `script` colour key sets the style added on top of every colour inside
 such a script. It is dim (`2`) by default; a background colour is the other
@@ -300,41 +311,41 @@ look:
 (setq inkline-colors '((script . "on grey4")))   ; a dark grey background
 ```
 
-`(script . "")` turns it off. The helper's colours use the usual keys, and
+`(script . "")` turns it off. The mode server's colours use the usual keys, and
 `number` and `function` (see "Colours" below).
 
-A third argument to `inkline-highlight-arguments` gives the command colours
-of its own, in the forms `inkline-colors` takes. They are used only inside
-that command's arguments, for the nine kinds a helper sends (`command`,
-`keyword`, `option`, `operator`, `string`, `number`, `variable`, `function`
-and `comment`) and for `script`; a name they leave out uses
-`inkline-colors`. Bash's own colours inside the script, such as the colour
-of a `$min`, of the quote marks and of the error underline, stay as
-`inkline-colors` sets them.
+The third argument to `inkline-define-mode` gives the mode colours of its
+own, in the forms `inkline-colors` takes. They are used only inside the
+arguments of the commands that use the mode, for the nine kinds a mode
+server sends (`command`, `keyword`, `option`, `operator`, `string`,
+`number`, `variable`, `function` and `comment`) and for `script`; a name
+they leave out uses `inkline-colors`. Bash's own colours inside the script,
+such as the colour of a `$min`, of the quote marks and of the error
+underline, stay as `inkline-colors` sets them.
 
 ```elisp
 ;; ~/.config/inkline/init.el
-(inkline-define-mode 'csvm-mode '("csvm" "--highlight")
+(inkline-define-mode 'csvm-mode '("csvm" "--inkline-mode")
   '((command . "bold magenta") (variable . "cyan") (number . "yellow")
     (script . "on grey3")))
 ```
 
 A bad colour, or a name other than those ten, is an error, and nothing
-changes. Registering the command again with the same program keeps its
-helper running and only changes the colours, from the next draw; leaving the
+changes. Defining the mode again with the same program keeps its mode
+server running and only changes the colours, from the next draw; leaving the
 third argument out drops them.
 
-A helper can also say how far in a new line of the script goes. With one
-that does (it names `indent` on its first line, see
-[`docs/highlight-protocol.md`](docs/highlight-protocol.md#indenting-a-new-line-indent)),
+A mode server can also say how far in a new line of the script goes. With
+one that does (it names `indent` on its first line, see
+[`docs/mode-protocol.md`](docs/mode-protocol.md#indenting-a-new-line-indent)),
 C-j inside the script indents the new line the way the program's language
 nests. With pairing on, as in the default layout, the closing quote is
 already there, so Enter runs a finished command even with the cursor inside
 the script: press C-j to add a line there. Enter adds a line inside a script
 only when the command is unfinished, such as while the quote is still open
 (with pairing off, for example), and indents it the same way. With `(setq
-inkline-indent 2)` and a `csvm` helper that indents, a script can look like
-this:
+inkline-indent 2)` and a `csvm` mode server that indents, a script can look
+like this:
 
 ```
 csvm "head
@@ -352,12 +363,12 @@ never pushed further in, and the line the script starts on is never moved.
 The spaces and tabs around the cursor go here too, even though the script is
 a string. One undo (`C-_`) takes it all back.
 
-C-j between an empty pair of quotes of a command that has a helper, as
+C-j between an empty pair of quotes of a command that uses a mode, as
 pairing leaves them after `csvm "`, opens the pair. The new line goes one
 step further in than the line the command's name is on, and the closing
 quote goes on a line of its own below it, as far in as that line. On a screen
 with room for only one more line, the quote stays after the cursor instead.
-This needs no answer from the helper, so it works with one that cannot
+This needs no answer from the mode server, so it works with one that cannot
 indent too:
 
 ```
@@ -367,66 +378,93 @@ csvm "
 " data.csv
 ```
 
-inkline waits at most 100 ms for the helper's answer; C-c stops the wait and
-drops the line, as C-c always does. When no answer comes in time, when the
-helper cannot indent or cannot tell, or in a script that bash will still
-change (such as a double-quoted one with a `$x`), nothing moves out, and the
-new line gets the indentation of the line the cursor is on; on the line the
-script starts on, it goes one step in. Nothing is indented, and the quotes
-are not opened, while pasting or with `inkline-indent` 0.
+inkline waits at most 100 ms for the mode server's answer; C-c stops the
+wait and drops the line, as C-c always does. When no answer comes in time,
+when the mode server cannot indent or cannot tell, or in a script that bash
+will still change (such as a double-quoted one with a `$x`), nothing moves
+out, and the new line gets the indentation of the line the cursor is on; on
+the line the script starts on, it goes one step in. Nothing is indented, and
+the quotes are not opened, while pasting or with `inkline-indent` 0.
 
-The command is found by its name as typed, after quotes are removed, so
-`'csvm'` matches too. Its arguments are its words as bash will pass them to
-the program: a redirection such as `2>err` and `VAR=x` words before the name
-are left out, and words after a redirection still count. An alias is not
-expanded, so it needs its own line: after `alias c=csvm`, add
-`(inkline-highlight-arguments "c" '("csvm" "--highlight"))`.
+`inkline-command-mode-alist` holds `("COMMAND" . MODE)` pairs. A command
+uses the first pair whose `COMMAND` is its name as typed, after quotes are
+removed (so `'csvm'` matches too), or the part of that name after its last
+`/`: `"csvm"` covers `csvm`, `./target/debug/csvm` and
+`/usr/local/bin/csvm`, and a pair for `"./target/debug/csvm"` covers only
+that exact name. A name that bash will still change, such as `$prog`, uses
+no mode. An alias is not expanded, so it needs a pair of its own, as `c`
+has above. Several commands can use one mode: they share its one mode
+server and its colours.
 
-inkline starts the helper the first time a line holds the command, and
-finds its program through bash's `PATH`. The helper then runs in the
-background until the shell exits. inkline waits at most 15 ms for its answer
-each time it draws the line; an answer that comes later is drawn as soon as
-it comes, or, while readline asks a question (such as whether to show every
-completion), once you have answered. `inkline status` shows one line for
-each helper:
+The variable is read each time the line is drawn, so a change takes effect
+from the next draw, without `inkline reload`. `add-to-list` skips a pair
+already in the list, since it compares with `member`:
+
+```elisp
+(add-to-list 'inkline-command-mode-alist '("csvm2" . csvm-mode))
+```
+
+`push` works too, but adds its pair again each time it runs.
+
+A pair may name a mode that is not defined yet: it is skipped until the mode
+is defined, and `inkline status` shows it. A value that is not a list of
+such pairs is reported once, as a bad `inkline-colors` is, and no command
+uses a mode until the value changes.
+
+A command's arguments are its words as bash will pass them to the program:
+a redirection such as `2>err` and `VAR=x` words before the name are left
+out, and words after a redirection still count.
+
+inkline starts a mode's server the first time a line holds a command that
+uses the mode, and finds its program through bash's `PATH`. The server then
+runs in the background until the shell exits. inkline waits at most 15 ms
+for its answer each time it draws the line; an answer that comes later is
+drawn as soon as it comes, or, while readline asks a question (such as
+whether to show every completion), once you have answered. `inkline status`
+shows one line for each mode, in the order the modes were first defined
+(defining a mode again keeps its place; removing it and defining it again
+puts it last), with the commands that use it:
 
 ```
-highlight csvm: running
+mode csvm-mode (csvm, c): running
 ```
 
-or `highlight csvm: not started`, or `highlight csvm: off (REASON)`. A
-helper that fails is turned off, and `inkline: highlight csvm: off (REASON)`
-shows under the line when you pause typing. The reason is `not found`,
-`cannot run: …`, `not a highlight helper` (the program did not answer as a
-helper), `bad reply: …` (it broke the protocol, or wrote too much),
-`exited`, or `connection lost` (a command in the shell closed inkline's end
-of the connection). It stays off until it is registered again or you run
-`inkline reload`. `inkline reload` stops every helper; `init.el` registers
-them again.
+or `not started`, or `off (REASON)`; then one line for each pair that never
+takes effect: `command c: no mode named cvsm-mode` when a pair's mode name is
+mistyped, `command /usr/bin/csvm: uses csvm-mode, not other-mode` when an
+earlier pair (here the one for `csvm`) already gives the command another mode,
+and `command "": matches nothing` for an empty `COMMAND`. A mode server that
+fails is turned off, and `inkline: mode csvm-mode: off (REASON)` shows under the
+line when you pause typing. The reason is `not found`, `cannot run: …`, `not a
+mode server` (the program did not answer as a mode server), `bad reply: …` (it
+broke the protocol, or wrote too much), `exited`, or `connection lost` (a
+command in the shell closed inkline's end of the connection). It stays off until
+its mode is defined again or you run `inkline reload`. `inkline reload` forgets
+every mode and stops their servers; `init.el` defines them again.
 
-Helpers run only at bash's main prompt, including every line of a
+Mode servers run only at bash's main prompt, including every line of a
 multi-line command. They do not run at bash's own `>` prompt (`PS2`, where
 bash asks for the rest of an unfinished command), in `read -e`, or while
 inkline is off.
 
-inkline talks to each running helper over a socket, and keeps its end on a
-high file descriptor: the highest free one below 256, where bash keeps its
-own. So each running helper takes one such descriptor, and the ones you
+inkline talks to each running mode server over a socket, and keeps its end
+on a high file descriptor: the highest free one below 256, where bash keeps
+its own. So each running server takes one such descriptor, and the ones you
 redirect, such as `exec 3>file` or `exec 10>file`, stay yours.
 
 Two limits:
 
 - A command that has a `case` or a heredoc (`<<`) inside a `$( … )`, `<( … )`
   or `>( … )` in its arguments, or that is itself inside backquotes (`` `…`
-  ``), gets no colours from its helper: inkline cannot tell for sure where
+  ``), gets nothing from its mode: inkline cannot tell for sure where
   its words end, or what bash will make of them.
-- A subshell that bash forks while a helper runs, such as `while :; do sleep
-  100; done &`, keeps the helper's connection open. A helper stopped by
-  `inkline reload` or by registering the command again with another program
+- A subshell that bash forks while a mode server runs, such as `while :; do
+  sleep 100; done &`, keeps the server's connection open. A server stopped
+  by `inkline reload` or by defining its mode again with another program
   keeps running until that subshell ends.
 
-To write a helper for your own program, see
-[`docs/highlight-protocol.md`](docs/highlight-protocol.md).
+To write a mode server for your own program, see
+[`docs/mode-protocol.md`](docs/mode-protocol.md).
 
 ## Colours
 
@@ -482,11 +520,11 @@ that entry.
                         (script . "on grey3")))
 ```
 
-`number`, `function` and `script` are used only by highlight helpers (see
-"Colouring a program's arguments"). `number` and `function` are colours a
-helper can give parts of an argument. `script` is added on top of every
-colour inside an argument a helper coloured: dim (`2`) by default, or a
-background such as `on grey4`.
+`number`, `function` and `script` are used only by command modes (see
+"Command modes"). `number` and `function` are colours a mode server can
+give parts of an argument. `script` is added on top of every colour inside
+an argument a mode server coloured: dim (`2`) by default, or a background
+such as `on grey4`.
 
 `error` sets the syntax-error underline. By default it is a plain underline
 (`4`) followed by a wavy red one (`4:3`, then `58:5:1`), so terminals that do
@@ -502,15 +540,16 @@ out of range is reported once, and the default is used until the value
 changes.
 
 - `inkline-indent`: spaces per indentation step, an integer from 0 to 16, 4
-  by default, for bash code and inside a program's script (see "Colouring a
-  program's arguments"); `0` turns off both indenting new lines and moving
-  closing words back out, and a closer put on its own line keeps its line's
-  indentation.
+  by default, for bash code and inside a program's script (see "Command
+  modes"); `0` turns off both indenting new lines and moving closing words
+  back out, and a closer put on its own line keeps its line's indentation.
 - `inkline-history-cursor`: where `previous-line-or-history` leaves the
   cursor in a multi-line entry it recalls: the symbol `start` (the default)
   or `end`, where readline puts it.
 - `inkline-suggestion-lines`: the most lines of a multi-line suggestion to
   show, an integer of at least 1, 5 by default.
+- `inkline-command-mode-alist`: which commands use which command mode (see
+  "Command modes").
 
 See [`docs/lisp.md`](docs/lisp.md) for every setting, function and command
 inkline adds to Lisp.
@@ -546,17 +585,18 @@ entry of its own, so a commented block comes back one line at a time.
 - `inkline status`: two lines — whether inkline is on, then `init.el`'s
   status: loaded, not found, skipped (with why), failed (with the error), or
   not read (because the shell is not interactive with line editing on, or
-  has no usable `HOME`); then one line for each highlight helper (see
-  "Colouring a program's arguments").
+  has no usable `HOME`); then one line for each command mode, and one line
+  per pair of `inkline-command-mode-alist` that never takes effect (see
+  "Command modes").
 - `inkline load FILE`: read and run a file of Lisp. An error is printed to
   stderr and the command exits 1.
 - `inkline eval EXPR`: run one Lisp expression, given as a single argument;
   prints its value with `prin1` unless the value is `nil`. An error is
   printed to stderr and the command exits 1.
 - `inkline reload`: start a fresh interpreter — unbind the keys inkline or
-  `init.el` bound, stop every highlight helper, bind the default layout
-  again (by the same rules as at load), and read `init.el` again. A `bind`
-  you ran yourself is left alone.
+  `init.el` bound, forget every command mode and stop its server, bind the
+  default layout again (by the same rules as at load), and read `init.el`
+  again. A `bind` you ran yourself is left alone.
   If `init.el` is skipped or has an error, the reason is printed and the
   command exits 1.
 - `inkline keys`: one line for each key inkline has bound and what it runs,
@@ -592,6 +632,17 @@ adds a line. Give back the groups you do not want in `init.el`, for example
 '(multi-line))`. `inkline status` now prints a second line, about
 `init.el`; a script that checks its output should read only the first
 line.
+
+`inkline-highlight-arguments` is gone. Define a mode with
+`inkline-define-mode` and name the commands that use it in
+`inkline-command-mode-alist` (see "Command modes"). A mode server's first
+line must now be `inkline-mode 1`, not `inkline-highlight 1`, and csvm's flag
+for it is `--inkline-mode`, not `--highlight`; an older csvm is turned off.
+The protocol is now described in
+[`docs/mode-protocol.md`](docs/mode-protocol.md). `inkline status` shows
+`mode MODE (COMMANDS): STATE` lines where it showed `highlight NAME: STATE`,
+and a server that is turned off shows `inkline: mode MODE: off (REASON)`
+under the line.
 
 ## Limitations
 

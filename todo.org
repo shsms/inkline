@@ -40,11 +40,11 @@ side could fix it: inkline could send the text inside the quotes with a
 note of what is still expanded, or csvm could parse inside the quotes and
 move each span one byte on (noted in csvm-rs's todo.org too).
 
-** TODO Say when a helper never answers
+** TODO Say when a mode server never answers
 
-A helper that is running but never replies costs up to 15 ms on every
+A mode server that is running but never replies costs up to 15 ms on every
 key and shows no colour, with nothing to say why. Counting unanswered
-requests and showing it in =inkline status= (or turning the helper off
+requests and showing it in =inkline status= (or turning the server off
 after a while) would make this visible.
 
 * Bugs
@@ -53,8 +53,8 @@ after a while) would make this visible.
 
 Keys typed while ~inkline reload~ runs, before the next prompt shows,
 sometimes never reach the next line: they are dropped. It happens
-without highlight helpers too. ~reload_stops_helpers~ in
-~tests/helpers.rs~ waits for the next prompt before it types, to stay
+without mode servers too. ~reload_stops_mode_servers~ in
+~tests/modes.rs~ waits for the next prompt before it types, to stay
 clear of it.
 
 Things to check: which step of the reload drops them (reading
@@ -72,30 +72,30 @@ walks a cap on the depth they go to.
 
 ** TODO A large request can hold up a redraw for a second
 
-inkline writes a request to a helper in one go. When the request is
+inkline writes a request to a mode server in one go. When the request is
 bigger than the socket can hold (about 180 KB for a socket pair on
-Linux), such as a long script pasted as one argument, and the helper
-reads slowly, the redraw waits for the helper to take the rest: up to
-a second per helper (~SEND_WAIT~ in ~src/helper/process.rs~), after
-which the helper is turned off (~request not read~). ~C-c~ ends the
-wait within 20 ms, and turns the helper off too. Instead, keep the
+Linux), such as a long script pasted as one argument, and the server
+reads slowly, the redraw waits for the server to take the rest: up to
+a second per server (~SEND_WAIT~ in ~src/mode_server/process.rs~), after
+which the server is turned off (~request not read~). ~C-c~ ends the
+wait within 20 ms, and turns the server off too. Instead, keep the
 part not sent yet and send the rest on later redraws, or while inkline
 waits for a key, waiting on the socket until it can be written to as
 well.
 
-** TODO A helper's colours cover a =$( … )= inside a raw argument
+** TODO A mode server's colours cover a =$( … )= inside a raw argument
 
-inkline keeps bash's colour on =$var= inside an argument a helper colours,
-but not on =$( … )= or backquotes: the helper's colours go over them. The
-design says every bash expansion keeps bash's colour.
+inkline keeps bash's colour on =$var= inside an argument a mode server
+colours, but not on =$( … )= or backquotes: the server's colours go over
+them. The design says every bash expansion keeps bash's colour.
 
-** TODO Helpers that ignore the end of their input are left running
+** TODO Mode servers that ignore the end of their input are left running
 
-A helper is only told to stop by the end of its input. One that ignores it
-keeps running after =inkline reload=, after registering it again, and
-after bash exits, and they add up.
+A mode server is only told to stop by the end of its input. One that
+ignores it keeps running after =inkline reload=, after its mode is defined
+again, and after bash exits, and they add up.
 
-** TODO A helper script with no =#!= line cannot start
+** TODO A mode server script with no =#!= line cannot start
 
 inkline turns it off with "cannot run", where bash would run it with =sh=.
 
@@ -153,17 +153,17 @@ A hook's value is either one function or a list of them. The check for
 ~inkline--hook-single-p~ and drop the Lisp copy, so the two cannot
 drift apart.
 
-** TODO Tidy the highlight helper code
+** TODO Tidy the mode server code
 
-The line is parsed twice per redraw when a helper is registered (once for
-colours, once to find the commands); =src/helper.rs= has four separate
-paths that read what a helper sent (one of them for indentation); the
-typing-pause step is written twice, in =show_helper_notices= and
+The line is parsed twice per redraw when a mode is defined (once for
+colours, once to find the commands); =src/mode_server.rs= has four separate
+paths that read what a server sent (one of them for indentation); the
+typing-pause step is written twice, in =show_mode_server_notices= and
 =error_to_underline=.
 
-** TODO Keep each command's colour set with its spans
+** TODO Keep each mode's colour set with its spans
 
-A command's colour set is found through range lists that the drawing code
+A mode's colour set is found through range lists that the drawing code
 walks side by side with the spans (=span_sets=, =script_sets=). Putting the
 set's index in the spans themselves would make "these lists line up" part
 of the types.
