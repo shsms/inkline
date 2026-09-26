@@ -5,7 +5,7 @@
 
 use crate::lexer::Kind;
 
-pub const DEFAULT: &str = "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2";
+pub const DEFAULT: &str = "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2";
 
 /// The start of the syntax-error underline: a plain underline first, which
 /// every terminal shows, then a wavy one in red where the terminal supports
@@ -23,6 +23,12 @@ pub struct Colors {
     script: String,
     /// The bytes that start the syntax-error underline; empty when it is off.
     error: String,
+    /// The SGR codes of the menu's rows; empty means no colour.
+    menu: String,
+    /// The SGR codes of the picked row.
+    menu_selected: String,
+    /// The SGR codes of each row's source letter and of the `… N more` row.
+    menu_source: String,
 }
 
 impl Colors {
@@ -33,6 +39,9 @@ impl Colors {
             suggestion: String::new(),
             script: String::new(),
             error: DEFAULT_ERROR.to_owned(),
+            menu: String::new(),
+            menu_selected: String::new(),
+            menu_source: String::new(),
         };
         colors.apply(DEFAULT);
         colors.apply(spec);
@@ -59,14 +68,24 @@ impl Colors {
             if codes.is_empty() {
                 continue;
             }
-            if name == "suggestion" {
-                self.suggestion = codes;
-            } else if name == "script" {
-                self.script = codes;
+            if let Some(field) = self.named(name) {
+                *field = codes;
             } else if let Some(kind) = kind_named(name) {
                 self.kinds[kind as usize] = Some(codes);
             }
         }
+    }
+
+    /// The field of a colour name that is not a token kind or `error`.
+    fn named(&mut self, name: &str) -> Option<&mut String> {
+        Some(match name {
+            "suggestion" => &mut self.suggestion,
+            "script" => &mut self.script,
+            "menu" => &mut self.menu,
+            "menu-selected" => &mut self.menu_selected,
+            "menu-source" => &mut self.menu_source,
+            _ => return None,
+        })
     }
 
     pub fn sgr(&self, kind: Kind) -> &str {
@@ -87,6 +106,18 @@ impl Colors {
 
     pub fn error(&self) -> &str {
         &self.error
+    }
+
+    pub fn menu(&self) -> &str {
+        &self.menu
+    }
+
+    pub fn menu_selected(&self) -> &str {
+        &self.menu_selected
+    }
+
+    pub fn menu_source(&self) -> &str {
+        &self.menu_source
     }
 
     /// These colours with `set`'s on top. A separator the set leaves out
@@ -125,12 +156,15 @@ impl Colors {
                         format!("\x1b[{codes}m")
                     }
                 }
-                "suggestion" => colors.suggestion = codes,
-                "script" => colors.script = codes,
-                _ => match kind_named(name) {
-                    Some(kind) => colors.kinds[kind as usize] = Some(codes),
-                    None => return Err(format!("unknown colour name {name}")),
-                },
+                name => {
+                    if let Some(field) = colors.named(name) {
+                        *field = codes;
+                    } else if let Some(kind) = kind_named(name) {
+                        colors.kinds[kind as usize] = Some(codes);
+                    } else {
+                        return Err(format!("unknown colour name {name}"));
+                    }
+                }
             }
         }
         Ok(colors)
@@ -674,6 +708,29 @@ mod tests {
             ColorSet::parse("command"),
             Err("\"command\" is not NAME=VALUE".to_owned())
         );
+    }
+
+    #[test]
+    fn menu_colours_have_defaults_and_can_be_set() {
+        let c = Colors::default();
+        assert_eq!(
+            (c.menu(), c.menu_selected(), c.menu_source()),
+            ("", "7", "2")
+        );
+        let c = Colors::parse("menu=36:menu-selected=1;7:menu-source=90");
+        assert_eq!(
+            (c.menu(), c.menu_selected(), c.menu_source()),
+            ("36", "1;7", "90")
+        );
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        let c = Colors::from_entries(&pairs(&[("menu", "cyan"), ("menu-selected", "")])).unwrap();
+        assert_eq!((c.menu(), c.menu_selected()), ("36", ""));
+        // A mode's own colours cannot set them.
+        assert!(ColorSet::from_entries(&pairs(&[("menu", "1")])).is_err());
     }
 
     /// The first entry for a name wins, but a later one is checked too.
