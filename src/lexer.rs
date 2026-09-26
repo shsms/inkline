@@ -1,6 +1,8 @@
 //! Labels the pieces of a command line (command words, options, strings, …)
 //! using tree-sitter-bash.
 
+use std::ops::Range;
+
 use tree_sitter::{Node, Parser};
 
 /// What a piece of the line is. The order matters: `colors` indexes a table by
@@ -92,7 +94,7 @@ impl Lexer {
             known: &mut known,
             labels: &mut labels,
         };
-        painter.paint(tree.root_node(), None);
+        painter.paint(tree.root_node(), None, None);
         merge(&labels)
     }
 
@@ -152,13 +154,32 @@ impl Painter<'_> {
     /// the innermost label wins (a `$HOME` inside a string is a variable).
     /// `parent` is the kind of the node's parent; looking it up with
     /// `Node::parent` would search down from the root again.
-    fn paint(&mut self, node: Node, parent: Option<&str>) {
-        if let Some(kind) = self.kind_of(node, parent) {
+    /// `arithmetic` is where the `((…))` of an arithmetic `for` around this
+    /// node is on the line, also while the loop is still being typed and
+    /// parses as an error. It is `None` inside `$(…)`, `` `…` ``, `<(…)` or
+    /// `>(…)`, whose `;`s end commands.
+    fn paint(&mut self, node: Node, parent: Option<&str>, mut arithmetic: Option<Range<usize>>) {
+        let in_arithmetic = arithmetic
+            .as_ref()
+            .is_some_and(|r| r.contains(&node.start_byte()));
+        if let Some(kind) = self.kind_of(node, parent, in_arithmetic) {
             self.labels[node.byte_range()].fill(Some(kind));
         }
         let mut cursor = node.walk();
+        let mut after_for = false;
         for child in node.children(&mut cursor) {
-            self.paint(child, Some(node.kind()));
+            // Any other `((` is two `(` that start subshells.
+            if after_for && child.kind() == "((" {
+                arithmetic = Some(child.start_byte()..brackets_end(self.line, child.end_byte()));
+            }
+            after_for = child.kind() == "for";
+            // A command inside `$(…)`, `` `…` ``, `<(…)` or `>(…)` has its
+            // own `;`s.
+            let inner = match child.kind() {
+                "command_substitution" | "process_substitution" => None,
+                _ => arithmetic.clone(),
+            };
+            self.paint(child, Some(node.kind()), inner);
         }
     }
 
@@ -171,14 +192,14 @@ impl Painter<'_> {
         }
     }
 
-    fn kind_of(&mut self, node: Node, parent: Option<&str>) -> Option<Kind> {
+    fn kind_of(&mut self, node: Node, parent: Option<&str>, in_arithmetic: bool) -> Option<Kind> {
         if !node.is_named() {
             let token = node.kind();
             return if KEYWORDS.contains(&token) {
                 Some(Kind::Keyword)
             } else if DECLARATIONS.contains(&token) {
                 Some(self.command_kind(token))
-            } else if separates_commands(node, parent) {
+            } else if separates_commands(token, parent, in_arithmetic) {
                 Some(Kind::Separator)
             } else if OPERATORS.contains(&token)
                 || (token == ")"
@@ -210,17 +231,49 @@ impl Painter<'_> {
     }
 }
 
-/// Whether `node`, a token whose parent is `parent`, stands between two
-/// commands: a pipeline's `|` or `|&`, or a `;` other than the two inside
-/// an arithmetic `for ((…; …; …))`. A `|` between `case` patterns has a
-/// `case_item` parent.
-fn separates_commands(node: Node, parent: Option<&str>) -> bool {
-    match node.kind() {
-        "|" | "|&" => parent == Some("pipeline"),
-        ";" => {
-            parent != Some("c_style_for_statement")
-                || node.prev_sibling().is_some_and(|n| n.kind() == "))")
+/// Where the `((…))` whose `((` ends at `from` closes on `line`: just after
+/// its `))`, or at the end of the line when it is not closed yet. The
+/// brackets in the text are counted, not the tree's nodes, because an error
+/// parse can split a `))` into two `)` or put it inside another node.
+/// Brackets in quotes or after a backslash do not count.
+fn brackets_end(line: &str, from: usize) -> usize {
+    let mut open = 2;
+    let mut quote = None;
+    let mut escaped = false;
+    for (i, byte) in line.bytes().enumerate().skip(from) {
+        if escaped {
+            escaped = false;
+            continue;
         }
+        // Inside '…' nothing is special; inside "…" only \ and ".
+        match (quote, byte) {
+            (Some(b'\''), b'\'') => quote = None,
+            (Some(b'\''), _) => {}
+            (_, b'\\') => escaped = true,
+            (Some(_), b'"') => quote = None,
+            (Some(_), _) => {}
+            (None, b'\'' | b'"') => quote = Some(byte),
+            (None, b'(') => open += 1,
+            (None, b')') => {
+                open -= 1;
+                if open == 0 {
+                    return i + 1;
+                }
+            }
+            (None, _) => {}
+        }
+    }
+    line.len()
+}
+
+/// Whether `token`, whose parent is `parent`, stands between two commands:
+/// a pipeline's `|` or `|&`, or a `;` other than the two inside an
+/// arithmetic `for ((…; …; …))` (`in_arithmetic`, as for `paint`). A `|`
+/// between `case` patterns has a `case_item` parent.
+fn separates_commands(token: &str, parent: Option<&str>, in_arithmetic: bool) -> bool {
+    match token {
+        "|" | "|&" => parent == Some("pipeline"),
+        ";" => !in_arithmetic,
         _ => false,
     }
 }
@@ -358,6 +411,63 @@ mod tests {
         );
     }
 
+    /// The kinds of the `;`s on `line`, in order.
+    fn semicolons(line: &str) -> Vec<Kind> {
+        labels(line)
+            .into_iter()
+            .filter(|&(_, text)| text == ";")
+            .map(|(kind, _)| kind)
+            .collect()
+    }
+
+    /// Only a `for`'s `((` holds operators. Where an error parse splits its
+    /// `))` or puts part of the loop in another node, the brackets in the
+    /// text still say where it ends.
+    #[test]
+    fn a_semicolon_after_the_brackets_close_is_a_separator() {
+        assert_eq!(
+            semicolons("for ((a; b; c)); d"),
+            [Operator, Operator, Separator]
+        );
+        assert_eq!(
+            semicolons("((echo a; echo b); echo c)"),
+            [Separator, Separator],
+            "`((` as two `(` that start subshells"
+        );
+        assert_eq!(
+            semicolons("for ((i=$(a; b) ; i<3; i++)); do c; d; done"),
+            [
+                Separator, Operator, Operator, Separator, Separator, Separator
+            ],
+            "a command inside the loop's brackets"
+        );
+        assert_eq!(
+            semicolons("for ((i=0; i<\"(\"; i++)); do a; b; done"),
+            [Operator, Operator, Separator, Separator, Separator],
+            "a bracket in quotes"
+        );
+        assert_eq!(
+            semicolons("for ((i=0; i<'('; i++)); do a; done"),
+            [Operator, Operator, Separator, Separator],
+            "a bracket in single quotes"
+        );
+        assert_eq!(
+            semicolons("for ((i=\\(; i<3; i++)); do a; b; done"),
+            [Operator, Operator, Separator, Separator, Separator],
+            "a bracket after a backslash"
+        );
+        assert_eq!(
+            semicolons("for ((i=`a;b` ; i<3; i++)); do c; done"),
+            [Separator, Operator, Operator, Separator, Separator],
+            "a command in backquotes"
+        );
+        assert_eq!(
+            semicolons("for ((i=0;\ni<3; i++)); do a; b; done"),
+            [Operator, Operator, Separator, Separator, Separator],
+            "the `;`s after a loop's `((…))` split over two lines"
+        );
+    }
+
     #[test]
     fn other_marks_between_commands_stay_operators() {
         assert_eq!(
@@ -400,6 +510,37 @@ mod tests {
                 (Separator, ";"),
                 (Keyword, "done"),
             ]
+        );
+        assert_eq!(
+            labels("for ((i=0; i<3"),
+            [
+                (Keyword, "for"),
+                (Variable, "i"),
+                (Operator, ";"),
+                (Operator, "<"),
+            ],
+            "a loop still being typed"
+        );
+        assert_eq!(
+            labels("for ((i=0; i<3; i++))"),
+            [
+                (Keyword, "for"),
+                (Variable, "i"),
+                (Operator, ";"),
+                (Operator, "<"),
+                (Operator, ";"),
+            ],
+            "a loop without its body yet"
+        );
+        assert_eq!(
+            labels("for ((i=(1); i<3"),
+            [
+                (Keyword, "for"),
+                (Variable, "i"),
+                (Operator, ";"),
+                (Operator, "<"),
+            ],
+            "brackets inside the loop's `((…))`"
         );
         assert_eq!(
             labels("echo 'a|b;c' # d; e | f"),
