@@ -292,6 +292,54 @@ impl Menu {
     }
 }
 
+/// Which items a menu shows: `count` items from `first`, and a last row
+/// saying `more` items are not shown (0 for no such row).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Window {
+    pub first: usize,
+    pub count: usize,
+    pub more: usize,
+}
+
+/// The window of a menu of `total` items with `picked` picked, in at most
+/// `rows` rows. With more items than rows, the last row counts the ones not
+/// shown, and the items start at the top until the pick passes the last item
+/// row; the pick then stays on that row. A single row shows the pick (or the
+/// top item) and no count.
+pub fn window(total: usize, picked: Option<usize>, rows: usize) -> Window {
+    if rows == 0 || total == 0 {
+        return Window {
+            first: 0,
+            count: 0,
+            more: 0,
+        };
+    }
+    if total <= rows {
+        return Window {
+            first: 0,
+            count: total,
+            more: 0,
+        };
+    }
+    if rows == 1 {
+        return Window {
+            first: picked.unwrap_or(0),
+            count: 1,
+            more: 0,
+        };
+    }
+    let count = rows - 1;
+    let first = match picked {
+        Some(p) if p >= count => p + 1 - count,
+        _ => 0,
+    };
+    Window {
+        first,
+        count,
+        more: total - count,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,5 +598,27 @@ mod tests {
         assert!(m.is_for("ab", 2));
         assert!(!m.is_for("ab", 1));
         assert!(!m.is_for("abc", 2));
+    }
+
+    #[test]
+    fn the_window_shows_what_fits() {
+        let w = |total, picked, rows| {
+            let w = window(total, picked, rows);
+            (w.first, w.count, w.more)
+        };
+        // Everything fits.
+        assert_eq!(w(3, None, 8), (0, 3, 0));
+        // Too many: the last row counts the rest.
+        assert_eq!(w(10, None, 4), (0, 3, 7));
+        // The pick stays on the last item row once it passes it.
+        assert_eq!(w(10, Some(2), 4), (0, 3, 7));
+        assert_eq!(w(10, Some(5), 4), (3, 3, 7));
+        assert_eq!(w(10, Some(9), 4), (7, 3, 7));
+        // One row: the pick or the top item, no count row.
+        assert_eq!(w(10, None, 1), (0, 1, 0));
+        assert_eq!(w(10, Some(6), 1), (6, 1, 0));
+        // No room, or nothing to show.
+        assert_eq!(w(10, None, 0), (0, 0, 0));
+        assert_eq!(w(0, None, 5), (0, 0, 0));
     }
 }
