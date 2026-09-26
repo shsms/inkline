@@ -4,6 +4,7 @@
 use std::ops::Range;
 
 use crate::args::{Arg, CommandArgs};
+use crate::colors::{ColorSet, Colors};
 use crate::helper::protocol::Reply;
 use crate::lexer::{Kind, Span, merge};
 
@@ -17,9 +18,55 @@ pub struct Painted {
     /// text came from), for the `script` style: sorted, not overlapping,
     /// and never an argument's quote marks.
     pub script: Vec<Range<usize>>,
+    /// The bytes whose kind colour a helper gave, for commands with colours
+    /// of their own, with the index of those colours: sorted, not
+    /// overlapping.
+    pub span_sets: Vec<(Range<usize>, usize)>,
+    /// The bytes of `script` that belong to commands with colours of their
+    /// own, with the index of those colours: sorted, not overlapping.
+    pub script_sets: Vec<(Range<usize>, usize)>,
     /// The error to show: the bytes of the line it points at (`None` when it
     /// has no place there), and `NAME: MESSAGE`.
     pub error: Option<(Option<Range<usize>>, String)>,
+}
+
+/// A command a helper answered for, with the index of its own colours in
+/// the sets `with_sets` returns, if it has any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Answered {
+    pub command: CommandArgs,
+    pub reply: Reply,
+    pub set: Option<usize>,
+}
+
+/// Each of `found` with the index of its command's own colours, and those
+/// colours: one whole `Colors` per command name that has some (`set_of`
+/// gives them by name), `base` (`inkline-colors`) with the name's colours
+/// on top, in line order.
+pub fn with_sets(
+    found: Vec<(CommandArgs, Reply)>,
+    base: &Colors,
+    set_of: impl Fn(&str) -> Option<ColorSet>,
+) -> (Vec<Answered>, Vec<Colors>) {
+    let mut names: Vec<String> = Vec::new();
+    let mut sets: Vec<Colors> = Vec::new();
+    let mut answered = Vec::with_capacity(found.len());
+    for (command, reply) in found {
+        let set = match names.iter().position(|n| *n == command.name) {
+            Some(i) => Some(i),
+            None => set_of(&command.name).map(|own| {
+                names.push(command.name.clone());
+                sets.push(base.layered(&own));
+                sets.len() - 1
+            }),
+        };
+        answered.push(Answered {
+            command,
+            reply,
+            set,
+        });
+    }
+    (answered, sets)
 }
 
 /// Paints `found`, each command with the reply its helper sent for it, in
@@ -30,15 +77,25 @@ pub struct Painted {
 /// stays bash's) and on quote marks, which a `raw` argument's bytes still
 /// hold: a helper never colours those. The error is the first one, in line
 /// order, that is not inside a `raw` argument: bash will change that text
-/// before the program sees it.
-pub fn paint(line_len: usize, bash: &[Span], found: &[(CommandArgs, Reply)]) -> Painted {
+/// before the program sees it. A command with colours of its own has its
+/// bytes noted in `span_sets` and `script_sets`; bash's own colours inside
+/// its arguments are not.
+pub fn paint(line_len: usize, bash: &[Span], found: &[Answered]) -> Painted {
     let mut labels: Vec<Option<Kind>> = vec![None; line_len];
     for span in bash {
         labels[span.start.min(line_len)..span.end.min(line_len)].fill(Some(span.kind));
     }
     let variable: Vec<bool> = labels.iter().map(|l| *l == Some(Kind::Variable)).collect();
     let mut script: Vec<Range<usize>> = Vec::new();
-    for (command, reply) in found {
+    // The colour set each byte's kind colour and script style come from.
+    let mut span_set: Vec<Option<usize>> = vec![None; line_len];
+    let mut script_set: Vec<Option<usize>> = vec![None; line_len];
+    for Answered {
+        command,
+        reply,
+        set,
+    } in found
+    {
         let mut coloured = vec![false; command.args.len()];
         for span in &reply.spans {
             let Some(arg) = command.args.get(span.arg) else {
@@ -51,20 +108,42 @@ pub fn paint(line_len: usize, bash: &[Span], found: &[(CommandArgs, Reply)]) -> 
             for byte in typed_bytes(arg, span.start, span.end) {
                 if byte < line_len && !variable[byte] {
                     labels[byte] = Some(span.kind);
+                    span_set[byte] = *set;
                 }
             }
         }
         for (arg, _) in command.args.iter().zip(coloured).filter(|(_, c)| *c) {
-            script.extend(typed_bytes(arg, 0, arg.text.len()).map(|b| b..b + 1));
+            for byte in typed_bytes(arg, 0, arg.text.len()) {
+                script.push(byte..byte + 1);
+                if byte < line_len {
+                    script_set[byte] = *set;
+                }
+            }
         }
     }
     Painted {
         spans: merge(&labels),
         script: joined(script),
-        error: found
-            .iter()
-            .find_map(|(command, reply)| error(command, reply)),
+        span_sets: runs(&span_set),
+        script_sets: runs(&script_set),
+        error: found.iter().find_map(|a| error(&a.command, &a.reply)),
     }
+}
+
+/// The runs of neighbouring bytes with the same set in `sets`, as sorted
+/// ranges with that set; bytes with none are left out.
+fn runs(sets: &[Option<usize>]) -> Vec<(Range<usize>, usize)> {
+    let mut out: Vec<(Range<usize>, usize)> = Vec::new();
+    for (i, set) in sets.iter().enumerate() {
+        let Some(set) = *set else {
+            continue;
+        };
+        match out.last_mut() {
+            Some((range, last)) if range.end == i && *last == set => range.end = i + 1,
+            _ => out.push((i..i + 1, set)),
+        }
+    }
+    out
 }
 
 /// The error of `reply` to show, with the bytes of the line it points at;
@@ -161,11 +240,20 @@ mod tests {
         })
     }
 
-    /// Paints `line` with one reply per `csvm` command on it.
+    /// Paints `line` with one reply per `csvm` command on it, none with
+    /// colours of its own.
     fn painted(line: &str, replies: Vec<Reply>) -> Painted {
         let (commands, bash) = parse(line);
         assert_eq!(commands.len(), replies.len(), "{line}");
-        let found: Vec<_> = commands.into_iter().zip(replies).collect();
+        let found: Vec<Answered> = commands
+            .into_iter()
+            .zip(replies)
+            .map(|(command, reply)| Answered {
+                command,
+                reply,
+                set: None,
+            })
+            .collect();
         paint(line.len(), &bash, &found)
     }
 
@@ -314,5 +402,50 @@ mod tests {
         // The helper got `a"b`; the error covers `"b`, not the backslash.
         let p = painted(line, vec![reply(vec![], err(Some((1, 1, 3)), "e"))]);
         assert_eq!(p.error, Some((Some(8..10), "csvm: e".to_owned())));
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn a_commands_colour_set_goes_on_its_own_bytes() {
+        let line = r#"csvm "a $x" | csvm 'b'"#;
+        let (commands, bash) = parse(line);
+        // A raw argument: offsets count from its first `"`; `a $x` is 1..5.
+        let found = vec![
+            Answered {
+                command: commands[0].clone(),
+                reply: reply(vec![span(1, 1, 5, Keyword)], None),
+                set: Some(0),
+            },
+            Answered {
+                command: commands[1].clone(),
+                reply: reply(vec![span(1, 0, 1, Number)], None),
+                set: None,
+            },
+        ];
+        let p = paint(line.len(), &bash, &found);
+        assert_eq!(p.span_sets, [(6..8, 0)], "not bash's `$x`");
+        assert_eq!(p.script_sets, [(6..10, 0)], "the whole script, `$x` too");
+        assert_eq!(p.script, [6..10, 20..21]);
+    }
+
+    #[test]
+    fn each_name_with_colours_gets_one_set() {
+        let line = "csvm 'a' | other 'b' | csvm 'c'";
+        let mut lexer = Lexer::new();
+        let tree = lexer.tree(line).unwrap();
+        let commands = args::commands(&tree, line, |n| n == "csvm" || n == "other");
+        let found: Vec<_> = commands
+            .into_iter()
+            .map(|c| (c, reply(vec![], None)))
+            .collect();
+        let own = ColorSet::from_entries(&[("command".to_owned(), "35".to_owned())]).unwrap();
+        let base = Colors::default();
+        let (answered, sets) =
+            with_sets(found, &base, |name| (name == "csvm").then(|| own.clone()));
+        let got: Vec<Option<usize>> = answered.iter().map(|a| a.set).collect();
+        assert_eq!(got, [Some(0), None, Some(0)]);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].sgr(Kind::Command), "35");
+        assert_eq!(sets[0].sgr(Kind::String), base.sgr(Kind::String));
     }
 }

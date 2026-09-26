@@ -5,7 +5,9 @@
 //! same characters readline drew with colours, and restores the cursor.
 
 use std::io::Write;
+use std::iter::Peekable;
 use std::ops::Range;
+use std::slice::Iter;
 
 use unicode_width::UnicodeWidthChar;
 
@@ -31,6 +33,15 @@ pub struct Repaint<'a> {
     /// style added on top of their kind's colour (and alone on uncoloured
     /// bytes).
     pub script: &'a [Range<usize>],
+    /// The colours of commands that have their own (see
+    /// `highlight::with_sets`), each whole: `colors` with the command's on
+    /// top.
+    pub sets: &'a [Colors],
+    /// Sorted, not overlapping byte ranges of `line` whose kind colour
+    /// comes from `sets[i]` in place of `colors`.
+    pub span_sets: &'a [(Range<usize>, usize)],
+    /// The same for the `script` style; each range is inside `script`.
+    pub script_sets: &'a [(Range<usize>, usize)],
     /// Text to show on the row after the line's last row. While it shows,
     /// a suggestion takes one row.
     pub message: Option<&'a str>,
@@ -44,6 +55,26 @@ pub struct Output {
     pub suggestion_col: Option<usize>,
     /// How many rows below the cursor the message is, if one was drawn.
     pub message_rows: Option<usize>,
+}
+
+impl Repaint<'_> {
+    /// The colours of set `set`, or `colors` for `None` (or a set that is
+    /// not there).
+    fn colors_of(&self, set: Option<usize>) -> &Colors {
+        set.and_then(|i| self.sets.get(i)).unwrap_or(self.colors)
+    }
+}
+
+/// How one character is drawn: its kind's colour and the set that colour
+/// comes from (`None` for `Repaint::colors`), whether it is underlined, and
+/// whether it has the script style and the set that comes from.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Style {
+    kind: Option<Kind>,
+    kind_set: Option<usize>,
+    error: bool,
+    script: bool,
+    script_set: Option<usize>,
 }
 
 /// Columns used by the last line of `prompt`, skipping the parts between `\001`
@@ -213,32 +244,38 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
     let cols = repaint.cols;
     let mut at = start;
     let mut cursor_row = start.0;
-    let mut style: (Option<Kind>, bool, bool) = (None, false, false);
+    let mut style = Style::default();
     let mut spans = repaint.spans.iter().peekable();
     let mut script = repaint.script.iter().peekable();
-    let script_shown = !repaint.colors.script().is_empty();
+    let mut span_sets = repaint.span_sets.iter().peekable();
+    let mut script_sets = repaint.script_sets.iter().peekable();
     for (i, c) in repaint.line.char_indices() {
         while spans.next_if(|s| s.end <= i).is_some() {}
         let kind = spans.peek().filter(|s| s.start <= i).map(|s| s.kind);
+        let kind_set = set_at(&mut span_sets, i);
         while script.next_if(|r| r.end <= i).is_some() {}
-        let in_script = script_shown && script.peek().is_some_and(|r| r.start <= i);
-        let want = (
+        let script_set = set_at(&mut script_sets, i);
+        let in_script = script.peek().is_some_and(|r| r.start <= i)
+            && !repaint.colors_of(script_set).script().is_empty();
+        let want = Style {
             kind,
-            repaint.error.as_ref().is_some_and(|e| e.contains(&i)),
-            in_script,
-        );
+            kind_set: kind.and(kind_set),
+            error: repaint.error.as_ref().is_some_and(|e| e.contains(&i)),
+            script: in_script,
+            script_set: script_set.filter(|_| in_script),
+        };
         if want != style {
-            if style != (None, false, false) {
+            if style != Style::default() {
                 out.extend_from_slice(b"\x1b[0m");
             }
-            if let Some(kind) = want.0 {
-                let _ = write!(out, "\x1b[{}m", repaint.colors.sgr(kind));
+            if let Some(kind) = want.kind {
+                let _ = write!(out, "\x1b[{}m", repaint.colors_of(want.kind_set).sgr(kind));
             }
-            if want.1 {
+            if want.error {
                 out.extend_from_slice(repaint.colors.error().as_bytes());
             }
-            if want.2 {
-                let _ = write!(out, "\x1b[{}m", repaint.colors.script());
+            if want.script {
+                let _ = write!(out, "\x1b[{}m", repaint.colors_of(want.script_set).script());
             }
             style = want;
         }
@@ -267,9 +304,18 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
         }
         at = next;
     }
-    if style != (None, false, false) {
+    if style != Style::default() {
         out.extend_from_slice(b"\x1b[0m");
     }
+}
+
+/// The set of the range in `sets` that holds byte `i`, once the ranges
+/// that end before it are passed. `i` never goes down between calls.
+fn set_at(sets: &mut Peekable<Iter<'_, (Range<usize>, usize)>>, i: usize) -> Option<usize> {
+    while sets.next_if(|(r, _)| r.end <= i).is_some() {}
+    sets.peek()
+        .filter(|(r, _)| r.start <= i)
+        .map(|(_, set)| *set)
 }
 
 /// Moves the terminal's cursor from row `*cursor_row` down to `cell`, when
@@ -381,6 +427,9 @@ mod tests {
             suggestion_lines: 5,
             error: None,
             script: &[],
+            sets: &[],
+            span_sets: &[],
+            script_sets: &[],
             message: None,
             rows: 24,
             cols: 80,
@@ -834,5 +883,44 @@ mod tests {
         })
         .unwrap();
         assert_eq!(out.message_rows, Some(1));
+    }
+
+    #[test]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn a_commands_own_colours_go_on_its_bytes() {
+        use crate::colors::ColorSet;
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect()
+        };
+        let colors = Colors::from_entries(&pairs(&[("script", "")])).unwrap();
+        let own =
+            ColorSet::from_entries(&pairs(&[("command", "35"), ("script", "48;5;236")])).unwrap();
+        let sets = [colors.layered(&own)];
+        let spans = [
+            Span {
+                start: 0,
+                end: 2,
+                kind: Kind::Command,
+            },
+            Span {
+                start: 3,
+                end: 5,
+                kind: Kind::Command,
+            },
+        ];
+        let out = build(&Repaint {
+            sets: &sets,
+            span_sets: &[(0..2, 0)],
+            script: &[0..2],
+            script_sets: &[(0..2, 0)],
+            ..repaint("ab cd", 5, &spans, &colors)
+        })
+        .unwrap();
+        assert_eq!(
+            text(&out),
+            "\x1b7\r\x1b[2C\x1b[35m\x1b[48;5;236mab\x1b[0m \x1b[32mcd\x1b[0m\x1b8"
+        );
     }
 }

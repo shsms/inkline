@@ -1180,6 +1180,7 @@ fn repaint_line() -> bool {
         None
     };
     let found = ask_helpers(&line, &path);
+    let (found, sets) = highlight::with_sets(found, &colors, helper::colors);
     show_helper_notices(&line);
     // Read after the suggestion hook and the helper notices, which may have
     // set it.
@@ -1206,6 +1207,9 @@ fn repaint_line() -> bool {
             suggestion_lines,
             error: error.clone(),
             script: &painted.script,
+            sets: &sets,
+            span_sets: &painted.span_sets,
+            script_sets: &painted.script_sets,
             message: message.as_deref(),
             rows,
             cols,

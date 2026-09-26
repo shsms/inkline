@@ -205,6 +205,15 @@ fn fake_logging(mode: &str, log: &std::path::Path) -> String {
     )
 }
 
+/// As `fake_logging`, giving the command `colors` as its own.
+fn fake_logging_with_colors(mode: &str, log: &std::path::Path, colors: &str) -> String {
+    format!(
+        "(inkline-highlight-arguments \"csvm\" (list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-highlight\" \"{mode}\") {colors})\n",
+        log.display(),
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
 /// Waits until the fake helper has logged `line`.
 fn wait_for_log(log: &std::path::Path, line: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -299,6 +308,59 @@ fn a_script_is_coloured_and_dimmed() {
     assert!(cell(&s, "select").unwrap().dim());
     assert!(!cell(&s, "'select").unwrap().dim(), "the quote mark");
     assert_eq!(fg(&s, "x.csv"), Color::Default);
+}
+
+/// A command's own colours go on its script; the keys they leave out come
+/// from `inkline-colors`. Registering the same program again keeps the
+/// helper running and only changes the colours.
+#[test]
+fn a_command_can_have_colours_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let own = r#"'((command . "bold magenta") (script . "on grey3"))"#;
+    let mut sh = Shell::start(Options {
+        init_el: Some(fake_logging_with_colors("words", &log, own)),
+        ..Options::default()
+    });
+    sh.send("csvm 'select a 12' x.csv");
+    sh.wait_for("the command's colours", |s| {
+        fg_is(s, "select", Color::Idx(5))
+    });
+    let s = sh.settle();
+    let select = cell(&s, "select").unwrap();
+    assert!(select.bold() && !select.dim(), "{}", dump(&s));
+    assert_eq!(select.bgcolor(), Color::Idx(235), "{}", dump(&s));
+    assert_eq!(
+        fg(&s, "a 12"),
+        Color::Idx(4),
+        "variable, from inkline-colors"
+    );
+    assert_eq!(fg(&s, "12"), Color::Idx(6), "number, from inkline-colors");
+    assert_eq!(
+        cell(&s, "'select").unwrap().bgcolor(),
+        Color::Default,
+        "the quote mark is bash's"
+    );
+    assert_eq!(fg(&s, "x.csv"), Color::Default);
+    let again = fake_logging_with_colors("words", &log, r#"'((command . "yellow"))"#);
+    run(
+        &mut sh,
+        &format!("inkline eval '{}'", again.trim_end().replace('\'', "'\\''")),
+    );
+    sh.send("\x15csvm 'select b'");
+    sh.wait_for("the new colours", |s| fg_is(s, "select", Color::Idx(3)));
+    let s = sh.settle();
+    assert!(
+        cell(&s, "select").unwrap().dim(),
+        "the script style is inkline-colors' again:\n{}",
+        dump(&s)
+    );
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        logged.lines().filter(|l| l.starts_with("CSVM_X:")).count(),
+        1,
+        "the helper started once:\n{logged}"
+    );
 }
 
 #[test]
