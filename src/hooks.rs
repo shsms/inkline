@@ -72,6 +72,9 @@ struct State {
     /// Whether the last vertical command that deferred to history did a
     /// search, so a further one continues it instead of starting fresh.
     search_continues: bool,
+    /// Whether the last `menu-take` ran readline's `complete`, so a Tab
+    /// right after it lists the choices as readline's second Tab does.
+    completing: bool,
 }
 
 impl State {
@@ -161,6 +164,7 @@ thread_local! {
         wants_pause: false,
         goal_column: None,
         search_continues: false,
+        completing: false,
     });
 }
 
@@ -206,6 +210,7 @@ pub fn load() {
                 ffi::add_command(c"accept-as-is", accept_as_is);
                 ffi::add_command(c"menu-next", menu_next);
                 ffi::add_command(c"menu-previous", menu_previous);
+                ffi::add_command(c"menu-take", menu_take);
                 ffi::add_command(c"inkline-lisp-key", crate::lisp::commands::SHARED);
             });
             crate::lisp::start_for_shell();
@@ -1510,6 +1515,50 @@ fn move_pick(
         || false,
     );
     if moved { 0 } else { fallback(count, key) }
+}
+
+/// Tab: takes the picked item into the line; with no pick, readline's
+/// `complete`, which may jump back to readline's or bash's top level, so it
+/// runs last with nothing here to drop.
+extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
+    let (took, again) = guard(
+        || {
+            let again = ffi::last_command()
+                .is_some_and(|f| std::ptr::fn_addr_eq(f, menu_take as ffi::CommandFn))
+                && STATE.with_borrow(|s| s.completing);
+            let took = take_picked();
+            STATE.with_borrow_mut(|s| s.completing = !took);
+            (took, again)
+        },
+        || (false, false),
+    );
+    if took {
+        return 0;
+    }
+    if again {
+        ffi::continue_completion();
+    }
+    ffi::complete(count, key)
+}
+
+/// Takes the picked item into the line, as one undo step, when the menu on
+/// screen is for the line and cursor as they are and has a pick: the item
+/// replaces its part of the line and the cursor goes to its end. Whether
+/// it did.
+pub(super) fn take_picked() -> bool {
+    if !showing_menu() {
+        return false;
+    }
+    let Some(item) = STATE.with_borrow(|s| s.menu.as_ref().and_then(|m| m.picked_item().cloned()))
+    else {
+        return false;
+    };
+    ffi::begin_undo_group();
+    ffi::delete_text(item.start, item.end);
+    ffi::set_point(item.start);
+    ffi::insert_text(&item.text);
+    ffi::end_undo_group();
+    true
 }
 
 /// Inserts the part of the suggestion `take` picks. Without a suggestion for

@@ -133,6 +133,7 @@ pub const LAYOUT: &[Entry] = &[
     e(Pairing, "DEL", "delete-pair", &["backward-delete-char"]),
     e(Menu, "C-n", "menu-next", &["next-history"]),
     e(Menu, "C-p", "menu-previous", &["previous-history"]),
+    e(Menu, "TAB", "menu-take", &["complete"]),
 ];
 
 /// What `menu-next` and `menu-previous` run with no menu. When the menu

@@ -303,6 +303,7 @@ fn a_menu_drawn_while_lisp_runs_is_not_kept() {
 
 const C_N: &str = "\x0e";
 const C_P: &str = "\x10";
+const UNDO: &str = "\x1f";
 
 /// Whether row `row` is drawn in reverse video.
 fn picked(s: &vt100::Screen, row: u16) -> bool {
@@ -350,6 +351,122 @@ fn ctrl_p_starts_at_the_bottom() {
     let mut sh = two_items();
     sh.send(C_P);
     sh.wait_for("the bottom picked", |s| picked(s, 2));
+}
+
+#[test]
+fn enter_takes_the_picked_item_and_a_second_enter_runs_it() {
+    let mut sh = menu_showing(
+        with_history(vec!["echo one-two"]),
+        "echo o",
+        "h  echo one-two",
+    );
+    sh.send(C_N);
+    sh.wait_for("the pick", |s| picked(s, 1));
+    sh.send("\r");
+    // The grey text already shows the item, so wait for the cursor too.
+    sh.wait_for("the item in the line", |s| {
+        cursor_row(s) == "$ echo one-two" && s.cursor_position() == (0, 14)
+    });
+    let s = sh.settle();
+    assert_eq!(s.cursor_position(), (0, 14), "not run yet: {}", dump(&s));
+    sh.send("\r");
+    sh.wait_for("the output", |s| {
+        has_row(s, "one-two") && row_text(s, 1) == "one-two"
+    });
+}
+
+/// Keys typed ahead in one burst still take the picked item: the line does
+/// not run.
+#[test]
+fn a_typed_ahead_pick_and_enter_take_the_item() {
+    let mut sh = Shell::start(with_history(vec!["git stash", "git status"]));
+    sh.send(&format!("git st{C_N}\r"));
+    sh.wait_for("the item in the line", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+    let s = sh.settle();
+    assert_eq!(s.cursor_position(), (0, 12), "not run: {}", dump(&s));
+    assert!(find(&s, "command not found").is_none(), "{}", dump(&s));
+}
+
+#[test]
+fn tab_takes_the_picked_item_and_undo_takes_it_back() {
+    let mut sh = two_items();
+    sh.send(&format!("{C_N}{C_N}\t"));
+    sh.wait_for("the item in the line", |s| {
+        cursor_row(s) == "$ git stash" && s.cursor_position() == (0, 11)
+    });
+    sh.send(UNDO);
+    sh.wait_for("the line back", |s| s.cursor_position() == (0, 8));
+}
+
+#[test]
+fn tab_without_a_pick_completes_as_bash_does() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("zzfile"), "").unwrap();
+    let opts = Options {
+        history: vec!["ls zz-old"],
+        cwd: Some(dir.path().to_path_buf()),
+        ..Options::default()
+    };
+    let mut sh = menu_showing(opts, "ls z", "h  ls zz-old");
+    sh.send("\t");
+    sh.wait_for("the file name", |s| {
+        cursor_row(s).starts_with("$ ls zzfile")
+    });
+}
+
+/// The menu keys work in a Lisp command after a draw it made, here under
+/// `y-or-n-p`'s question: the kept menu stays in use while Lisp runs.
+#[test]
+fn a_lisp_command_picks_after_its_own_question() {
+    let init = r#"(keymap-global-set "C-x w"
+  (lambda () (interactive)
+    (y-or-n-p "Q? ")
+    (call-interactively 'menu-next)
+    (call-interactively 'menu-next)))"#;
+    let mut sh = menu_showing(
+        with_init(init, vec!["git stash", "git status"]),
+        "git st",
+        "h  git status",
+    );
+    sh.send("\x18w");
+    sh.wait_for("the question", |s| has_row(s, "Q? (y or n)"));
+    sh.send("n");
+    sh.wait_for("the second item picked", |s| picked(s, 2));
+    sh.send("\t");
+    sh.wait_for("the item in the line", |s| {
+        cursor_row(s) == "$ git stash" && s.cursor_position() == (0, 11)
+    });
+}
+
+/// The menu keys work in a line that `read -e` reads under shell code a Lisp
+/// command runs, where every draw happens while Lisp runs.
+#[test]
+fn the_menu_keys_work_in_read_e_under_lisp() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            r#"(keymap-global-set "C-x e"
+  (lambda () (call-interactively 'edit-and-execute-command)))"#
+                .to_owned(),
+        ),
+        rc: "export VISUAL=true\n".into(),
+        history: vec!["echo hello-world", "echo help-me"],
+        ..Options::default()
+    });
+    sh.send("read -e -p 'name? ' x; echo \"ran:[$x]\"\x18e");
+    sh.wait_for("the nested prompt", |s| cursor_row(s) == "name?");
+    sh.send("echo hel");
+    let s = sh.wait_for("the menu", |s| {
+        row_text(s, s.cursor_position().0 + 1) == "h  echo help-me"
+    });
+    let row = s.cursor_position().0;
+    sh.send(&format!("{C_N}{C_N}"));
+    sh.wait_for("the second item picked", |s| picked(s, row + 2));
+    sh.send("\t");
+    sh.wait_for("the item in the line", |s| {
+        cursor_row(s) == "name? echo hello-world"
+    });
 }
 
 #[test]

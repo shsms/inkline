@@ -797,6 +797,25 @@ pub fn accept_line(count: c_int, key: c_int) -> c_int {
     unsafe { rl_newline(count, key) }
 }
 
+unsafe extern "C" {
+    fn rl_complete(count: c_int, key: c_int) -> c_int;
+}
+
+/// readline's `complete`. `C-g` at its questions, or `C-c` while it runs,
+/// may jump back to readline's or bash's top level: the caller's frames must
+/// hold nothing to drop.
+pub fn complete(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_complete(count, key) }
+}
+
+/// Marks the completion about to run as a second Tab after the last one:
+/// readline lists the choices when `rl_last_func` is its own `complete`,
+/// which it is not once a call reaches it through one of this crate's own
+/// commands.
+pub fn continue_completion() {
+    unsafe { rl_last_func = Some(rl_complete) };
+}
+
 /// Whether readline is replaying a macro: the text bound to a key, or a
 /// keyboard macro.
 pub fn replaying_macro() -> bool {

@@ -54,6 +54,10 @@ pub(super) extern "C" fn accept_or_newline(count: c_int, key: c_int) -> c_int {
             if ffi::interrupted() {
                 return Then::Done(ffi::accept_line(count, key));
             }
+            // A picked menu item goes into the line; the line does not run.
+            if super::take_picked() {
+                return Then::Done(0);
+            }
             let Some(line) = active_line() else {
                 return Then::Accept;
             };
