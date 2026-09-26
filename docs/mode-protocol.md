@@ -258,14 +258,21 @@ The reply:
 ```
 
 - `NEW` is the nesting depth of the line that starts at `OFFSET`, the new
-  line; `CURRENT` is the depth of the line the cursor is on, the one being
-  split. Both are plain decimal numbers; 0 is the argument's top level.
+  line, as a plain decimal number; 0 is the argument's top level.
+- `CURRENT` is the depth of the line the cursor is on, the one being
+  split, as a plain decimal number, or `-` to leave that line as it is:
+  `:depth 1 -` means "the new line is at depth 1; leave the cursor's line
+  as it is". Send `-` for a line the user may have indented by hand, and
+  a number for a line that should move, such as one that starts by
+  closing a group.
 - A server that cannot tell, for example because `OFFSET` is not in a part
   it indents, sends only `:end ID`.
-- A `:depth` whose fields are not two plain decimal numbers, or hold a
-  number too large to read, a second `:depth`, a line that does not start
-  with `:`, or `:end` with the wrong `ID` turns the server off
-  (`bad reply: "LINE"`). Other lines starting with `:` are ignored.
+- A `:depth` without exactly two fields, whose `NEW` is not a plain
+  decimal number, whose `CURRENT` is neither a plain decimal number nor
+  `-`, or that holds a number too large to read, a second `:depth`, a line
+  that does not start with `:`, or `:end` with the wrong `ID` turns the
+  server off (`bad reply: "LINE"`). Other lines starting with `:` are
+  ignored.
 
 What inkline does with it, with `step` the value of `inkline-indent` and
 `base` the indentation of the line the command's name is on:
@@ -274,11 +281,12 @@ What inkline does with it, with `step` the value of `inkline-indent` and
   depth above 20 counts as 20.
 - The new line gets `NEW`'s indentation, and the spaces and tabs around
   the cursor go. The request still holds them: `OFFSET` counts them.
-- The cursor's line gets `CURRENT`'s indentation when the cursor is past
-  its first non-blank character, it is not the line the argument starts on,
-  and `CURRENT`'s indentation is less far in than the line's own: a line
-  that starts by closing a group moves back out. A line is never moved
-  further in.
+- When `CURRENT` is a number, the cursor's line gets `CURRENT`'s
+  indentation when the cursor is past the line's first non-blank
+  character, it is not the line the argument starts on, and that
+  indentation is less far in than the line's own: a line that starts by
+  closing a group moves back out. A line is never moved further in. When
+  `CURRENT` is `-`, the cursor's line stays as it is.
 - inkline waits at most 100 ms for the answer: first for the reply to a
   request already in flight, then for the depths. A reply that comes later
   is read and dropped, and is not a failure. Without depths in time, with
@@ -315,17 +323,19 @@ fn f(n) {
 :done
 ```
 
-The server answers that both lines are inside one group:
+The server answers that the new line is inside the group, and that the
+second line stays as the user typed it:
 
 ```
-:depth 1 1
+:depth 1 -
 :end 7
 ```
 
-and the new line starts with `(1 + 1) × 2` = 4 spaces. When the user then
-types `}` and presses C-j, the server answers `:depth 0 0` (the `}` closes
-the group), so the `}` line moves out to 2 spaces, and the new line starts
-there too.
+The new line starts with `(1 + 1) × 2` = 4 spaces, and the second line
+keeps its own 4 spaces. When the user then types `}` and presses C-j, the
+server answers `:depth 0 0`: the `}` closes the group and starts its line,
+so the server gives that line's depth. The `}` line moves out to 2
+spaces, and the new line starts there too.
 
 ## What inkline ignores
 
@@ -388,8 +398,10 @@ first line, reading `:cwd` and each `:arg` by its length with `read -N`
 (under `LC_ALL=C`, so that bash counts bytes, not characters), and writing
 the `:span`, `:error` and `:end` lines. Its first argument picks what it
 does, so that it can also break the protocol for tests; `words` is the plain
-case. `indent` also names `indent` and answers `:indent` requests, counting
-the brackets `{`, `(`, `}` and `)`. Try it by hand:
+case. `indent` also names `indent` and answers `:indent` requests,
+counting the brackets `{`, `(`, `}` and `)`; `dash-indent` does the same,
+but sends `-` for the cursor's line unless it starts with `}` or `)`. Try
+it by hand:
 
 ```bash
 printf ':request 1\n:cwd 1\n/\n:arg final 4\ncsvm\n:arg final 16\nsort id | head 5\n:done\n' |
