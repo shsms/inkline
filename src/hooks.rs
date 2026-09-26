@@ -665,7 +665,7 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
 ///   resize, a background job ending), inkline repaints the line straight away;
 ///   for a resize, readline has redrawn it first. If bash may have printed
 ///   while handling the signal, readline draws the rest of the line instead;
-/// - a highlight helper's reply that comes after the redraw stopped waiting
+/// - a mode server's reply that comes after the redraw stopped waiting
 ///   for it is painted as soon as it comes, while readline waits at the
 ///   main prompt for the key of the next command and no Lisp runs.
 ///
@@ -702,7 +702,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         NESTED_LINE.set(true);
     }
     let in_lisp = running && !NESTED_LINE.get();
-    // When the pause asked for began: a repaint for a helper's reply does
+    // When the pause asked for began: a repaint for a server's reply does
     // not start it again.
     let mut pause_began = None;
     let key = loop {
@@ -713,7 +713,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         // editing. While it waits for the answer to a question, a search's
         // keys or a count, the line is not drawn as it was, and a repaint
         // would draw over what readline shows: a pause asked for then stays
-        // asked for, and helpers are not waited on.
+        // asked for, and mode servers are not waited on.
         let plain_key = guard(
             || ffi::reading_command_key() && ffi::normal_editing(),
             || false,
@@ -727,11 +727,11 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             let waited = c_int::try_from(began.elapsed().as_millis()).unwrap_or(c_int::MAX);
             (PAUSE_MS - waited).max(0)
         });
-        // The highlight helpers that owe inkline a reply or their first
+        // The mode servers that owe inkline a reply or their first
         // line: waited on only at the main prompt, for a `plain_key`, while
         // inkline is on and no Lisp runs (a line that shell code run from
         // Lisp reads counts as Lisp running).
-        let helpers = guard(
+        let servers = guard(
             || {
                 if running
                     || !plain_key
@@ -754,7 +754,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         let signal = (!in_lisp && !typed_ahead && !KEYS_AFTER_C_C.get())
             .then(ffi::signal_before_wait)
             .flatten();
-        match signal.unwrap_or_else(|| ffi::wait_for_input(stream, pause, &helpers)) {
+        match signal.unwrap_or_else(|| ffi::wait_for_input(stream, pause, &servers)) {
             ffi::Wait::Ready | ffi::Wait::Error => break None,
             // Typing paused with a new error or notice on the line: show it.
             ffi::Wait::Paused => {
@@ -767,8 +767,8 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                     draw_below_notice,
                 );
             }
-            // A helper sent something: paint its reply, or say it was
-            // turned off once typing pauses. The redraw asks the helpers
+            // A mode server sent something: paint its reply, or say it was
+            // turned off once typing pauses. The redraw asks the servers
             // again: a reply kept for the line's arguments now answers,
             // one for arguments no longer on the line is dropped, and a
             // request for the line as it is now is sent. Without a
@@ -927,8 +927,8 @@ extern "C" fn pre_input() -> c_int {
                 s.goal_column = None;
                 s.search_continues = false;
             });
-            // A new line at the main prompt drops the helpers' replies; a
-            // line read while Lisp runs is part of the line Lisp runs in.
+            // A new line at the main prompt drops the mode servers' replies;
+            // a line read while Lisp runs is part of the line Lisp runs in.
             if ffi::reading_command() && !crate::lisp::RUNNING.load(Ordering::Relaxed) {
                 mode_server::forget_replies();
             }
@@ -1181,9 +1181,9 @@ fn repaint_line() -> bool {
     };
     let found = ask_mode_servers(&line, &path);
     let (found, sets) = highlight::with_sets(found, &colors, mode_server::colors);
-    show_helper_notices(&line);
-    // Read after the suggestion hook and the helper notices, which may have
-    // set it.
+    show_mode_server_notices(&line);
+    // Read after the suggestion hook and the mode server notices, which may
+    // have set it.
     let message = MESSAGE.with_borrow(Clone::clone);
     STATE.with_borrow_mut(|s| {
         let paths = &mut s.paths;
@@ -1192,8 +1192,9 @@ fn repaint_line() -> bool {
         });
         let mut painted = highlight::paint(line.len(), &spans, &found);
         let (error, error_message) = error_to_underline(s, &line, point, painted.error.take());
-        // A message set with `show_message` (Lisp's, or why a helper was
-        // turned off) comes first; the error's message is only for this draw.
+        // A message set with `show_message` (Lisp's, or why a mode server
+        // was turned off) comes first; the error's message is only for this
+        // draw.
         // Without a free row under the line it is not shown, so an error
         // with no place on the line then shows nothing.
         let message = message.or(error_message);
@@ -1234,7 +1235,7 @@ fn repaint_line() -> bool {
 /// (bash's `PATH`), and waits up to `mode_server::WAIT` in all for their
 /// first lines and replies. The commands answered in time, each with its
 /// mode and its reply, in line order. Why a server was turned off waits for
-/// `show_helper_notices`.
+/// `show_mode_server_notices`.
 fn ask_mode_servers(line: &str, path: &str) -> Vec<(String, CommandArgs, Reply)> {
     let began = Instant::now();
     if !ffi::reading_command()
@@ -1277,12 +1278,12 @@ fn ask_mode_servers(line: &str, path: &str) -> Vec<(String, CommandArgs, Reply)>
         .collect()
 }
 
-/// Shows why highlight helpers were turned off once typing pauses on
+/// Shows why mode servers were turned off once typing pauses on
 /// `line`, as a new syntax error waits for the pause before it is
 /// underlined; until then, asks `getc` for the pause. The message then
 /// stays until the next key. Only at the main prompt: a line a script reads
-/// or bash's `>` prompt has nothing to do with helpers.
-fn show_helper_notices(line: &str) {
+/// or bash's `>` prompt has nothing to do with mode servers.
+fn show_mode_server_notices(line: &str) {
     if !ffi::reading_command() || !mode_server::has_notices() {
         return;
     }
@@ -1312,10 +1313,10 @@ fn status_of(s: &mut State, line: &str) -> Status {
 
 /// The error to show on `line`: the bytes to underline and the message to
 /// put under the line. Bash's syntax error comes first, with no message;
-/// without one, `helper`, the error a highlight helper sent (its bytes of
+/// without one, `from_server`, the error a mode server sent (its bytes of
 /// the line, `None` when it has no place there, and its message). A new
 /// error waits for a pause in typing and asks `getc` for one; an error
-/// already underlined stays, and a helper's message with it, as long as the
+/// already underlined stays, and a server's message with it, as long as the
 /// underline does. An error with no place shows its message while the line
 /// stays the one typing paused on. The word the cursor is at the end of is
 /// being typed, so an error there is not shown.
@@ -1323,14 +1324,14 @@ fn error_to_underline(
     s: &mut State,
     line: &str,
     point: usize,
-    helper: Option<(Option<Range<usize>>, String)>,
+    from_server: Option<(Option<Range<usize>>, String)>,
 ) -> (Option<Range<usize>>, Option<String>) {
     if !ffi::reading_command() {
         return (None, None);
     }
     let (place, message) = match status_of(s, line) {
         Status::Wrong(range) => (Some(syntax::word_around(line, range)), None),
-        Status::Fine | Status::Unfinished => match helper {
+        Status::Fine | Status::Unfinished => match from_server {
             Some((place, message)) => (place, Some(message)),
             None => return (None, None),
         },

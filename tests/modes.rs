@@ -1,4 +1,4 @@
-//! Highlight helpers: starting them, their status, and what turns one off.
+//! Command modes: their servers, their status, and what turns a server off.
 
 #[path = "support/common.rs"]
 mod common;
@@ -114,7 +114,7 @@ fn a_wrong_first_line_is_off() {
 }
 
 #[test]
-fn the_helper_is_not_one_of_bashs_jobs() {
+fn the_server_is_not_one_of_bashs_jobs() {
     let mut sh = Shell::start(Options {
         init_el: Some(fake("words")),
         ..Options::default()
@@ -180,7 +180,7 @@ fn defining_again_and_removing() {
 }
 
 #[test]
-fn reload_stops_helpers() {
+fn reload_stops_mode_servers() {
     let mut sh = Shell::start(Options {
         init_el: Some(fake("words")),
         ..Options::default()
@@ -249,7 +249,7 @@ fn fake_logging_with_colors(does: &str, log: &std::path::Path, colors: &str) -> 
     csvm_mode(&logging_program(does, log), &format!(" {colors}"))
 }
 
-/// Waits until the fake helper has logged `line`.
+/// Waits until the fake mode server has logged `line`.
 fn wait_for_log(log: &std::path::Path, line: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
@@ -265,10 +265,10 @@ fn wait_for_log(log: &std::path::Path, line: &str) {
     );
 }
 
-/// A helper gets the variables bash exports as they are when it starts,
-/// not as they were when bash started.
+/// A mode server gets the variables bash exports as they are when it
+/// starts, not as they were when bash started.
 #[test]
-fn a_helper_gets_the_shells_exported_variables() {
+fn a_server_gets_the_shells_exported_variables() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
     let mut sh = Shell::start(Options {
@@ -280,9 +280,9 @@ fn a_helper_gets_the_shells_exported_variables() {
     wait_for_log(&log, "CSVM_X:1");
 }
 
-/// `enable -d inkline` stops the helpers: each sees the end of its input.
+/// `enable -d inkline` stops the mode servers: each sees the end of its input.
 #[test]
-fn enable_d_stops_helpers() {
+fn enable_d_stops_mode_servers() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
     let mut sh = Shell::start(Options {
@@ -308,10 +308,10 @@ fn wait_for_file(path: &std::path::Path) {
     }
 }
 
-/// The helper holds none of bash's other descriptors: once bash closes one,
-/// the program at its other end sees the end of its input.
+/// The mode server holds none of bash's other descriptors: once bash closes
+/// one, the program at its other end sees the end of its input.
 #[test]
-fn the_helper_holds_none_of_bashs_descriptors() {
+fn the_server_holds_none_of_bashs_descriptors() {
     let dir = tempfile::tempdir().unwrap();
     let done = dir.path().join("done");
     let log = dir.path().join("log");
@@ -345,11 +345,11 @@ fn a_script_is_coloured_and_dimmed() {
     assert_eq!(fg(&s, "x.csv"), Color::Default);
 }
 
-/// A command's own colours go on its script; the keys they leave out come
-/// from `inkline-colors`. Registering the same program again keeps the
-/// helper running and only changes the colours.
+/// A mode's own colours go on its script; the keys they leave out come
+/// from `inkline-colors`. Defining the same mode again keeps the server
+/// running and only changes the colours.
 #[test]
-fn a_command_can_have_colours_of_its_own() {
+fn a_mode_can_have_colours_of_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
     let own = r#"'((command . "bold magenta") (script . "on grey3"))"#;
@@ -394,7 +394,7 @@ fn a_command_can_have_colours_of_its_own() {
     assert_eq!(
         logged.lines().filter(|l| l.starts_with("CSVM_X:")).count(),
         1,
-        "the helper started once:\n{logged}"
+        "the server started once:\n{logged}"
     );
 }
 
@@ -404,14 +404,14 @@ fn double_quoted_scripts_map_back_to_what_was_typed() {
         init_el: Some(fake("words")),
         ..Options::default()
     });
-    // The helper gets `sélect "a" 7`: its offsets skip the backslashes.
+    // The server gets `sélect "a" 7`: its offsets skip the backslashes.
     sh.send("csvm \"sélect \\\"a\\\" 7\"");
     sh.wait_for("colours", |s| fg_is(s, "sélect", Color::Idx(2)));
     let s = sh.settle();
     assert_eq!(fg(&s, "7"), Color::Idx(6));
     assert!(
         !cell(&s, "\\\"a").unwrap().dim(),
-        "a removed backslash is not the helper's"
+        "a removed backslash is not the server's"
     );
 }
 
@@ -555,8 +555,8 @@ fn a_new_line_asks_again() {
     }
 }
 
-/// `exec FD>file` after the helper started leaves both the file and the
-/// helper working.
+/// `exec FD>file` after the mode server started leaves both the file and
+/// the server working.
 fn a_users_descriptor_is_left_alone(fd: u32) {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("out");
@@ -587,9 +587,9 @@ fn a_users_descriptor_10_is_left_alone() {
 }
 
 /// A command that closes inkline's end of the socket owns that descriptor
-/// from then on: the helper is turned off, and a file opened there stays
-/// open. (bash puts back a close-on-exec descriptor from 10 up after `exec
-/// N>file`, taking it for one of its own: it must be closed first.)
+/// from then on: the mode server is turned off, and a file opened there
+/// stays open. (bash puts back a close-on-exec descriptor from 10 up after
+/// `exec N>file`, taking it for one of its own: it must be closed first.)
 #[test]
 fn a_socket_taken_over_is_left_to_the_user() {
     let dir = tempfile::tempdir().unwrap();
@@ -618,7 +618,7 @@ fn a_socket_taken_over_is_left_to_the_user() {
 }
 
 #[test]
-fn a_helper_that_exits_is_turned_off() {
+fn a_server_that_exits_is_turned_off() {
     let mut sh = Shell::start(Options {
         init_el: Some(fake("exit")),
         ..Options::default()
@@ -633,7 +633,7 @@ fn a_helper_that_exits_is_turned_off() {
 }
 
 #[test]
-fn garbage_turns_a_helper_off() {
+fn garbage_turns_a_server_off() {
     let mut sh = Shell::start(Options {
         init_el: Some(fake("garbage")),
         ..Options::default()
@@ -850,23 +850,23 @@ const COMMAND: Color = Color::Idx(2);
 /// The `variable` colour, which the fake gives the other words.
 const VARIABLE: Color = Color::Idx(4);
 
-/// An `init.el` with `inkline-indent` 2 and the fake helper for `csvm`
+/// An `init.el` with `inkline-indent` 2 and the fake mode server for `csvm`
 /// doing `does`, logging to `log`.
 fn indenting(does: &str, log: &std::path::Path) -> String {
     format!("(setq inkline-indent 2)\n{}", fake_logging(does, log))
 }
 
 /// Types `csvm 'warm'`, waits for its colours, and empties the line: the
-/// helper is then running.
+/// mode server is then running.
 fn warm_up(sh: &mut Shell) {
     sh.send("csvm 'warm'");
-    sh.wait_for("the helper's colours", |s| fg_is(s, "warm", COMMAND));
+    sh.wait_for("the server's colours", |s| fg_is(s, "warm", COMMAND));
     sh.send("\x01\x0b");
     sh.wait_for("an empty line", |s| cursor_row(s) == "$");
 }
 
-/// Sends `keys`, then waits until `word` has the colour `color`: the
-/// helper has answered for the line as it is now, so no colour request is
+/// Sends `keys`, then waits until `word` has the colour `color`: the mode
+/// server has answered for the line as it is now, so no colour request is
 /// in flight when the next key comes.
 fn type_then(sh: &mut Shell, keys: &str, word: &str, color: Color) {
     sh.send(keys);
@@ -887,7 +887,7 @@ fn assert_no_indent_request(log: &std::path::Path) {
 }
 
 /// Starts a shell with `inkline-indent` 2 and the fake doing `does`, and
-/// warms the helper up. The log's directory must live as long as the
+/// warms the mode server up. The log's directory must live as long as the
 /// shell.
 fn indenting_shell(does: &str) -> (Shell, tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -1100,8 +1100,8 @@ fn an_empty_pair_opens_from_the_commands_line() {
     assert_no_indent_request(&log);
 }
 
-/// Opening an empty pair needs no depths, so a helper that cannot indent
-/// opens it the same way.
+/// Opening an empty pair needs no depths, so a mode server that cannot
+/// indent opens it the same way.
 #[test]
 fn an_empty_pair_opens_without_depths() {
     let (mut sh, _dir, _log) = indenting_shell("words");
@@ -1229,7 +1229,7 @@ fn the_blanks_around_the_cursor_go_in_a_script() {
 
 /// Without depths in time, a new line after the command's line goes one step
 /// in, and a new line after a later line gets that line's indentation.
-/// Neither waits for the late depths, which do not turn the helper off.
+/// Neither waits for the late depths, which do not turn the mode server off.
 #[test]
 fn no_depths_in_time_keeps_the_line_above() {
     let (mut sh, _dir, log) = indenting_shell("slow-indent");
@@ -1266,7 +1266,7 @@ fn c_c_while_waiting_for_depths() {
 }
 
 #[test]
-fn a_helper_that_cannot_tell_keeps_the_line_above() {
+fn a_server_that_cannot_tell_keeps_the_line_above() {
     let (mut sh, _dir, log) = indenting_shell("indent");
     type_then(&mut sh, "csvm \"nodepth", "nodepth", COMMAND);
     sh.send(CTRL_J);
@@ -1278,7 +1278,7 @@ fn a_helper_that_cannot_tell_keeps_the_line_above() {
 }
 
 #[test]
-fn a_helper_without_indent_is_not_asked_for_depths() {
+fn a_server_without_indent_is_not_asked_for_depths() {
     let (mut sh, _dir, log) = indenting_shell("words");
     type_then(&mut sh, "csvm \"head", "head", COMMAND);
     sh.send(CTRL_J);

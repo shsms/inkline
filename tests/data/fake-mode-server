@@ -1,5 +1,5 @@
 #!/bin/bash
-# A highlight helper for inkline's tests. $1 picks what it does:
+# A mode server for inkline's tests. $1 picks what it does:
 #   words    colour argument 1 as a small script of words split at spaces
 #            and double quotes (a raw argument keeps its quote marks): the
 #            first word of each `|` stage is `command`, `|` is `operator`,
@@ -24,32 +24,32 @@
 # arguments, `at:ARG OFFSET` for each `:indent` request, and `end` when its
 # input ends.
 export LC_ALL=C
-mode=$1
+does=$1
 [[ -n ${FAKE_LOG-} ]] && printf 'CSVM_X:%s\n' "${CSVM_X-unset}" >>"$FAKE_LOG"
-if [[ $mode == version ]]; then
-    echo not-a-helper
+if [[ $does == version ]]; then
+    echo not-a-mode-server
     exec cat >/dev/null
 fi
-[[ $mode == slow ]] && sleep 0.3
-if [[ $mode == indent || $mode == slow-indent ]]; then
+[[ $does == slow ]] && sleep 0.3
+if [[ $does == indent || $does == slow-indent ]]; then
     echo "inkline-mode 1 indent"
 else
     echo "inkline-mode 1"
 fi
-if [[ $mode == spew ]]; then
+if [[ $does == spew ]]; then
     # Fifty lines a write: about 20 MB/s, without pause.
     lines=$(printf ':x\n%.0s' {1..50})
     while :; do printf '%s\n' "$lines"; done
 fi
 
 answer() {
-    [[ $mode == exit ]] && exit 0
-    if [[ $mode == garbage ]]; then
+    [[ $does == exit ]] && exit 0
+    if [[ $does == garbage ]]; then
         echo nonsense
         return
     fi
-    [[ $mode == late || $mode == slow-indent ]] && sleep 0.5
-    [[ $mode == split ]] && sleep 0.1
+    [[ $does == late || $does == slow-indent ]] && sleep 0.5
+    [[ $does == split ]] && sleep 0.1
     local s=${args[1]-} i=0 j n=${#args[1]} tok kind stage_start=1 spans=0
     while ((i < n)); do
         if [[ ${s:i:1} == [[:space:]\"] ]]; then
@@ -71,13 +71,13 @@ answer() {
             kind=variable
         fi
         echo ":span 1 $i $j $kind"
-        ((spans++ == 0)) && [[ $mode == split ]] && sleep 2
-        if [[ $mode == error && $tok == bad ]]; then
+        ((spans++ == 0)) && [[ $does == split ]] && sleep 2
+        if [[ $does == error && $tok == bad ]]; then
             echo ":error 1 $i $j unknown command 'bad'"
         fi
         i=$j
     done
-    [[ $mode == noplace ]] && echo ":error - - - no place"
+    [[ $does == noplace ]] && echo ":error - - - no place"
     echo ":end $id"
 }
 
@@ -101,7 +101,7 @@ closes() {
 }
 
 answer_indent() {
-    [[ $mode == slow-indent ]] && sleep 0.5
+    [[ $does == slow-indent ]] && sleep 0.5
     local s=${args[at_arg]-} off=$at_off
     if [[ $s == *nodepth* ]]; then
         echo ":end $id"

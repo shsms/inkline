@@ -1,6 +1,6 @@
-//! A registered command's arguments, as the program will receive them: quote
-//! marks and escaping backslashes removed, with a map back to the bytes each
-//! kept byte was typed as.
+//! The arguments of a command that uses a mode, as the program will receive
+//! them: quote marks and escaping backslashes removed, with a map back to
+//! the bytes each kept byte was typed as.
 
 use std::ops::Range;
 
@@ -254,7 +254,7 @@ fn looks_like_assignment(chars: &[(usize, char)]) -> bool {
 }
 
 /// Every `command` node in `tree`, in line order, whose name unquotes to a
-/// registered, non-raw name: pipelines, lists, `$( … )` and compound
+/// non-raw name that uses a mode: pipelines, lists, `$( … )` and compound
 /// commands are all walked. The arguments are read from the line text by
 /// `command_words`, starting right after the name, not from the tree, whose
 /// words for a command change shape under redirects and error recovery.
@@ -265,7 +265,7 @@ fn looks_like_assignment(chars: &[(usize, char)]) -> bool {
 /// wrongly (see `Passed::lost`). `time` (with an optional lone `-p`) and
 /// `coproc` are skipped as prefixes: the words after them are the name and
 /// arguments instead.
-pub fn commands(tree: &Tree, line: &str, registered: impl Fn(&str) -> bool) -> Vec<CommandArgs> {
+pub fn commands(tree: &Tree, line: &str, uses_mode: impl Fn(&str) -> bool) -> Vec<CommandArgs> {
     let line = Line {
         text: line,
         chars: line.char_indices().collect(),
@@ -274,7 +274,7 @@ pub fn commands(tree: &Tree, line: &str, registered: impl Fn(&str) -> bool) -> V
     visit(
         tree.root_node(),
         &line,
-        &registered,
+        &uses_mode,
         false,
         &mut Passed::default(),
         &mut found,
@@ -314,7 +314,7 @@ struct Passed {
     lost: bool,
 }
 
-/// Adds the registered commands in `node` to `found`, leaving out those
+/// Adds the commands that use a mode in `node` to `found`, leaving out those
 /// inside backquotes: bash removes some of the backslashes inside before it
 /// reads the commands there, and the words of one would run on past the
 /// closing backquote. `in_backquotes` says `node` is inside a backquoted
@@ -322,7 +322,7 @@ struct Passed {
 fn visit(
     node: Node,
     line: &Line,
-    registered: &impl Fn(&str) -> bool,
+    uses_mode: &impl Fn(&str) -> bool,
     in_backquotes: bool,
     passed: &mut Passed,
     found: &mut Vec<CommandArgs>,
@@ -347,7 +347,7 @@ fn visit(
     }
     if node.kind() == "command"
         && !(inside || passed.lost)
-        && let Some(command) = command_args(node, line, registered)
+        && let Some(command) = command_args(node, line, uses_mode)
     {
         found.push(command);
     }
@@ -356,7 +356,7 @@ fn visit(
         visit(
             child,
             line,
-            registered,
+            uses_mode,
             in_backquotes || substitution,
             passed,
             found,
@@ -364,17 +364,13 @@ fn visit(
     }
 }
 
-fn command_args(
-    node: Node,
-    line: &Line,
-    registered: &impl Fn(&str) -> bool,
-) -> Option<CommandArgs> {
+fn command_args(node: Node, line: &Line, uses_mode: &impl Fn(&str) -> bool) -> Option<CommandArgs> {
     let name_range = node.child_by_field_name("name")?.byte_range();
     let mut name = unquote(line.text, name_range.clone());
     // Only a prefix needs the words to find the name: every other command
     // is known to be left out before they are read.
     let prefix = matches!(name.text.as_str(), "time" | "coproc");
-    if name.raw || !(prefix || registered(&name.text)) {
+    if name.raw || !(prefix || uses_mode(&name.text)) {
         return None;
     }
     let mut rest = command_words(line, name_range.end)?;
@@ -394,7 +390,7 @@ fn command_args(
         rest = words.collect();
     }
 
-    if name.raw || !registered(&name.text) {
+    if name.raw || !uses_mode(&name.text) {
         return None;
     }
     let mut args = vec![name.clone()];
@@ -888,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn registered_commands_anywhere_on_the_line() {
+    fn commands_that_use_a_mode_anywhere_on_the_line() {
         let line = "X=1 csvm 'select a' <in >out | head; echo $(csvm \"b\") && ls";
         let tree = Lexer::new().tree(line).unwrap();
         let found = commands(&tree, line, |n| n == "csvm");
@@ -992,9 +988,9 @@ mod tests {
     /// A `$(…)` argument is skipped whole while scanning for the command's
     /// words, so a `)` or quote mark inside it (`$(echo ')')`) does not end
     /// the command early; `unquote` still marks it raw. The same nesting
-    /// lets a registered command inside a substitution (`echo $(csvm a)`)
-    /// still be found, with its own words ending at the substitution's
-    /// closing `)`.
+    /// lets a command that uses a mode inside a substitution
+    /// (`echo $(csvm a)`) still be found, with its own words ending at the
+    /// substitution's closing `)`.
     #[test]
     fn substitutions_are_skipped_whole() {
         let line = "csvm $(echo ')') x";
@@ -1012,8 +1008,8 @@ mod tests {
         assert_eq!(texts, ["csvm", "a"]);
     }
 
-    /// The words of every registered `csvm` command on `line`, as the program
-    /// will receive them.
+    /// The words of every `csvm` command that uses a mode on `line`, as the
+    /// program will receive them.
     fn csvm_words(line: &str) -> Vec<Vec<String>> {
         let tree = Lexer::new().tree(line).unwrap();
         commands(&tree, line, |n| n == "csvm")
@@ -1134,7 +1130,7 @@ mod tests {
     /// A `case` inside `$(…)` has patterns ending in an unmatched `)`, which
     /// only a parser of `case` could tell from the `)` that ends the
     /// substitution; such a command is left out rather than given the wrong
-    /// words. A registered command inside the `case` is still found.
+    /// words. A command that uses a mode inside the `case` is still found.
     #[test]
     fn a_case_inside_a_substitution_leaves_the_command_out() {
         assert!(csvm_words("csvm $(case x in a) echo;; esac) b").is_empty());
@@ -1205,7 +1201,7 @@ mod tests {
     }
 
     /// Finding the words looks at each part of the line only a few times,
-    /// so a very long line is quick, whether its commands are registered or
+    /// so a very long line is quick, whether its commands use a mode or
     /// not.
     #[test]
     fn a_long_line_of_commands_is_quick() {

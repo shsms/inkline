@@ -1,6 +1,6 @@
-//! Server programs that colour a command's arguments: the modes Lisp
-//! defined, their processes, and the protocol inkline speaks with them
-//! (docs/highlight-protocol.md).
+//! Command modes and the mode servers that supply them: the modes Lisp
+//! defined, their servers' processes, and the protocol inkline speaks with
+//! them (docs/highlight-protocol.md).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -15,19 +15,19 @@ use protocol::{Depths, Read, Reply};
 pub mod process;
 pub mod protocol;
 
-/// The longest a redraw waits for helpers, in all: for the first line of
+/// The longest a redraw waits for mode servers, in all: for the first line of
 /// the ones starting, then for their replies.
 pub const WAIT: Duration = Duration::from_millis(15);
 
-/// The longest a new line waits for a helper's depths, in all: for the
+/// The longest a new line waits for a mode server's depths, in all: for the
 /// reply to a request already in flight, then for the depths.
 pub const INDENT_WAIT: Duration = Duration::from_millis(100);
 
-/// The most a helper may have written that inkline has not used, while a
+/// The most a mode server may have written that inkline has not used, while a
 /// reply or its first line is still incomplete.
 const MOST_UNREAD: usize = 1 << 20;
 
-/// A request to a helper, and what a kept reply is looked up by: the
+/// A request to a mode server, and what a kept reply is looked up by: the
 /// directory (bash's `PWD`), then each argument's `raw` flag and bytes,
 /// the command name first.
 pub type Request = (Vec<u8>, Vec<(bool, String)>);
@@ -55,7 +55,7 @@ struct Server {
     notice: Option<String>,
 }
 
-/// A helper that named itself, and the requests it was sent.
+/// A mode server that named itself, and the requests it was sent.
 struct Running {
     process: Process,
     /// Whether its first line named `indent`.
@@ -160,9 +160,9 @@ fn names(command: &str, word: &str) -> bool {
 /// when it comes: a new line starts, and the files a reply speaks of may
 /// have changed since it was written.
 pub fn forget_replies() {
-    SERVERS.with_borrow_mut(|helpers| {
-        for h in helpers.iter_mut() {
-            if let State::Running(running) = &mut h.state {
+    SERVERS.with_borrow_mut(|servers| {
+        for s in servers.iter_mut() {
+            if let State::Running(running) = &mut s.state {
                 running.kept.clear();
                 running.forgotten = running.last_id;
             }
@@ -170,7 +170,7 @@ pub fn forget_replies() {
     });
 }
 
-/// Forgets every helper, and the messages about them not yet taken; their
+/// Forgets every mode server, and the messages about them not yet taken; their
 /// processes see their input end.
 pub fn stop_all() {
     SERVERS.with_borrow_mut(Vec::clear);
@@ -278,30 +278,30 @@ pub fn prepare(modes: &[String], path: &str, environment: fn() -> Option<Vec<Vec
 /// The reply to each of `asks` (a mode and a request), or `None` when it has
 /// not come in time.
 ///
-/// A kept reply to the same request answers at once. For the rest, each helper
-/// is sent one request at a time, in the order of `asks`, and replies are read
-/// until every ask is answered or `wait` has passed, even while a helper keeps
-/// writing; a helper still starting first has its first line read in that time.
-/// A reply that comes for a request no longer asked is kept as that request's
-/// reply (the line may come back to it), but is never an answer by itself. Kept
-/// replies whose requests this call does not ask for are dropped first. A
-/// helper that breaks the protocol, writes more than `MOST_UNREAD` bytes
-/// without finishing a reply, or exits is turned off, with a message for
-/// `take_notices`. A signal ends the wait early; `interrupted` is for
-/// `Process::send`.
+/// A kept reply to the same request answers at once. For the rest, each mode
+/// server is sent one request at a time, in the order of `asks`, and replies
+/// are read until every ask is answered or `wait` has passed, even while a
+/// server keeps writing; a server still starting first has its first line
+/// read in that time. A reply that comes for a request no longer asked is
+/// kept as that request's reply (the line may come back to it), but is never
+/// an answer by itself. Kept replies whose requests this call does not ask
+/// for are dropped first. A server that breaks the protocol, writes more
+/// than `MOST_UNREAD` bytes without finishing a reply, or exits is turned
+/// off, with a message for `take_notices`. A signal ends the wait early;
+/// `interrupted` is for `Process::send`.
 pub fn replies(
     asks: &[(String, Request)],
     wait: Duration,
     interrupted: fn() -> bool,
 ) -> Vec<Option<Reply>> {
     let deadline = Instant::now() + wait;
-    SERVERS.with_borrow_mut(|helpers| {
-        let requests: Vec<Vec<&Request>> = helpers
+    SERVERS.with_borrow_mut(|servers| {
+        let requests: Vec<Vec<&Request>> = servers
             .iter()
-            .map(|h| requests_for(asks, &h.mode))
+            .map(|s| requests_for(asks, &s.mode))
             .collect();
-        for (h, requests) in helpers.iter_mut().zip(&requests) {
-            if let State::Running(running) = &mut h.state {
+        for (s, requests) in servers.iter_mut().zip(&requests) {
+            if let State::Running(running) = &mut s.state {
                 running
                     .kept
                     .retain(|(request, _)| requests.contains(&request));
@@ -309,13 +309,13 @@ pub fn replies(
         }
         loop {
             let mut waiting = Vec::new();
-            for (h, requests) in helpers.iter_mut().zip(&requests) {
+            for (s, requests) in servers.iter_mut().zip(&requests) {
                 if requests.is_empty() {
                     continue;
                 }
-                match h.advance(requests, deadline, interrupted) {
+                match s.advance(requests, deadline, interrupted) {
                     Ok(fd) => waiting.extend(fd),
-                    Err(reason) => h.turn_off(reason),
+                    Err(reason) => s.turn_off(reason),
                 }
             }
             if waiting.is_empty()
@@ -327,8 +327,8 @@ pub fn replies(
         }
         asks.iter()
             .map(|(mode, request)| {
-                let h = helpers.iter().find(|h| h.mode == *mode)?;
-                match &h.state {
+                let s = servers.iter().find(|s| s.mode == *mode)?;
+                match &s.state {
                     State::Running(running) => running.kept(request).cloned(),
                     State::NotStarted | State::Starting(_) | State::Off(_) => None,
                 }
@@ -337,14 +337,14 @@ pub fn replies(
     })
 }
 
-/// The sockets of the helpers that owe inkline something: those still
+/// The sockets of the mode servers that owe inkline something: those still
 /// starting, and those with a request in flight. Waiting for a key also
 /// waits on them, so that `read_waiting` can take what they send.
 pub fn waiting_fds() -> Vec<RawFd> {
-    SERVERS.with_borrow(|helpers| {
-        helpers
+    SERVERS.with_borrow(|servers| {
+        servers
             .iter()
-            .filter_map(|h| match &h.state {
+            .filter_map(|s| match &s.state {
                 State::Starting(process) => Some(process.fd()),
                 State::Running(running) if running.in_flight.is_some() => {
                     Some(running.process.fd())
@@ -355,28 +355,28 @@ pub fn waiting_fds() -> Vec<RawFd> {
     })
 }
 
-/// Reads what the helpers in `waiting_fds` have sent, without waiting:
+/// Reads what the mode servers in `waiting_fds` have sent, without waiting:
 /// their first lines, and replies, which are kept for the next redraw to
-/// find. A helper that breaks the protocol, writes too much or exits is
+/// find. A server that breaks the protocol, writes too much or exits is
 /// turned off, with a message for `take_notices`. Whether the line must be
 /// drawn again: a reply came (the redraw uses it, or sends the request for
-/// the line as it is now), a helper started running (the redraw sends it
-/// its request), or a helper was turned off.
+/// the line as it is now), a server started running (the redraw sends it
+/// its request), or a server was turned off.
 pub fn read_waiting() -> bool {
-    SERVERS.with_borrow_mut(|helpers| {
+    SERVERS.with_borrow_mut(|servers| {
         let mut changed = false;
-        for h in helpers.iter_mut() {
-            let read = match &mut h.state {
-                State::Starting(_) => h
+        for s in servers.iter_mut() {
+            let read = match &mut s.state {
+                State::Starting(_) => s
                     .read_first_line()
-                    .map(|()| matches!(h.state, State::Running(_))),
+                    .map(|()| matches!(s.state, State::Running(_))),
                 State::Running(running) if running.in_flight.is_some() => running.read_reply(),
                 State::NotStarted | State::Running(_) | State::Off(_) => continue,
             };
             match read {
                 Ok(read) => changed |= read,
                 Err(reason) => {
-                    h.turn_off(reason);
+                    s.turn_off(reason);
                     changed = true;
                 }
             }
@@ -405,12 +405,12 @@ pub fn request(cwd: Vec<u8>, command: &CommandArgs) -> Request {
 
 /// Asks the server of the mode `mode` how deep the new line and the
 /// cursor's line are, with the cursor at `at` (an argument's index and a
-/// byte offset in its text) in `request`'s arguments. Only a running helper
-/// that named `indent` is asked. The reply to a request already in flight
-/// comes first (one request at a time), all within `wait`; a signal for
-/// which `interrupted` holds (such as C-c) ends the wait. `None` when no
-/// depths came: the helper was not asked, gave none in time, or sent only
-/// `:end`. A helper that fails is turned off, with a message for
+/// byte offset in its text) in `request`'s arguments. Only a running mode
+/// server that named `indent` is asked. The reply to a request already in
+/// flight comes first (one request at a time), all within `wait`; a signal
+/// for which `interrupted` holds (such as C-c) ends the wait. `None` when no
+/// depths came: the server was not asked, gave none in time, or sent only
+/// `:end`. A server that fails is turned off, with a message for
 /// `take_notices`.
 pub fn indent(
     mode: &str,
@@ -420,31 +420,31 @@ pub fn indent(
     interrupted: fn() -> bool,
 ) -> Option<Depths> {
     let deadline = Instant::now() + wait;
-    SERVERS.with_borrow_mut(|helpers| {
-        let h = helpers.iter_mut().find(|h| h.mode == mode)?;
-        let asked = h.read_first_line().and_then(|()| match &mut h.state {
+    SERVERS.with_borrow_mut(|servers| {
+        let s = servers.iter_mut().find(|s| s.mode == mode)?;
+        let asked = s.read_first_line().and_then(|()| match &mut s.state {
             State::Running(running) if running.indent => {
                 running.ask_indent(request, at, deadline, interrupted)
             }
             State::NotStarted | State::Starting(_) | State::Running(_) | State::Off(_) => Ok(None),
         });
         asked.unwrap_or_else(|reason| {
-            h.turn_off(reason);
+            s.turn_off(reason);
             None
         })
     })
 }
 
-/// Whether a helper was turned off and the message saying so is not taken
-/// yet.
+/// Whether a mode server was turned off and the message saying so is not
+/// taken yet.
 pub fn has_notices() -> bool {
-    SERVERS.with_borrow(|helpers| helpers.iter().any(|h| h.notice.is_some()))
+    SERVERS.with_borrow(|servers| servers.iter().any(|s| s.notice.is_some()))
 }
 
-/// Takes the messages saying helpers were turned off, in registration
-/// order.
+/// Takes the messages saying mode servers were turned off, in the order
+/// their modes were defined.
 pub fn take_notices() -> Vec<String> {
-    SERVERS.with_borrow_mut(|helpers| helpers.iter_mut().filter_map(|h| h.notice.take()).collect())
+    SERVERS.with_borrow_mut(|servers| servers.iter_mut().filter_map(|s| s.notice.take()).collect())
 }
 
 impl Server {
@@ -458,9 +458,9 @@ impl Server {
         }
     }
 
-    /// Starts the helper if it is not started, as `prepare` says, and reads
-    /// what has come of its first line if it is starting. The reason it
-    /// must be turned off, if it must.
+    /// Starts the mode server if it is not started, as `prepare` says, and
+    /// reads what has come of its first line if it is starting. The reason
+    /// it must be turned off, if it must.
     fn prepare(
         &mut self,
         path: &str,
@@ -473,9 +473,9 @@ impl Server {
         self.read_first_line()
     }
 
-    /// Reads what has come of the first line, if the helper is starting,
-    /// and has it running once the line is all there and good. The reason
-    /// it must be turned off, if it must.
+    /// Reads what has come of the first line, if the mode server is
+    /// starting, and has it running once the line is all there and good.
+    /// The reason it must be turned off, if it must.
     fn read_first_line(&mut self) -> Result<(), String> {
         let State::Starting(process) = &mut self.state else {
             return Ok(());
@@ -483,7 +483,7 @@ impl Server {
         if let Some(features) = read_version(process)? {
             let State::Starting(process) = std::mem::replace(&mut self.state, State::NotStarted)
             else {
-                unreachable!("the helper is starting");
+                unreachable!("the server is starting");
             };
             self.state = State::Running(Running {
                 process,
@@ -500,11 +500,12 @@ impl Server {
     }
 
     /// Does what can be done without waiting towards a reply for each of
-    /// `requests`, stopping at `deadline` if the helper keeps writing: reads
-    /// the first line or replies that have come, and sends the next request
-    /// when none is in flight (see `Process::send` for `interrupted`). The
-    /// socket to wait on when some request is still unanswered and the helper
-    /// owes inkline something, or the reason it must be turned off.
+    /// `requests`, stopping at `deadline` if the mode server keeps writing:
+    /// reads the first line or replies that have come, and sends the next
+    /// request when none is in flight (see `Process::send` for
+    /// `interrupted`). The socket to wait on when some request is still
+    /// unanswered and the server owes inkline something, or the reason it
+    /// must be turned off.
     fn advance(
         &mut self,
         requests: &[&Request],
@@ -560,7 +561,7 @@ impl Running {
 
     /// Reads what has come towards the reply to the request in flight,
     /// without waiting, and takes the reply once it is whole. Whether one
-    /// came, or the reason the helper must be turned off.
+    /// came, or the reason the mode server must be turned off.
     fn read_reply(&mut self) -> Result<bool, String> {
         loop {
             if self.take_reply()? {
@@ -578,7 +579,7 @@ impl Running {
     /// Takes the reply to the request in flight if the buffer holds all of
     /// it: keeps a colour reply, or drops it if it is forgotten; notes an
     /// indent reply in `indent_answer`. Whether one came, or the reason the
-    /// helper must be turned off.
+    /// mode server must be turned off.
     fn take_reply(&mut self) -> Result<bool, String> {
         let Some((id, asked)) = &self.in_flight else {
             return Ok(false);
@@ -616,7 +617,7 @@ impl Running {
     }
 
     /// See `indent`: the depths, `None` when none came by `deadline`, or
-    /// the reason the helper must be turned off.
+    /// the reason the mode server must be turned off.
     fn ask_indent(
         &mut self,
         request: &Request,
@@ -652,9 +653,9 @@ impl Running {
         }
     }
 
-    /// Waits until the helper writes more, `deadline` passes, or a signal
-    /// comes for which `interrupted` holds. Whether more came, or the
-    /// reason the helper must be turned off.
+    /// Waits until the mode server writes more, `deadline` passes, or a
+    /// signal comes for which `interrupted` holds. Whether more came, or the
+    /// reason the server must be turned off.
     fn wait_more(&mut self, deadline: Instant, interrupted: fn() -> bool) -> Result<bool, String> {
         loop {
             if interrupted() || Instant::now() >= deadline {
@@ -694,9 +695,9 @@ impl Running {
     }
 }
 
-/// Reads what has come of the helper's first line, without waiting. The
+/// Reads what has come of the mode server's first line, without waiting. The
 /// extra requests the line names once it has all come and is good, `None`
-/// while it has not all come, or the reason to turn the helper off.
+/// while it has not all come, or the reason to turn the server off.
 fn read_version(process: &mut Process) -> Result<Option<Vec<String>>, String> {
     loop {
         match protocol::version(process.buffer()) {
@@ -713,8 +714,8 @@ fn read_version(process: &mut Process) -> Result<Option<Vec<String>>, String> {
     }
 }
 
-/// An error when the helper has written more than `MOST_UNREAD` bytes that
-/// do not yet make a whole reply or first line.
+/// An error when the mode server has written more than `MOST_UNREAD` bytes
+/// that do not yet make a whole reply or first line.
 fn check_unread(process: &mut Process) -> Result<(), String> {
     if process.buffer().len() > MOST_UNREAD {
         return Err("bad reply: too much output".to_owned());
@@ -744,9 +745,10 @@ mod tests {
         prepare(&modes, &path(), || None);
         let deadline = Instant::now() + Duration::from_secs(2);
         let starting = || {
-            SERVERS.with_borrow(|hs| {
-                hs.iter()
-                    .any(|h| h.mode == mode && matches!(h.state, State::Starting(_)))
+            SERVERS.with_borrow(|servers| {
+                servers
+                    .iter()
+                    .any(|s| s.mode == mode && matches!(s.state, State::Starting(_)))
             })
         };
         while starting() && Instant::now() < deadline {
@@ -764,7 +766,7 @@ mod tests {
         )
     }
 
-    /// Asks the helper for `csvm` about `scripts`, starting it first.
+    /// Asks the mode server for `csvm` about `scripts`, starting it first.
     fn ask(scripts: &[&str], wait: Duration) -> Vec<Option<Reply>> {
         prepare(&["csvm".to_owned()], &path(), || None);
         let asks: Vec<_> = scripts
@@ -797,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn several_asks_of_one_helper_are_all_answered() {
+    fn several_asks_of_one_server_are_all_answered() {
         use crate::lexer::Kind::{Command, Number, Variable};
         define("csvm", fake("words"), None);
         let got = ask(&["a", "b c", "1"], Duration::from_secs(2));
@@ -843,8 +845,9 @@ mod tests {
         assert_eq!(ask(&["a"], Duration::from_millis(20)), [None]);
         assert!(!read_waiting(), "nothing has come yet");
         let answered = || {
-            SERVERS
-                .with_borrow(|hs| matches!(&hs[0].state, State::Running(r) if !r.kept.is_empty()))
+            SERVERS.with_borrow(
+                |servers| matches!(&servers[0].state, State::Running(r) if !r.kept.is_empty()),
+            )
         };
         assert!(read_until(answered));
         assert!(waiting_fds().is_empty(), "nothing in flight");
@@ -865,21 +868,23 @@ mod tests {
         let idle = || waiting_fds().is_empty();
         assert!(read_until(idle), "the dropped reply asks for a redraw");
         let kept = || {
-            SERVERS
-                .with_borrow(|hs| matches!(&hs[0].state, State::Running(r) if !r.kept.is_empty()))
+            SERVERS.with_borrow(
+                |servers| matches!(&servers[0].state, State::Running(r) if !r.kept.is_empty()),
+            )
         };
         assert!(!kept(), "the forgotten reply is not kept");
         assert!(ask(&["a"], Duration::from_secs(2))[0].is_some());
     }
 
     #[test]
-    fn a_helper_still_starting_is_waited_on() {
+    fn a_server_still_starting_is_waited_on() {
         // It prints its first line after 0.3 s.
         define("csvm", fake("slow"), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert_eq!(waiting_fds().len(), 1, "waited on while starting");
         assert!(!read_waiting(), "its first line has not come");
-        let running = || SERVERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
+        let running =
+            || SERVERS.with_borrow(|servers| matches!(servers[0].state, State::Running(_)));
         assert!(read_until(running), "moving to running asks for a redraw");
         assert!(running());
         assert!(waiting_fds().is_empty(), "nothing in flight");
@@ -887,19 +892,19 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_that_exits_between_redraws_is_off() {
+    fn a_server_that_exits_between_redraws_is_off() {
         define("csvm", fake("exit"), None);
         assert!(prepare_until_started("csvm").is_empty());
         // It exits once it has read the request this sends.
         assert_eq!(ask(&["a"], Duration::ZERO), [None]);
-        let off = || SERVERS.with_borrow(|hs| matches!(hs[0].state, State::Off(_)));
+        let off = || SERVERS.with_borrow(|servers| matches!(servers[0].state, State::Off(_)));
         assert!(read_until(off));
         assert_eq!(take_notices(), ["inkline: mode csvm: off (exited)"]);
         assert!(waiting_fds().is_empty());
     }
 
     #[test]
-    fn a_helper_that_exits_is_off() {
+    fn a_server_that_exits_is_off() {
         define("csvm", fake("exit"), None);
         assert_eq!(ask(&["a"], Duration::from_secs(2)), [None]);
         assert_eq!(take_notices(), ["inkline: mode csvm: off (exited)"]);
@@ -919,10 +924,11 @@ mod tests {
     }
 
     /// Reads never block, and the wait ends at its deadline. The fake writes
-    /// more slowly than inkline reads; a helper that writes faster is turned
-    /// off at `MOST_UNREAD` (see `a_helper_that_writes_too_much_is_off`).
+    /// more slowly than inkline reads; a mode server that writes faster is
+    /// turned off at `MOST_UNREAD` (see
+    /// `a_server_that_writes_too_much_is_off`).
     #[test]
-    fn a_helper_that_keeps_writing_does_not_hold_up_a_redraw() {
+    fn a_server_that_keeps_writing_does_not_hold_up_a_redraw() {
         define("csvm", fake("spew"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
@@ -932,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_that_writes_too_much_is_off() {
+    fn a_server_that_writes_too_much_is_off() {
         define("csvm", fake("spew"), None);
         let deadline = Instant::now() + Duration::from_secs(20);
         while !has_notices() && Instant::now() < deadline {
@@ -962,11 +968,11 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_starts_and_names_itself() {
+    fn a_server_starts_and_names_itself() {
         define("csvm", fake("words"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
-        let running = SERVERS.with_borrow(|hs| matches!(hs[0].state, State::Running(_)));
+        let running = SERVERS.with_borrow(|servers| matches!(servers[0].state, State::Running(_)));
         assert!(running);
     }
 
@@ -983,7 +989,7 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_off_once() {
-        define("csvm", Some(vec!["no-such-helper-xyz".to_owned()]), None);
+        define("csvm", Some(vec!["no-such-program-xyz".to_owned()]), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert!(has_notices());
         assert_eq!(take_notices(), ["inkline: mode csvm: off (not found)"]);
@@ -1005,7 +1011,7 @@ mod tests {
 
     #[test]
     fn defining_again_turns_an_off_server_back_on() {
-        define("csvm", Some(vec!["no-such-helper-xyz".to_owned()]), None);
+        define("csvm", Some(vec!["no-such-program-xyz".to_owned()]), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         define("csvm", fake("words"), None);
         assert_eq!(status_lines(&[]), ["mode csvm (): not started"]);
@@ -1014,7 +1020,7 @@ mod tests {
 
     #[test]
     fn removing_or_stopping_drops_the_messages_not_taken() {
-        let missing = || Some(vec!["no-such-helper-xyz".to_owned()]);
+        let missing = || Some(vec!["no-such-program-xyz".to_owned()]);
         define("a", missing(), None);
         define("b", missing(), None);
         prepare(&["a".to_owned(), "b".to_owned()], &path(), || None);
@@ -1026,7 +1032,7 @@ mod tests {
         assert!(!has_notices());
     }
 
-    /// Asks the helper for `csvm` for the depths at `(1, at)` in `script`.
+    /// Asks the mode server for `csvm` for the depths at `(1, at)` in `script`.
     fn depths(
         script: &str,
         at: usize,
@@ -1036,8 +1042,8 @@ mod tests {
         indent("csvm", &request(script), (1, at), wait, interrupted)
     }
 
-    /// A helper that names `indent`, then runs the shell code `then` once
-    /// it has read a line.
+    /// A mode server that names `indent`, then runs the shell code `then`
+    /// once it has read a line.
     fn indenting_sh(then: &str) -> Option<Vec<String>> {
         Some(vec![
             "/bin/sh".to_owned(),
@@ -1047,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn depths_come_from_a_helper_that_names_indent() {
+    fn depths_come_from_a_server_that_names_indent() {
         define("csvm", fake("indent"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let wait = Duration::from_secs(2);
@@ -1069,7 +1075,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_without_indent_is_not_asked() {
+    fn a_server_without_indent_is_not_asked() {
         define("csvm", fake("words"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
@@ -1079,7 +1085,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_that_is_not_running_is_not_asked() {
+    fn a_server_that_is_not_running_is_not_asked() {
         define("csvm", fake("indent"), None);
         assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
         assert_eq!(status_lines(&[]), ["mode csvm (): not started"]);
@@ -1114,7 +1120,7 @@ mod tests {
     }
 
     /// Depths that come too late are read and dropped, not taken for
-    /// colours, and do not turn the helper off.
+    /// colours, and do not turn the mode server off.
     #[test]
     fn a_late_indent_reply_is_dropped() {
         define("csvm", fake("slow-indent"), None);
@@ -1165,9 +1171,9 @@ mod tests {
 
     /// Whether a request to the server of the mode `mode` is in flight.
     fn asked_anything(mode: &str) -> bool {
-        SERVERS.with_borrow(|helpers| {
-            helpers.iter().any(|h| {
-                h.mode == mode && matches!(&h.state, State::Running(r) if r.in_flight.is_some())
+        SERVERS.with_borrow(|servers| {
+            servers.iter().any(|s| {
+                s.mode == mode && matches!(&s.state, State::Running(r) if r.in_flight.is_some())
             })
         })
     }
@@ -1184,7 +1190,7 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_depth_line_turns_the_helper_off() {
+    fn a_broken_depth_line_turns_the_server_off() {
         define(
             "csvm",
             indenting_sh("printf ':depth x 1\\n:end 1\\n'; cat >/dev/null"),
@@ -1199,17 +1205,17 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_that_exits_while_asked_for_depths_is_off() {
+    fn a_server_that_exits_while_asked_for_depths_is_off() {
         define("csvm", indenting_sh("exit 0"), None);
         assert!(prepare_until_started("csvm").is_empty());
         assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
         assert_eq!(take_notices(), ["inkline: mode csvm: off (exited)"]);
     }
 
-    /// A helper that writes lines without end, and never its depths, does
-    /// not hold up the new line past the wait.
+    /// A mode server that writes lines without end, and never its depths,
+    /// does not hold up the new line past the wait.
     #[test]
-    fn a_helper_that_keeps_writing_does_not_hold_up_the_indent_wait() {
+    fn a_server_that_keeps_writing_does_not_hold_up_the_indent_wait() {
         define("csvm", indenting_sh("while :; do echo :x; done"), None);
         assert!(prepare_until_started("csvm").is_empty());
         let began = Instant::now();
@@ -1223,7 +1229,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_program_again_keeps_the_helper_and_changes_its_colours() {
+    fn the_same_program_again_keeps_the_server_and_changes_its_colours() {
         define("csvm", fake("words"), Some(set("35")));
         assert!(prepare_until_started("csvm").is_empty());
         define("csvm", fake("words"), Some(set("36")));
@@ -1237,8 +1243,8 @@ mod tests {
     }
 
     #[test]
-    fn the_same_program_again_turns_an_off_helper_back_on() {
-        let missing = || Some(vec!["no-such-helper-xyz".to_owned()]);
+    fn the_same_program_again_turns_an_off_server_back_on() {
+        let missing = || Some(vec!["no-such-program-xyz".to_owned()]);
         define("csvm", missing(), None);
         prepare(&["csvm".to_owned()], &path(), || None);
         assert_eq!(status_lines(&[]), ["mode csvm (): off (not found)"]);

@@ -156,8 +156,9 @@ pub fn load(path: &str) -> Result<(), String> {
 }
 
 /// `inkline reload`: puts back the keys inkline still owns, forgets every
-/// highlight helper, starts a fresh interpreter, sets the layout's readline
-/// variables and binds the layout again, and reads `init.el` again.
+/// command mode and stops its server, starts a fresh interpreter, sets the
+/// layout's readline variables and binds the layout again, and reads
+/// `init.el` again.
 /// `Ok(false)` when `init.el` was skipped or failed; its problem is already
 /// printed.
 #[cfg(not(test))]

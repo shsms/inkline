@@ -1,6 +1,6 @@
 //! Where the lines of a multi-line command start: the indentation for a new
 //! line, closing words that move a line back out, and the indentation inside
-//! a program's script from the depths its helper gives.
+//! a program's script from the depths its mode server gives.
 
 use crate::mode_server::protocol::Depths;
 
@@ -56,8 +56,8 @@ pub fn indentation(line: &str) -> &str {
     &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
 }
 
-/// The most nesting levels a helper's depth counts for: a larger depth is
-/// taken as this, so a wrong reply cannot make a huge line.
+/// The most nesting levels a mode server's depth counts for: a larger depth
+/// is taken as this, so a wrong reply cannot make a huge line.
 pub const MOST_DEPTH: usize = 20;
 
 /// The indentation of a line at `depth` inside a program's script: `base`,
@@ -79,7 +79,7 @@ pub struct ScriptLine {
 /// How a new line at `point` in `text` is indented, inside a script whose
 /// command's name is on the line that starts at `command_line` and whose
 /// argument starts on the line that starts at `first_line` (the script's
-/// first line). With the helper's `depths`, the new line gets `NEW`'s
+/// first line). With the mode server's `depths`, the new line gets `NEW`'s
 /// indentation; the cursor's line moves out to `CURRENT`'s when the cursor
 /// is past its first non-blank character, it is not the script's first
 /// line, and that is less far in than it is now (a line is never pushed

@@ -150,7 +150,7 @@ pub struct ColorSet {
 
 impl ColorSet {
     /// A set from `entries` (name, value in codes or words). The first
-    /// entry for a name wins. A name other than the nine a helper sends
+    /// entry for a name wins. A name other than the nine a mode server sends
     /// and `script`, or a value that cannot be read, is an error, in a
     /// later entry for a name too.
     pub fn from_entries(entries: &[(String, String)]) -> Result<ColorSet, String> {
@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_set_takes_only_the_helper_names() {
+    fn a_mode_set_takes_only_the_server_names() {
         for name in [
             "command", "keyword", "option", "operator", "string", "number", "variable", "function",
             "comment", "script",

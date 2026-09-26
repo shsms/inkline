@@ -1,14 +1,14 @@
-//! Version 1 of the line protocol inkline speaks with a highlight helper: the
+//! Version 1 of the line protocol inkline speaks with a mode server: the
 //! requests inkline writes (colours, and with the `indent` feature,
-//! indentation), and the replies a helper writes back. All numbers are
+//! indentation), and the replies a server writes back. All numbers are
 //! decimal ASCII; lengths and offsets count bytes.
 
 use std::collections::BTreeMap;
 
 use crate::lexer::Kind;
 
-/// The first line a helper must print, before any words naming the extra
-/// requests it can answer.
+/// The first line a mode server must print, before any words naming the
+/// extra requests it can answer.
 pub const VERSION_LINE: &str = "inkline-mode 1";
 
 /// Writes a request: `:request ID`, `:cwd LEN` + bytes, one `:arg` per
@@ -71,7 +71,7 @@ impl<T> Read<T> {
     }
 }
 
-/// Reads the helper's first line: `Done` with the feature words after
+/// Reads the mode server's first line: `Done` with the feature words after
 /// `inkline-mode 1` (empty for the bare line, and consuming that many
 /// bytes); `Bad("not a mode server")` for any other first line.
 pub fn version(buf: &[u8]) -> Read<Vec<String>> {
@@ -95,7 +95,7 @@ pub fn version(buf: &[u8]) -> Read<Vec<String>> {
     Read::Done(words.split(' ').map(str::to_owned).collect(), used)
 }
 
-/// A helper's whole reply to one request: the spans it kept and the one
+/// A mode server's whole reply to one request: the spans it kept and the one
 /// error it may have raised.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reply {
@@ -282,7 +282,7 @@ pub struct Depths {
 
 /// Reads a whole indent reply: at most one `:depth NEW CURRENT` line, then
 /// `:end ID`; other lines starting with `:` are ignored. `Done(None, _)`
-/// for a reply with no `:depth`: the helper cannot tell. `seen` is as for
+/// for a reply with no `:depth`: the server cannot tell. `seen` is as for
 /// `reply`.
 pub fn indent_reply(buf: &[u8], id: u64, seen: &mut usize) -> Read<Option<Depths>> {
     if !settled(buf, seen) {

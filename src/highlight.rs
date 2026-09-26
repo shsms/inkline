@@ -1,4 +1,4 @@
-//! Paints the colours highlight helpers sent over the colours bash's own
+//! Paints the colours mode servers sent over the colours bash's own
 //! syntax gives the line.
 
 use std::ops::Range;
@@ -8,22 +8,22 @@ use crate::colors::{ColorSet, Colors};
 use crate::lexer::{Kind, Span, merge};
 use crate::mode_server::protocol::Reply;
 
-/// The line's colours with the helpers' replies painted in.
+/// The line's colours with the mode servers' replies painted in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Painted {
-    /// Bash's spans with the helpers' spans over them, sorted and not
+    /// Bash's spans with the mode servers' spans over them, sorted and not
     /// overlapping.
     pub spans: Vec<Span>,
-    /// The typed bytes of each argument a helper coloured (the bytes its
-    /// text came from), for the `script` style: sorted, not overlapping,
+    /// The typed bytes of each argument a mode server coloured (the bytes
+    /// its text came from), for the `script` style: sorted, not overlapping,
     /// and never an argument's quote marks.
     pub script: Vec<Range<usize>>,
-    /// The bytes whose kind colour a helper gave, for commands with colours
-    /// of their own, with the index of those colours: sorted, not
-    /// overlapping.
+    /// The bytes whose kind colour a mode server gave, for commands whose
+    /// mode has colours of its own, with the index of those colours: sorted,
+    /// not overlapping.
     pub span_sets: Vec<(Range<usize>, usize)>,
-    /// The bytes of `script` that belong to commands with colours of their
-    /// own, with the index of those colours: sorted, not overlapping.
+    /// The bytes of `script` that belong to commands whose mode has colours
+    /// of its own, with the index of those colours: sorted, not overlapping.
     pub script_sets: Vec<(Range<usize>, usize)>,
     /// The error to show: the bytes of the line it points at (`None` when it
     /// has no place there), and `NAME: MESSAGE`.
@@ -70,17 +70,17 @@ pub fn with_sets(
     (answered, sets)
 }
 
-/// Paints `found`, each command with the reply its helper sent for it, in
-/// line order, over `bash`, the line's own spans (`line_len` bytes long).
+/// Paints `found`, each command with the reply its mode server sent for it,
+/// in line order, over `bash`, the line's own spans (`line_len` bytes long).
 ///
-/// A helper's span goes over bash's colours on the typed bytes it maps to,
-/// except where bash has a variable (`$x` inside a double-quoted script
+/// A mode server's span goes over bash's colours on the typed bytes it maps
+/// to, except where bash has a variable (`$x` inside a double-quoted script
 /// stays bash's) and on quote marks, which a `raw` argument's bytes still
-/// hold: a helper never colours those. The error is the first one, in line
+/// hold: a server never colours those. The error is the first one, in line
 /// order, that is not inside a `raw` argument: bash will change that text
-/// before the program sees it. A command with colours of its own has its
-/// bytes noted in `span_sets` and `script_sets`; bash's own colours inside
-/// its arguments are not.
+/// before the program sees it. A command whose mode has colours of its own
+/// has its bytes noted in `span_sets` and `script_sets`; bash's own colours
+/// inside its arguments are not.
 pub fn paint(line_len: usize, bash: &[Span], found: &[Answered]) -> Painted {
     let mut labels: Vec<Option<Kind>> = vec![None; line_len];
     for span in bash {
@@ -241,8 +241,8 @@ mod tests {
         })
     }
 
-    /// Paints `line` with one reply per `csvm` command on it, none with
-    /// colours of its own.
+    /// Paints `line` with one reply per `csvm` command on it, none whose
+    /// mode has colours of its own.
     fn painted(line: &str, replies: Vec<Reply>) -> Painted {
         let (commands, bash) = parse(line);
         assert_eq!(commands.len(), replies.len(), "{line}");
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn a_double_quoted_argument_maps_back_past_the_backslashes() {
         let line = r#"csvm "a \"b\" 1""#;
-        // The helper got `a "b" 1`.
+        // The server got `a "b" 1`.
         let p = painted(
             line,
             vec![reply(
@@ -323,7 +323,7 @@ mod tests {
     #[allow(clippy::single_range_in_vec_init)]
     fn bash_variables_keep_their_colour() {
         let line = r#"csvm "a $x 1""#;
-        // A raw argument: the helper got the text as typed.
+        // A raw argument: the server got the text as typed.
         let p = painted(line, vec![reply(vec![span(1, 0, 13 - 5, Keyword)], None)]);
         assert_eq!(
             labels(line, &p),
@@ -335,7 +335,7 @@ mod tests {
                 (Keyword, " 1"),
                 (Kind::String, "\""),
             ],
-            "the quote marks are never the helper's"
+            "the quote marks are never the server's"
         );
         assert_eq!(p.script, [6..12], "nor the script's");
     }
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn an_error_range_maps_to_the_typed_bytes() {
         let line = r#"csvm "a\"b""#;
-        // The helper got `a"b`; the error covers `"b`, not the backslash.
+        // The server got `a"b`; the error covers `"b`, not the backslash.
         let p = painted(line, vec![reply(vec![], err(Some((1, 1, 3)), "e"))]);
         assert_eq!(p.error, Some((Some(8..10), "csvm: e".to_owned())));
     }

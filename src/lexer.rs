@@ -16,10 +16,10 @@ pub enum Kind {
     Variable,
     Operator,
     Comment,
-    /// A numeric literal. Only a highlight helper produces this (never the
+    /// A numeric literal. Only a mode server produces this (never the
     /// lexer itself).
     Number,
-    /// A function name. Only a highlight helper produces this (never the
+    /// A function name. Only a mode server produces this (never the
     /// lexer itself).
     Function,
 }

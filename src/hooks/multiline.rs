@@ -140,8 +140,8 @@ pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
 /// line left moves out when it starts with a closing word, the spaces and
 /// tabs around the cursor go, and the new line gets its indentation.
 ///
-/// Inside a quoted argument of a command that has a highlight helper, the
-/// helper says how deep both lines are (see `in_script`); without its answer,
+/// Inside a quoted argument of a command that uses a mode, the mode's
+/// server says how deep both lines are (see `in_script`); without its answer,
 /// the new line gets the indentation of the cursor's line, or one step in from
 /// the command's line when the cursor is on the line the script starts on.
 /// Between an empty pair of such quotes, the new line is one step in from
@@ -219,15 +219,15 @@ fn new_line(line: &str, point: usize, close_below: bool) {
     ffi::end_undo_group();
 }
 
-/// A new line's place inside a quoted argument of a command that has a
-/// highlight helper.
+/// A new line's place inside a quoted argument of a command that uses a
+/// mode.
 struct InScript {
     /// Where the line that holds the command's name starts.
     command_line: usize,
     /// Where the line the argument starts on starts: the script's first
     /// line.
     first_line: usize,
-    /// The depths the helper gave; `None` when it was not asked or gave
+    /// The depths the server gave; `None` when it was not asked or gave
     /// none in time.
     depths: Option<Depths>,
     /// Whether the cursor is between the argument's opening quote and the

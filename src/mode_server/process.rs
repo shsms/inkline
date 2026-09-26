@@ -1,5 +1,5 @@
-//! A highlight helper's process, started apart from bash, and inkline's end of
-//! the one socket that is the helper's stdin and stdout.
+//! A mode server's process, started apart from bash, and inkline's end of
+//! the one socket that is the server's stdin and stdout.
 
 use std::ffi::OsStr;
 use std::io::ErrorKind;
@@ -11,14 +11,14 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The longest `send` waits for the helper to take a request.
+/// The longest `send` waits for the server to take a request.
 const SEND_WAIT: Duration = Duration::from_secs(1);
 
 /// How often a wait looks for a signal to act on: one that came just before
 /// a wait began does not end it.
 pub const SIGNAL_CHECK: Duration = Duration::from_millis(20);
 
-/// The most one read takes from the helper, so a helper that writes without
+/// The most one read takes from the server, so a server that writes without
 /// end cannot keep a read going.
 const MOST_PER_READ: usize = 64 << 10;
 
@@ -33,24 +33,24 @@ const HIGH_FDS_END: RawFd = 256;
 /// The lowest descriptor inkline's end of a socket may have.
 const LOWEST_FD: RawFd = 10;
 
-/// Why a helper whose descriptor no longer holds its socket is turned off.
+/// Why a server whose descriptor no longer holds its socket is turned off.
 const LOST: &str = "connection lost";
 
-/// A started helper. Dropping it closes inkline's end of the socket: the
-/// helper sees the end of its input and exits. A subshell bash forked while
-/// the helper ran (such as `while :; do sleep 100; done &`) holds a copy of
+/// A started server. Dropping it closes inkline's end of the socket: the
+/// server sees the end of its input and exits. A subshell bash forked while
+/// the server ran (such as `while :; do sleep 100; done &`) holds a copy of
 /// that end, as close-on-exec only closes it for programs bash runs, so the
-/// helper then sees the end of its input only once that subshell ends too.
+/// server then sees the end of its input only once that subshell ends too.
 pub struct Process {
     /// inkline's end of the socket, until it is given up (see `socket`):
     /// on a high descriptor (see `HIGH_FDS_END`), close-on-exec and
     /// non-blocking, so commands bash runs do not inherit it and a stuck
-    /// helper never blocks inkline.
+    /// server never blocks inkline.
     socket: Option<OwnedFd>,
     /// The socket's device and inode, which tell whether its descriptor
     /// still holds it.
     id: FileId,
-    /// What the helper wrote and the caller has not taken yet.
+    /// What the server wrote and the caller has not taken yet.
     buf: Vec<u8>,
 }
 
@@ -59,10 +59,10 @@ type FileId = (libc::dev_t, libc::ino_t);
 
 /// Starts `program` (a program, then its arguments) with a socket as its
 /// stdin and stdout and `/dev/null` as its stderr. A program named without a
-/// `/` is looked up in `path`, bash's `PATH`. The helper's environment is
+/// `/` is looked up in `path`, bash's `PATH`. The server's environment is
 /// `environment`, `NAME=VALUE` entries (bash's exported variables and
 /// functions), or with `None` this process's own. It starts in `/`, so that
-/// it keeps no directory busy (requests give it the shell's). The helper is
+/// it keeps no directory busy (requests give it the shell's). The server is
 /// not bash's child: a middle process forks it and exits at once. It has a
 /// session of its own, so C-c at the prompt does not reach it. Errors are
 /// `not found` and `cannot run: ERROR`.
@@ -80,7 +80,7 @@ pub fn start(
     } else {
         crate::commands::find_program(name, path).ok_or_else(|| "not found".to_owned())?
     };
-    // The helper starts in `/`, so a relative path is made whole from the
+    // The server starts in `/`, so a relative path is made whole from the
     // shell's directory first.
     let file = std::path::absolute(file).map_err(cannot_run)?;
     let (ours, theirs) = UnixStream::pair().map_err(cannot_run)?;
@@ -125,7 +125,7 @@ pub fn start(
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            // The helper starts as bash starts its own commands: with the
+            // The server starts as bash starts its own commands: with the
             // signal mask bash had and the signals interactive bash ignores
             // back to their defaults.
             libc::pthread_sigmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut());
@@ -217,9 +217,9 @@ fn open_file_limit() -> libc::c_int {
 
 /// Marks every descriptor from 3 up close-on-exec, so that the program
 /// about to run holds none of bash's descriptors (a pipe bash closes later
-/// must not stay open in the helper). `limit` is above every open one.
+/// must not stay open in the server). `limit` is above every open one.
 /// Only async-signal-safe calls: it runs between fork and exec. std has
-/// already put the helper's stdin, stdout and stderr on 0 to 2, and its
+/// already put the server's stdin, stdout and stderr on 0 to 2, and its
 /// pipe that reports a failed exec is close-on-exec already.
 fn close_on_exec_from_3(limit: libc::c_int) {
     // SAFETY: `close_range` and `fcntl` change only descriptor flags.
@@ -274,9 +274,9 @@ impl Drop for BlockChild {
 }
 
 impl Process {
-    /// Writes all of `bytes`, waiting up to a second for the helper to make
+    /// Writes all of `bytes`, waiting up to a second for the server to make
     /// room, or until a signal arrives for which `interrupted` holds (one
-    /// that must be acted on at once, such as C-c). A helper that has gone is
+    /// that must be acted on at once, such as C-c). A server that has gone is
     /// `exited`, and never raises SIGPIPE; one that takes too long is `bad
     /// reply: request not read`; one whose descriptor no longer holds its
     /// socket is `connection lost`.
@@ -285,7 +285,7 @@ impl Process {
         let deadline = Instant::now() + SEND_WAIT;
         let mut rest = bytes;
         while !rest.is_empty() {
-            // `MSG_NOSIGNAL`: writing to a helper that has gone returns
+            // `MSG_NOSIGNAL`: writing to a server that has gone returns
             // `EPIPE` instead of raising SIGPIPE, which would kill bash. std's
             // own `write` on a `UnixStream` sets it only since Rust 1.90, and
             // its `write_vectored` never does, so it is set here.
@@ -320,10 +320,10 @@ impl Process {
         Ok(())
     }
 
-    /// Reads what the helper has written into the buffer. With `until`, when
+    /// Reads what the server has written into the buffer. With `until`, when
     /// nothing is there yet, waits until then for something to come, and
     /// returns as soon as it does. Whether it added anything to the buffer;
-    /// `Err("exited")` once the helper's output has ended and all of it is
+    /// `Err("exited")` once the server's output has ended and all of it is
     /// in the buffer; `Err("connection lost")` once its descriptor no longer
     /// holds its socket.
     pub fn fill(&mut self, until: Option<Instant>) -> Result<bool, String> {
@@ -340,9 +340,9 @@ impl Process {
         }
     }
 
-    /// Reads what the helper has written so far, up to `MOST_PER_READ`
+    /// Reads what the server has written so far, up to `MOST_PER_READ`
     /// bytes, without waiting. Whether it added anything to the buffer;
-    /// `Err("exited")` at the end of the helper's output when it added
+    /// `Err("exited")` at the end of the server's output when it added
     /// nothing; `Err("connection lost")` as `socket` says.
     fn read_now(&mut self) -> Result<bool, String> {
         let fd = self.socket()?;
@@ -380,7 +380,7 @@ impl Process {
         Ok(got)
     }
 
-    /// What the helper wrote and the caller has not taken yet. The caller
+    /// What the server wrote and the caller has not taken yet. The caller
     /// removes what it has read.
     pub fn buffer(&mut self) -> &mut Vec<u8> {
         &mut self.buf
@@ -429,7 +429,7 @@ fn ready(fd: RawFd, events: libc::c_short, deadline: Instant) -> bool {
     ready_any(&[fd], events, deadline)
 }
 
-/// Waits until one of the helpers' sockets `fds` has something to read, has
+/// Waits until one of the servers' sockets `fds` has something to read, has
 /// hung up or failed, `deadline` has passed, or a signal arrives. Whether
 /// one did.
 pub fn readable(fds: &[RawFd], deadline: Instant) -> bool {
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn a_missing_program_is_not_found() {
         let err = start(
-            &["no-such-helper-xyz".to_owned()],
+            &["no-such-program-xyz".to_owned()],
             "/nonexistent:/bin",
             None,
         )
@@ -504,12 +504,12 @@ mod tests {
     #[test]
     fn a_plain_name_is_found_in_the_path_given() {
         let dir = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(&fake("words")[0], dir.path().join("fake-hl")).unwrap();
+        std::os::unix::fs::symlink(&fake("words")[0], dir.path().join("fake-server")).unwrap();
         let dirs = format!("/nonexistent:{}:{}", dir.path().display(), path());
-        let mut p = start(&["fake-hl".to_owned(), "words".to_owned()], &dirs, None).unwrap();
+        let mut p = start(&["fake-server".to_owned(), "words".to_owned()], &dirs, None).unwrap();
         assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         assert_eq!(
-            start(&["fake-hl".to_owned()], &path(), None)
+            start(&["fake-server".to_owned()], &path(), None)
                 .err()
                 .as_deref(),
             Some("not found")
@@ -517,14 +517,14 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_starts_in_the_root_directory() {
+    fn a_server_starts_in_the_root_directory() {
         let program = ["/bin/sh", "-c", "pwd -P"].map(str::to_owned);
         let mut p = start(&program, &path(), None).unwrap();
         assert_eq!(line(&mut p).unwrap(), "/\n");
     }
 
     #[test]
-    fn a_helper_gets_the_environment_given_and_no_other() {
+    fn a_server_gets_the_environment_given_and_no_other() {
         let program = ["/bin/sh", "-c", "echo \"$CSVM_X ${HOME-unset}\""].map(str::to_owned);
         let environment = Some(vec![b"CSVM_X=a=b".to_vec()]);
         let mut p = start(&program, &path(), environment).unwrap();
@@ -565,15 +565,15 @@ mod tests {
     }
 
     /// Another file on the socket's descriptor (as after `exec N>&-
-    /// N>file`) belongs to whoever put it there: the helper stops using
-    /// it, and dropping the helper leaves it open.
+    /// N>file`) belongs to whoever put it there: the server stops using
+    /// it, and dropping the server leaves it open.
     #[test]
     fn a_socket_replaced_under_inkline_is_given_up_not_closed() {
         let mut p = start(&fake("words"), &path(), None).unwrap();
         assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         let fd = p.fd();
         let null = std::fs::File::open("/dev/null").unwrap();
-        // SAFETY: `fd` is the helper's socket, which this test owns.
+        // SAFETY: `fd` is the server's socket, which this test owns.
         assert_eq!(unsafe { libc::dup2(null.as_raw_fd(), fd) }, fd);
         assert_eq!(
             p.send(b":request 1\n", || false),
@@ -607,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_answers_a_request() {
+    fn a_server_answers_a_request() {
         let mut p = start(&fake("words"), &path(), None).unwrap();
         assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         p.send(
@@ -633,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_that_exits_is_exited_without_sigpipe() {
+    fn a_server_that_exits_is_exited_without_sigpipe() {
         let mut p = start(&fake("exit"), &path(), None).unwrap();
         assert_eq!(line(&mut p).unwrap(), "inkline-mode 1\n");
         p.send(b":request 1\n:cwd 0\n\n:arg final 4\ncsvm\n:done\n", || {
@@ -674,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_that_reads_nothing_is_not_reading() {
+    fn a_server_that_reads_nothing_is_not_reading() {
         let mut p = start(&["sleep".to_owned(), "5".to_owned()], "/usr/bin:/bin", None).unwrap();
         let big = vec![b'x'; 16 << 20];
         let before = Instant::now();
@@ -685,7 +685,7 @@ mod tests {
         assert!(before.elapsed() >= SEND_WAIT);
     }
 
-    /// Sends a request that a helper which reads nothing cannot take, while
+    /// Sends a request that a server which reads nothing cannot take, while
     /// SIGUSR2 arrives every 50 ms. What `send` returned, and how long it
     /// took.
     fn send_while_signalled(interrupted: fn() -> bool) -> (Result<(), String>, Duration) {
@@ -715,7 +715,7 @@ mod tests {
     }
 
     /// A signal to act on at once, such as the one C-c sends, ends the wait
-    /// for the helper to take a request.
+    /// for the server to take a request.
     #[test]
     fn a_signal_to_act_on_ends_the_wait_to_send() {
         let (sent, took) = send_while_signalled(|| true);
