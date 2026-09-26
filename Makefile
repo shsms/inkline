@@ -15,9 +15,11 @@ all: build
 build:
 	cargo build --release
 
+# Running shells keep the library mapped for good, so it must never be
+# rewritten in place, as cp would do. install(1) removes the old file and
+# creates a new one.
 install: build
-	mkdir -p $(LIBDIR)
-	cp target/release/libinkline.so $(LIBDIR)/
+	install -D -m 755 target/release/libinkline.so $(LIBDIR)/libinkline.so
 
 test:
 	cargo test
