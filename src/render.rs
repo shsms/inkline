@@ -14,6 +14,9 @@ use unicode_width::UnicodeWidthChar;
 use crate::colors::Colors;
 use crate::lexer::{Kind, Span};
 
+mod menu;
+pub use menu::MenuView;
+
 /// Everything `build` needs to repaint the line once.
 pub struct Repaint<'a> {
     /// Columns used by the last line of the prompt.
@@ -45,6 +48,8 @@ pub struct Repaint<'a> {
     /// Text to show on the row after the line's last row. While it shows,
     /// a suggestion takes one row.
     pub message: Option<&'a str>,
+    /// The completion menu to show under the line, below the message.
+    pub menu: Option<MenuView<'a>>,
     pub rows: usize,
     pub cols: usize,
 }
@@ -55,6 +60,9 @@ pub struct Output {
     pub suggestion_col: Option<usize>,
     /// How many rows below the cursor the message is, if one was drawn.
     pub message_rows: Option<usize>,
+    /// How many rows below the cursor the menu's first row is, if a menu was
+    /// drawn.
+    pub menu_rows: Option<usize>,
 }
 
 impl Repaint<'_> {
@@ -140,7 +148,14 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
         .message
         .map(|text| fit(&expand_tabs(text, 0), cols.saturating_sub(1)).to_owned())
         .filter(|text| !text.is_empty() && end.0 + 2 <= repaint.rows);
-    let suggestion_lines = if message.is_some() {
+    // The menu takes the rows left below the line and the message.
+    let menu = repaint.menu.as_ref().map_or_else(Vec::new, |view| {
+        let room = repaint
+            .rows
+            .saturating_sub(end.0 + 1 + usize::from(message.is_some()));
+        menu::rows(view, room, cols, repaint.colors)
+    });
+    let suggestion_lines = if message.is_some() || !menu.is_empty() {
         1
     } else {
         repaint.suggestion_lines
@@ -174,20 +189,36 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
     }
 
     let mut message_rows = None;
-    if let Some(text) = message {
+    let mut menu_rows = None;
+    let under: Vec<&str> = message
+        .as_deref()
+        .into_iter()
+        .chain(menu.iter().map(String::as_str))
+        .collect();
+    if !under.is_empty() {
         // A line feed from the last row scrolls the screen as needed; the
         // cursor then goes back up by rows, as after a multi-row suggestion.
         let below = end.0 - cursor.0 + 1;
         if below > 1 {
             let _ = write!(out, "\x1b[{}B", below - 1);
         }
-        let _ = write!(out, "\r\n{text}\x1b[K\x1b[{below}A\x1b[{}G", cursor.1 + 1);
-        message_rows = Some(below);
+        for row in &under {
+            let _ = write!(out, "\r\n{row}\x1b[K");
+        }
+        let _ = write!(
+            out,
+            "\x1b[{}A\x1b[{}G",
+            below - 1 + under.len(),
+            cursor.1 + 1
+        );
+        message_rows = message.is_some().then_some(below);
+        menu_rows = (!menu.is_empty()).then_some(below + usize::from(message.is_some()));
     }
     Some(Output {
         bytes: out,
         suggestion_col,
         message_rows,
+        menu_rows,
     })
 }
 
@@ -431,6 +462,7 @@ mod tests {
             span_sets: &[],
             script_sets: &[],
             message: None,
+            menu: None,
             rows: 24,
             cols: 80,
         }
@@ -438,6 +470,175 @@ mod tests {
 
     fn text(out: &Output) -> String {
         String::from_utf8(out.bytes.clone()).unwrap()
+    }
+
+    /// The default colours with no colour for the source letter.
+    fn plain_menu() -> Colors {
+        Colors::from_entries(&[("menu-source".to_owned(), String::new())]).unwrap()
+    }
+
+    /// A menu of `items` with no pick and room for eight rows.
+    fn view(items: &[crate::menu::Item]) -> MenuView<'_> {
+        MenuView {
+            items,
+            picked: None,
+            max_rows: 8,
+        }
+    }
+
+    fn items(texts: &[&str]) -> Vec<crate::menu::Item> {
+        texts
+            .iter()
+            .map(|t| crate::menu::Item {
+                text: t.to_string(),
+                start: 0,
+                end: 0,
+                source: crate::menu::Source::History,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_menu_goes_under_the_line() {
+        let colors = Colors::parse("menu-source=2:menu-selected=7");
+        let list = items(&["git status", "git stash"]);
+        let out = build(&Repaint {
+            menu: Some(MenuView {
+                picked: Some(1),
+                ..view(&list)
+            }),
+            ..repaint("git st", 6, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).ends_with(
+                "\r\n\x1b[2mh\x1b[0m  git status\x1b[K\r\n\x1b[7mh  git stash\x1b[0m\x1b[K\x1b[2A\x1b[9G"
+            ),
+            "{:?}",
+            text(&out)
+        );
+        assert_eq!(out.menu_rows, Some(1));
+        assert_eq!(out.message_rows, None);
+    }
+
+    #[test]
+    fn the_menu_goes_below_the_message() {
+        let colors = plain_menu();
+        let list = items(&["ab"]);
+        let out = build(&Repaint {
+            message: Some("hello"),
+            menu: Some(view(&list)),
+            ..repaint("a", 1, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).ends_with("\r\nhello\x1b[K\r\nh  ab\x1b[K\x1b[2A\x1b[4G"),
+            "{:?}",
+            text(&out)
+        );
+        assert_eq!(out.message_rows, Some(1));
+        assert_eq!(out.menu_rows, Some(2));
+    }
+
+    #[test]
+    fn the_menu_gets_only_the_rows_left() {
+        let colors = plain_menu();
+        let list = items(&["a1", "a2", "a3", "a4"]);
+        // Four screen rows, the line takes one: three rows for the menu,
+        // two items and the count.
+        let out = build(&Repaint {
+            rows: 4,
+            menu: Some(view(&list)),
+            ..repaint("a", 1, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).contains("\r\nh  a1\x1b[K\r\nh  a2\x1b[K\r\n   … 2 more\x1b[K"),
+            "{:?}",
+            text(&out)
+        );
+        // A line that fills the screen leaves no row: no menu at all.
+        let out = build(&Repaint {
+            rows: 1,
+            menu: Some(view(&list)),
+            ..repaint("a", 1, &[], &colors)
+        })
+        .unwrap();
+        assert!(!text(&out).contains("a1"));
+        assert_eq!(out.menu_rows, None);
+        // A screen too narrow for a row's letter and spaces: no menu either.
+        let out = build(&Repaint {
+            cols: 3,
+            menu: Some(view(&list)),
+            ..repaint("a", 1, &[], &colors)
+        })
+        .unwrap();
+        assert_eq!(out.menu_rows, None);
+    }
+
+    #[test]
+    fn rows_are_cut_to_the_width() {
+        let colors = plain_menu();
+        let list = items(&["0123456789", "日本語日本語", "a\tb"]);
+        let out = build(&Repaint {
+            cols: 10,
+            menu: Some(view(&list)),
+            ..repaint("a", 1, &[], &colors)
+        })
+        .unwrap();
+        let t = text(&out);
+        // 9 usable columns (the last stays free), 3 for "h  ": 6 for the item.
+        assert!(t.contains("\r\nh  01234…\x1b[K"), "{t:?}");
+        assert!(t.contains("\r\nh  日本…\x1b[K"), "{t:?}");
+        // The tab goes to column 8, counting the three columns before it.
+        assert!(t.contains("\r\nh  a    b\x1b[K"), "{t:?}");
+    }
+
+    #[test]
+    fn a_multi_line_item_shows_its_first_line() {
+        let colors = plain_menu();
+        let list = items(&["for x in a b; do\n  echo\ndone"]);
+        let out = build(&Repaint {
+            menu: Some(view(&list)),
+            ..repaint("for", 3, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).contains("\r\nh  for x in a b; do …\x1b[K"),
+            "{:?}",
+            text(&out)
+        );
+    }
+
+    #[test]
+    fn a_menu_leaves_the_suggestion_one_row() {
+        let colors = plain_menu();
+        let list = items(&["x"]);
+        let out = build(&Repaint {
+            suggestion: Some("1\n2\n3"),
+            menu: Some(view(&list)),
+            ..repaint("x", 1, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).contains("\x1b[90m1 … 2 more lines\x1b[0m"),
+            "{:?}",
+            text(&out)
+        );
+    }
+
+    #[test]
+    fn control_characters_in_an_item_stop_the_row() {
+        let colors = plain_menu();
+        let list = items(&["ab\r", "a\x1bb"]);
+        let out = build(&Repaint {
+            menu: Some(view(&list)),
+            ..repaint("a", 1, &[], &colors)
+        })
+        .unwrap();
+        let t = text(&out);
+        assert!(t.contains("\r\nh  ab…\x1b[K"), "{t:?}");
+        assert!(t.contains("\r\nh  a…\x1b[K"), "{t:?}");
     }
 
     #[test]

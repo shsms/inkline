@@ -1212,6 +1212,7 @@ fn repaint_line() -> bool {
             span_sets: &painted.span_sets,
             script_sets: &painted.script_sets,
             message: message.as_deref(),
+            menu: None,
             rows,
             cols,
         };
