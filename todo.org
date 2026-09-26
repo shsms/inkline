@@ -31,6 +31,22 @@ never shown: it would have been printed above the command's output,
 but the command does not run. Show those errors too, after the refusal
 text, joined with ~; ~ as the other hook messages are.
 
+** TODO Colour a double-quoted script that holds a =$= expansion
+
+=csvm "select amount > $min" data.csv= sends the script as typed, quote
+marks included, because bash will still expand =$min= (a raw argument).
+csvm then sees ="select= as its first word and colours nothing. Either
+side could fix it: inkline could send the text inside the quotes with a
+note of what is still expanded, or csvm could parse inside the quotes and
+move each span one byte on (noted in csvm-rs's todo.org too).
+
+** TODO Say when a helper never answers
+
+A helper that is running but never replies costs up to 15 ms on every
+key and shows no colour, with nothing to say why. Counting unanswered
+requests and showing it in =inkline status= (or turning the helper off
+after a while) would make this visible.
+
 * Bugs
 
 ** TODO Keys typed ahead while inkline reload runs are sometimes lost
@@ -67,6 +83,28 @@ part not sent yet and send the rest on later redraws, or while inkline
 waits for a key, waiting on the socket until it can be written to as
 well.
 
+** TODO A helper's colours cover a =$( … )= inside a raw argument
+
+inkline keeps bash's colour on =$var= inside an argument a helper colours,
+but not on =$( … )= or backquotes: the helper's colours go over them. The
+design says every bash expansion keeps bash's colour.
+
+** TODO Helpers that ignore the end of their input are left running
+
+A helper is only told to stop by the end of its input. One that ignores it
+keeps running after =inkline reload=, after registering it again, and
+after bash exits, and they add up.
+
+** TODO A helper script with no =#!= line cannot start
+
+inkline turns it off with "cannot run", where bash would run it with =sh=.
+
+** TODO Known gaps in finding a command's words
+
+These only cost colours: a backquote inside =${x:-…}=, =$`= in an unquoted
+here-document body, =#= inside backquotes, a command on the same line as a
+here-document start, and empty backquotes.
+
 * Code
 
 ** TODO Write the "single function" check for hooks once
@@ -93,3 +131,11 @@ indentation.
 To settle first, as its own design: how a multi-line csvm script should
 look (stages indented under the first line? each line starting with ~|~,
 or ending with it? ~fn~ bodies?), and then the csvm rules that give it.
+
+** TODO Tidy the highlight helper code
+
+The line is parsed twice per redraw when a helper is registered (once for
+colours, once to find the commands); =src/helper.rs= has three separate
+paths that read what a helper sent; =Process::fill= takes a deadline only
+the tests use; the typing-pause step is written twice, in
+=show_helper_notices= and =error_to_underline=.
