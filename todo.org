@@ -13,8 +13,8 @@ once a row is picked, and ~C-g~ hides it. Items match by how they start,
 or fuzzily by a setting; the menu and the grey text can each be turned
 off. Built in three pieces, each adding sources to the same list:
 
-1. The menu, its keys and drawing, with history (~h~) and Lisp (~l~,
-   ~inkline-completion-functions~) as sources.
+1. In place: the menu, its keys and drawing, with history (~h~) and Lisp
+   (~l~, ~inkline-completion-functions~) as sources.
 2. bash's own completion (~c~): commands, files, variables and the
    ~complete~ rules other tools install. Those rules run shell code (git's
    calls git), so they must never hold up typing: run them in a copy of the

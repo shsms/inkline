@@ -17,7 +17,22 @@ change takes effect on the next key.
   can indent; `0` turns off both indenting new lines and moving closing
   words back out.
 - `inkline-suggestion-lines` (default `5`): the most lines of a multi-line
-  suggestion to show, an integer of at least 1.
+  suggestion to show, an integer of at least 1. It applies only while no
+  menu or message shows under the line; with one, a multi-line suggestion
+  takes one row.
+- `inkline-show-menu` (default `t`): whether the completion menu shows. A
+  line brought back from history (with `C-p`, `<up>`, a search and the like)
+  shows no menu and no grey text until you change it. With no menu, `C-n`
+  and `C-p` move between lines and through history, as `<down>` and `<up>`
+  do.
+- `inkline-show-suggestion` (default `t`): whether the grey suggestion text
+  shows.
+- `inkline-menu-lines` (default `8`): the most rows the completion menu
+  takes, an integer of at least 1.
+- `inkline-completion-style` (default `prefix`): how the text you typed
+  matches a completion item, the symbol `prefix` (the item starts with what
+  you typed) or `fuzzy` (the letters you typed appear in the item in order,
+  with gaps allowed).
 - `inkline-history-cursor` (default `start`): the symbol `start` or `end`,
   where `previous-line-or-history` leaves the cursor in a multi-line entry
   it recalls.
@@ -31,8 +46,11 @@ change takes effect on the next key.
   colour when it is not set; and three that only
   [command modes](#command-modes) use: `number` (default `36`), `function`
   (default `32`) and `script` (default `2`), the style added on top of
-  every colour inside an argument a mode server coloured. See the README's
-  "Colours" section for the colour words.
+  every colour inside an argument a mode server coloured; and three for the
+  completion menu: `menu`, for its rows (no colour by default),
+  `menu-selected` (default `7`), for the picked row, and `menu-source`
+  (default `2`), for the source letter and the `… N more` row. See the
+  README's "Colours" section for the colour words.
 - `inkline-command-mode-alist` (default `nil`): which commands use which
   [command mode](#command-modes).
 
@@ -63,11 +81,14 @@ change takes effect on the next key.
   does not change what unset puts back.
 - `(inkline-unbind-defaults &optional GROUPS)` — unsets the default layout's
   groups named in `GROUPS` (a symbol, or a list of symbols: `suggestions`,
-  `multi-line`, `pairing`); with no argument, unsets the whole layout. Once
-  inkline binds none of `DEL`, `C-h`, `C-u`, `C-v` and `C-w`, it turns
-  `bind-tty-special-chars` back on, even when `inputrc` turned it off; call
-  `(inkline-set-readline-variable "bind-tty-special-chars" nil)` after it
-  to keep it off.
+  `multi-line`, `pairing`, `menu`); with no argument, unsets the whole layout.
+  Unsetting `menu` while `multi-line` stays makes `C-n` and `C-p`, where they
+  still run `menu-next` and `menu-previous`, run `next-line-or-history` and
+  `previous-line-or-history`, as they do with no menu. Once inkline binds none
+  of `DEL`, `C-h`, `C-u`, `C-v` and `C-w`, it turns `bind-tty-special-chars`
+  back on, even when `inputrc` turned it off; call
+  `(inkline-set-readline-variable "bind-tty-special-chars" nil)` after it to
+  keep it off.
 - `(inkline-set-readline-variable NAME VALUE)` — sets the readline variable
   `NAME`, as `bind 'set NAME VALUE'` would. `VALUE` is a string, `nil` (for
   `off`), `t` (for `on`), or anything else, converted to text.
@@ -193,7 +214,7 @@ can find it too.
 ## Hooks
 
 A hook is a variable that holds a list of functions. inkline calls the functions
-in the list, in order, at certain times. The four hooks below start as `nil`.
+in the list, in order, at certain times. The five hooks below start as `nil`.
 
 - `(add-hook HOOK FUNCTION &optional AT-END LOCAL)` — adds `FUNCTION` to the
   list in the variable `HOOK`: at the front, or at the end when `AT-END` is
@@ -215,8 +236,9 @@ already running. Changes that hook functions make never run
 
 In every hook, `current-prefix-arg` is `nil`. So are `this-command` and
 `last-command`, except in `inkline-after-change-functions`.
-`call-interactively` works in every hook except `inkline-suggestion-functions`,
-but `call-interactively` of `undo`, `revert-line` or `vi-undo` fails with an
+`call-interactively` works in every hook except `inkline-suggestion-functions`
+and `inkline-completion-functions`, but `call-interactively` of `undo`,
+`revert-line` or `vi-undo` fails with an
 error such as `undo cannot run in a hook`. `y-or-n-p` works only in
 `inkline-accept-functions`; in the line-start and after-change hooks it fails
 with `y-or-n-p works only in a command or in inkline-accept-functions`.
@@ -308,17 +330,23 @@ changed the line: after the command has returned, and before the line is drawn.
 
 ### `inkline-suggestion-functions`
 
-Called with the line as a string when inkline would show a history suggestion
-but history has none: the line is not empty, the cursor is at its end, and
-inkline draws the line, in plain editing. History always wins over these
-functions.
+Called with the line as a string whenever inkline gathers the completion
+menu's items: the line is not empty, the cursor is at its end, and inkline
+draws the line, in plain editing. Items are not gathered for a line brought
+back from history until you change it, nor while `inkline-show-menu` and
+`inkline-show-suggestion` are both `nil`.
 
 - The first function that returns a string that starts with the line and is
   longer wins. Any other value is no answer, and the next function is asked.
-- The rest of that string shows after the cursor as a history suggestion would:
-  cut at the first control character other than a newline or a tab, with a
-  newline giving a multi-line suggestion of at most `inkline-suggestion-lines`
-  lines. The same keys take it.
+- The winning answer becomes an item of the completion menu, marked `l`. A
+  matching history entry still comes before it in the menu (see
+  [`inkline-completion-functions`](#inkline-completion-functions) for the
+  menu's order). An answer with a control character other than a newline or
+  a tab is left out of the menu. The grey text after the cursor is the rest
+  of the picked item, or of the top item when none is picked; where that is
+  this answer, it shows as a history suggestion would, a newline giving a
+  multi-line suggestion (see `inkline-suggestion-lines`). The same keys take
+  it.
 - Each answer, `nil` included, is kept for that exact line text until the next
   line starts. While what you type still matches the start of the suggestion, it
   stays, and the functions are not asked again.
@@ -334,6 +362,43 @@ functions.
   `inkline: NAME: TEXT (removed from inkline-suggestion-functions)` shows under
   the line. After a `quit`, no later function is asked, and that text of the
   line gets no suggestion.
+
+### `inkline-completion-functions`
+
+Called with no arguments whenever inkline gathers the completion menu's
+items: at bash's main prompt while it reads a command, in plain editing, on
+a line that is not empty and not brought back from history unchanged, and
+not while `inkline-show-menu` and `inkline-show-suggestion` are both `nil`.
+A function reads the line with `buffer-string`, `point` and the other
+reading functions, and returns `nil` or a list `(START END ITEMS)`:
+
+- `START` and `END` are positions around the cursor (`START <= (point) <=
+  END`); an item taken from `ITEMS` replaces the line's text from `START` to
+  `END`.
+- `ITEMS` is a list of strings: every completion the function knows for that
+  part of the line. inkline matches and orders them itself, against the
+  text from `START` to the cursor, under `inkline-completion-style`.
+- Any other answer — `START` or `END` out of range or in the wrong order, or
+  `ITEMS` not a list of strings — is an error, as for a function that fails.
+
+Unlike Emacs's `completion-at-point-functions`, every function in the hook is
+asked, and all their items go into the menu, marked `l`, in the order of the
+hook and of each function's own list. History items come first, then the
+item from `inkline-suggestion-functions`, then these.
+
+- The functions may only read the line, under the same rules as
+  `inkline-suggestion-functions`, with the same list of functions they may
+  not call; calling one of these raises an error naming
+  `inkline-completion-functions` instead, such as "message is not allowed in
+  inkline-completion-functions".
+- A function that fails, also with `user-error`, or that gives a bad answer,
+  is removed from the hook. `inkline: NAME: TEXT (removed from
+  inkline-completion-functions)` shows under the line. After a `quit`, no
+  later function is asked, and that line and cursor get no items from this
+  hook.
+- The functions are asked again only when the line's text or the cursor has
+  changed since they were last asked; until then, the items they gave last
+  time are used again.
 
 ## The line
 
