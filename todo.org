@@ -126,25 +126,10 @@ A hook's value is either one function or a list of them. The check for
 ~inkline--hook-single-p~ and drop the Lisp copy, so the two cannot
 drift apart.
 
-** TODO Indentation inside a multi-line csvm script
-
-When Enter adds a line inside the quoted script of a command that has a
-highlight helper (see ~docs/highlight-protocol.md~), ask the helper how far
-to indent it, as inkline already does for bash code. The protocol leaves
-room for this: a helper names ~indent~ on its first line
-(~inkline-highlight 1 indent~), and only then does inkline send it an
-~:indent~ request with the arguments and where the cursor is; the reply
-says what to insert. Without an answer in time, keep the previous line's
-indentation.
-
-To settle first, as its own design: how a multi-line csvm script should
-look (stages indented under the first line? each line starting with ~|~,
-or ending with it? ~fn~ bodies?), and then the csvm rules that give it.
-
 ** TODO Tidy the highlight helper code
 
 The line is parsed twice per redraw when a helper is registered (once for
-colours, once to find the commands); =src/helper.rs= has three separate
-paths that read what a helper sent; =Process::fill= takes a deadline only
-the tests use; the typing-pause step is written twice, in
-=show_helper_notices= and =error_to_underline=.
+colours, once to find the commands); =src/helper.rs= has four separate
+paths that read what a helper sent (one of them for indentation); the
+typing-pause step is written twice, in =show_helper_notices= and
+=error_to_underline=.

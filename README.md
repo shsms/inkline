@@ -246,8 +246,9 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   when you pause typing, on the word bash would complain about. The word you
   are typing is never underlined.
 - **Program arguments.** A program can colour its own arguments, such as the
-  script in `csvm 'sort id | head 5' data.csv`, and underline its own errors
-  in them; see "Colouring a program's arguments" below.
+  script in `csvm 'sort id | head 5' data.csv`, underline its own errors in
+  them, and say how far in a new line of a script goes; see "Colouring a
+  program's arguments" below.
 
 While the terminal's echo is off, as in `read -e -s`, inkline leaves the line to
 readline: no colours, no suggestion and no pairing.
@@ -321,6 +322,57 @@ A bad colour, or a name other than those ten, is an error, and nothing
 changes. Registering the command again with the same program keeps its
 helper running and only changes the colours, from the next draw; leaving the
 third argument out drops them.
+
+A helper can also say how far in a new line of the script goes. With one
+that does (it names `indent` on its first line, see
+[`docs/highlight-protocol.md`](docs/highlight-protocol.md#indenting-a-new-line-indent)),
+C-j inside the script indents the new line the way the program's language
+nests. With pairing on, as in the default layout, the closing quote is
+already there, so Enter runs a finished command even with the cursor inside
+the script: press C-j to add a line there. Enter adds a line inside a script
+only when the command is unfinished, such as while the quote is still open
+(with pairing off, for example), and indents it the same way. With `(setq
+inkline-indent 2)` and a `csvm` helper that indents, a script can look like
+this:
+
+```
+csvm "head
+  | join (
+    cols a,b
+  ) other.csv on a
+  | sort x"
+```
+
+The script's lines are one step in from the line the command's name is on,
+and each group the language opens, such as the `( … )` after `join` here,
+adds a step. A line that starts by closing a group, such as `)` or `}`, moves
+back out when you add a line with the cursor after the closer; a line is
+never pushed further in, and the line the script starts on is never moved.
+The spaces and tabs around the cursor go here too, even though the script is
+a string. One undo (`C-_`) takes it all back.
+
+C-j between an empty pair of quotes of a command that has a helper, as
+pairing leaves them after `csvm "`, opens the pair. The new line goes one
+step further in than the line the command's name is on, and the closing
+quote goes on a line of its own below it, as far in as that line. On a screen
+with room for only one more line, the quote stays after the cursor instead.
+This needs no answer from the helper, so it works with one that cannot
+indent too:
+
+```
+csvm "
+  head
+  | sort x
+" data.csv
+```
+
+inkline waits at most 100 ms for the helper's answer; C-c stops the wait and
+drops the line, as C-c always does. When no answer comes in time, when the
+helper cannot indent or cannot tell, or in a script that bash will still
+change (such as a double-quoted one with a `$x`), nothing moves out, and the
+new line gets the indentation of the line the cursor is on; on the line the
+script starts on, it goes one step in. Nothing is indented, and the quotes
+are not opened, while pasting or with `inkline-indent` 0.
 
 The command is found by its name as typed, after quotes are removed, so
 `'csvm'` matches too. Its arguments are its words as bash will pass them to
@@ -449,8 +501,9 @@ out of range is reported once, and the default is used until the value
 changes.
 
 - `inkline-indent`: spaces per indentation step, an integer from 0 to 16, 4
-  by default; `0` turns off both indenting new lines and moving closing
-  words back out, and a closer put on its own line keeps its line's
+  by default, for bash code and inside a program's script (see "Colouring a
+  program's arguments"); `0` turns off both indenting new lines and moving
+  closing words back out, and a closer put on its own line keeps its line's
   indentation.
 - `inkline-history-cursor`: where `previous-line-or-history` leaves the
   cursor in a multi-line entry it recalls: the symbol `start` (the default)

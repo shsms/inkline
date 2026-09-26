@@ -12,8 +12,10 @@ Set with `setq` in `init.el`; read again each time they are used, so a
 change takes effect on the next key.
 
 - `inkline-indent` (default `4`): spaces per indentation step, an integer
-  from 0 to 16; `0` turns off both indenting new lines and moving closing
-  words back out.
+  from 0 to 16, for bash code and inside the script of any command that has
+  a [highlight helper](#highlight-helpers), whether or not the helper can
+  indent; `0` turns off both indenting new lines and moving closing words
+  back out.
 - `inkline-suggestion-lines` (default `5`): the most lines of a multi-line
   suggestion to show, an integer of at least 1.
 - `inkline-history-cursor` (default `start`): the symbol `start` or `end`,
