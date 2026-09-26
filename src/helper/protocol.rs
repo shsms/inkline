@@ -1,6 +1,7 @@
-//! Version 1 of the line protocol inkline speaks with a highlight helper: a
-//! request inkline writes, and the reply a helper writes back. All numbers
-//! are decimal ASCII; lengths and offsets count bytes.
+//! Version 1 of the line protocol inkline speaks with a highlight helper: the
+//! requests inkline writes (colours, and with the `indent` feature,
+//! indentation), and the replies a helper writes back. All numbers are
+//! decimal ASCII; lengths and offsets count bytes.
 
 use std::collections::BTreeMap;
 
@@ -259,6 +260,63 @@ fn parse_error(rest: &[u8], lens: &[usize]) -> Result<ReplyError, ()> {
     Ok(ReplyError { place, message })
 }
 
+/// The depths an indent reply gives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Depths {
+    /// The depth of the new line.
+    pub new: usize,
+    /// The depth of the line the cursor is on, the one being split.
+    pub current: usize,
+}
+
+/// Reads a whole indent reply: at most one `:depth NEW CURRENT` line, then
+/// `:end ID`; other lines starting with `:` are ignored. `Done(None, _)`
+/// for a reply with no `:depth`: the helper cannot tell. `seen` is as for
+/// `reply`.
+pub fn indent_reply(buf: &[u8], id: u64, seen: &mut usize) -> Read<Option<Depths>> {
+    if !settled(buf, seen) {
+        return Read::Incomplete;
+    }
+    let mut depths: Option<Depths> = None;
+    let mut pos = 0;
+    loop {
+        let Some((line, keyword, rest)) = next_line(buf, &mut pos) else {
+            return Read::Incomplete;
+        };
+        match keyword {
+            b":depth" => {
+                if depths.is_some() {
+                    return Read::Bad(bad_reply(line));
+                }
+                match parse_depths(rest) {
+                    Ok(d) => depths = Some(d),
+                    Err(()) => return Read::Bad(bad_reply(line)),
+                }
+            }
+            b":end" => {
+                return match parse_number::<u64>(rest) {
+                    Ok(got) if got == id => Read::Done(depths, pos),
+                    _ => Read::Bad(bad_reply(line)),
+                };
+            }
+            _ if keyword.starts_with(b":") => {}
+            _ => return Read::Bad(bad_reply(line)),
+        }
+    }
+}
+
+/// `NEW CURRENT`: two numbers in decimal digits, one space apart.
+fn parse_depths(rest: &[u8]) -> Result<Depths, ()> {
+    let fields: Vec<&[u8]> = rest.split(|&b| b == b' ').collect();
+    let [new, current] = fields[..] else {
+        return Err(());
+    };
+    Ok(Depths {
+        new: parse_number(new)?,
+        current: parse_number(current)?,
+    })
+}
+
 /// A number written only in decimal digits, without a sign.
 fn parse_number<T: std::str::FromStr>(bytes: &[u8]) -> Result<T, ()> {
     if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
@@ -319,6 +377,60 @@ mod tests {
             String::from_utf8(indent_request(8, b"/tmp", &args, (1, 3))).unwrap(),
             ":indent 8\n:cwd 4\n/tmp\n:arg final 4\ncsvm\n:arg final 4\na\n{b\n:at 1 3\n:done\n"
         );
+    }
+
+    fn depths(buf: &[u8]) -> Option<Depths> {
+        match indent_reply(buf, 3, &mut 0) {
+            Read::Done(d, used) => {
+                assert_eq!(used, buf.len());
+                d
+            }
+            Read::Incomplete => panic!("incomplete"),
+            Read::Bad(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn indent_replies() {
+        assert_eq!(
+            depths(b":depth 2 1\n:end 3\n"),
+            Some(Depths { new: 2, current: 1 })
+        );
+        assert_eq!(depths(b":end 3\n"), None, "cannot tell");
+        assert_eq!(
+            depths(b":hint x\n:span 1 0 1 number\n:depth 0 0\n:error - - - e\n:end 3\n"),
+            Some(Depths { new: 0, current: 0 }),
+            "other lines starting with `:` are ignored"
+        );
+        for buf in [&b":depth 1 0\n"[..], b":depth 1 0\n:en", b":depth x 0\n"] {
+            assert!(matches!(indent_reply(buf, 3, &mut 0), Read::Incomplete));
+        }
+    }
+
+    #[test]
+    fn broken_indent_replies() {
+        let bad = |buf: &[u8]| match indent_reply(buf, 3, &mut 0) {
+            Read::Bad(e) => e,
+            _ => panic!("not bad: {:?}", String::from_utf8_lossy(buf)),
+        };
+        for (buf, line) in [
+            (&b":depth 1\n:end 3\n"[..], ":depth 1"),
+            (b":depth 1 2 3\n:end 3\n", ":depth 1 2 3"),
+            (b":depth\n:end 3\n", ":depth"),
+            (b":depth -1 0\n:end 3\n", ":depth -1 0"),
+            (b":depth +1 0\n:end 3\n", ":depth +1 0"),
+            (b":depth x 0\n:end 3\n", ":depth x 0"),
+            (b":depth 1  0\n:end 3\n", ":depth 1  0"),
+            (
+                b":depth 99999999999999999999999 0\n:end 3\n",
+                ":depth 99999999999999999999999 0",
+            ),
+            (b":depth 1 0\n:depth 1 0\n:end 3\n", ":depth 1 0"),
+            (b":end 4\n", ":end 4"),
+            (b"hello\n", "hello"),
+        ] {
+            assert_eq!(bad(buf), format!("bad reply: {line:?}"));
+        }
     }
 
     #[test]
