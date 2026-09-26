@@ -9,6 +9,7 @@ pub mod indent;
 pub mod lexer;
 pub mod lines;
 pub mod lisp;
+pub mod menu;
 pub mod mode_server;
 pub mod pairs;
 pub mod render;
