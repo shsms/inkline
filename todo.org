@@ -105,6 +105,15 @@ These only cost colours: a backquote inside =${x:-…}=, =$`= in an unquoted
 here-document body, =#= inside backquotes, a command on the same line as a
 here-document start, and empty backquotes.
 
+** TODO Two tests fail when TMPDIR is longer than /tmp
+
+=a_group_writable_init_el_is_not_read= and
+=a_panic_in_init_el_shows_in_status= look for a line that names the test's
+=init.el= path. With a longer =TMPDIR= (such as one under =/var/tmp/...=)
+that line is wider than the test terminal's 80 columns and wraps, so the
+exact match fails. Matching the start and end of the line, or a wider
+terminal for these two tests, would fix it.
+
 * Code
 
 ** TODO Write the "single function" check for hooks once
