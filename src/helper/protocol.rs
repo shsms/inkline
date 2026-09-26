@@ -119,17 +119,8 @@ pub fn reply(buf: &[u8], id: u64, lens: &[usize], seen: &mut usize) -> Read<Repl
     let mut error: Option<ReplyError> = None;
     let mut pos = 0;
     loop {
-        let Some(nl) = buf[pos..].iter().position(|&b| b == b'\n') else {
+        let Some((line, keyword, rest)) = next_line(buf, &mut pos) else {
             return Read::Incomplete;
-        };
-        let line = &buf[pos..pos + nl];
-        pos += nl + 1;
-
-        // A line with no space has no fields; treat it as an empty tail so a
-        // known keyword still fails to parse its (missing) fields.
-        let (keyword, rest) = match line.iter().position(|&b| b == b' ') {
-            Some(space) => (&line[..space], &line[space + 1..]),
-            None => (line, &b""[..]),
         };
         match keyword {
             b":span" => match parse_span(rest, lens, &kept) {
@@ -159,6 +150,22 @@ pub fn reply(buf: &[u8], id: u64, lens: &[usize], seen: &mut usize) -> Read<Repl
             _ => return Read::Bad(bad_reply(line)),
         }
     }
+}
+
+/// Reads the next whole line from `buf` at `*pos`: the line itself, and it
+/// split at the first space into keyword and rest (rest is empty when the
+/// line has no space, so a known keyword still fails to parse its missing
+/// fields). Advances `*pos` past the line; `None` when the buffer does not
+/// hold a whole line yet.
+fn next_line<'a>(buf: &'a [u8], pos: &mut usize) -> Option<(&'a [u8], &'a [u8], &'a [u8])> {
+    let nl = buf[*pos..].iter().position(|&b| b == b'\n')?;
+    let line = &buf[*pos..*pos + nl];
+    *pos += nl + 1;
+    let (keyword, rest) = match line.iter().position(|&b| b == b' ') {
+        Some(space) => (&line[..space], &line[space + 1..]),
+        None => (line, &b""[..]),
+    };
+    Some((line, keyword, rest))
 }
 
 /// Whether `buf` holds a line that settles a reply: `:end`, or a line that
