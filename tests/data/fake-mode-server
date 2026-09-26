@@ -15,6 +15,8 @@
 #            argument `:at` names; a script holding `nodepth` gets only
 #            `:end`
 #   slow-indent  as indent, answering every request after 0.5 s
+#   dash-indent  as indent, but sends `-` for the cursor's line unless the
+#            line, blanks skipped, starts with `}` or `)`
 #   garbage  answer every request with a line that breaks the protocol
 #   exit     exit when the first request is complete
 #   version  print a wrong first line
@@ -31,7 +33,7 @@ if [[ $does == version ]]; then
     exec cat >/dev/null
 fi
 [[ $does == slow ]] && sleep 0.3
-if [[ $does == indent || $does == slow-indent ]]; then
+if [[ $does == indent || $does == slow-indent || $does == dash-indent ]]; then
     echo "inkline-mode 1 indent"
 else
     echo "inkline-mode 1"
@@ -115,7 +117,11 @@ answer_indent() {
     new=$(depth_at "$s" "$off")
     cur=$(depth_at "$s" "$start")
     closes "${after%%$'\n'*}" && ((new > 0)) && ((new -= 1))
-    closes "${line%%$'\n'*}" && ((cur > 0)) && ((cur -= 1))
+    if closes "${line%%$'\n'*}"; then
+        ((cur > 0)) && ((cur -= 1))
+    elif [[ $does == dash-indent ]]; then
+        cur=-
+    fi
     echo ":depth $new $cur"
     echo ":end $id"
 }

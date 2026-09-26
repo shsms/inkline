@@ -1083,6 +1083,32 @@ mod tests {
         assert!(take_notices().is_empty());
     }
 
+    /// A server that sends `-` gives no depth for the cursor's line, except for
+    /// a line that starts by closing a group.
+    #[test]
+    fn a_dash_leaves_the_cursors_line_as_it_is() {
+        define("csvm", fake("dash-indent"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        let wait = Duration::from_secs(2);
+        assert_eq!(
+            depths("fn f {\n  a", 10, wait, || false),
+            Some(Depths {
+                new: 1,
+                current: None
+            })
+        );
+        assert_eq!(
+            depths("fn f {\n  }", 10, wait, || false),
+            Some(Depths {
+                new: 0,
+                current: Some(0)
+            }),
+            "a line that starts by closing a group"
+        );
+        assert!(take_notices().is_empty());
+        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
+    }
+
     #[test]
     fn a_server_without_indent_is_not_asked() {
         define("csvm", fake("words"), None);
