@@ -295,7 +295,7 @@ look:
 
 ```elisp
 ;; ~/.config/inkline/init.el
-(setq inkline-colors '((script . "48;5;236")))   ; a dark grey background
+(setq inkline-colors '((script . "on grey4")))   ; a dark grey background
 ```
 
 `(script . "")` turns it off. The helper's colours use the usual keys, and
@@ -356,10 +356,10 @@ To write a helper for your own program, see
 
 ## Colours
 
-Set `inkline-colors` in `init.el`, either as an alist of `(NAME . "SGR")`
-pairs or as a string in `LS_COLORS`'s format. Any SGR codes work, including
-256-colour and truecolor. List only what you want to change; a change applies
-from the next key.
+Set `inkline-colors` in `init.el`, either as an alist of `(NAME . "VALUE")`
+pairs or as a string in `LS_COLORS`'s format. A value is SGR codes (any work,
+including 256-colour and truecolor) or colour words (see below). List only
+what you want to change; a change applies from the next key.
 
 ```elisp
 (setq inkline-colors '((command . "32") (unknown . "31") (keyword . "35")
@@ -378,17 +378,47 @@ In the alist form, a name can be a symbol or a string, and the first entry
 for a name wins. `""` means no colour for that name, and turns the underline
 off for `error`.
 
+A value can be words instead of codes, such as `"bold magenta"`, `"on grey5"`
+or `"underline bright-cyan on black"`. A value made only of digits, `;` and
+`:` is read as SGR codes, so older settings keep working. The words are
+separated by spaces, and upper or lower case does not matter:
+
+- `bold`, `dim`, `italic`, `underline` and `reverse`;
+- a colour for the text:
+  - `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan` or
+    `white`, or the same with `bright-` in front, such as `bright-red`;
+  - `grey`, the same as `bright-black`;
+  - `grey0` to `grey23`, the 24 greys of the 256-colour palette, from the
+    darkest, almost black (`grey0`), to the lightest, almost white
+    (`grey23`); `grey3` to `grey6` make a dark background;
+  - `color0` to `color255` (or `colour0` to `colour255`), any colour of
+    the 256-colour palette;
+  - `#rrggbb`, any colour, on terminals that show 24-bit colour, such as
+    `#ff8700`;
+- `on` and one of those colours, for the background: `on grey3`,
+  `on #3a3a3a`, `on bright-blue`.
+
+`gray` works wherever `grey` does. In the alist form, a word inkline does not
+know is reported, with the word, and one bad entry makes inkline use its
+default colours for everything until it is fixed; the string form skips just
+that entry.
+
+```elisp
+(setq inkline-colors '((command . "bold green") (comment . "dim italic")
+                        (script . "on grey3")))
+```
+
 `number`, `function` and `script` are used only by highlight helpers (see
 "Colouring a program's arguments"). `number` and `function` are colours a
 helper can give parts of an argument. `script` is added on top of every
 colour inside an argument a helper coloured: dim (`2`) by default, or a
-background such as `48;5;236`.
+background such as `on grey4`.
 
 `error` sets the syntax-error underline. By default it is a plain underline
 (`4`) followed by a wavy red one (`4:3`, then `58:5:1`), so terminals that do
 not know the wavy form still underline. `error=4` (or `(error . "4")`) gives a
 plain underline, and `error=` (or `(error . "")`) turns it off.
-Sub-parameters with `:` are allowed in any value.
+Sub-parameters with `:` are allowed in any value written as codes.
 
 ## Settings
 

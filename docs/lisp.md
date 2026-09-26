@@ -20,13 +20,14 @@ change takes effect on the next key.
   where `previous-line-or-history` leaves the cursor in a multi-line entry
   it recalls.
 - `inkline-colors` (default `nil`): the colours inkline draws with, as an
-  alist of `(NAME . "SGR")` pairs, or a string in `LS_COLORS`'s format. The
-  names are `command`, `unknown`, `keyword`, `option`, `string`, `variable`,
-  `operator`, `comment`, `suggestion` and `error`, and three that only
-  [highlight helpers](#highlight-helpers) use: `number` (default `36`),
-  `function` (default `32`) and `script` (default `2`), the style added on
-  top of every colour inside an argument a helper coloured. See the README's
-  "Colours" section.
+  alist of `(NAME . "VALUE")` pairs, or a string in `LS_COLORS`'s format. A
+  value is SGR codes or colour words, such as `"bold magenta"` or
+  `"on grey4"`. The names are `command`, `unknown`, `keyword`, `option`,
+  `string`, `variable`, `operator`, `comment`, `suggestion` and `error`, and
+  three that only [highlight helpers](#highlight-helpers) use: `number`
+  (default `36`), `function` (default `32`) and `script` (default `2`), the
+  style added on top of every colour inside an argument a helper coloured.
+  See the README's "Colours" section for the colour words.
 
 ## Keys
 
