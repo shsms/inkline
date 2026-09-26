@@ -15,9 +15,10 @@ use crate::commands::{self, PathCache};
 use crate::ffi;
 use crate::highlight;
 use crate::lexer::{Kind, Lexer};
+use crate::menu::{self, Item, Menu, Source};
 use crate::mode_server::{self, protocol::Reply};
 use crate::pairs::{self, Action};
-use crate::render::{self, Repaint};
+use crate::render::{self, MenuView, Repaint};
 use crate::suggest;
 use crate::syntax::{self, Checker, Status};
 
@@ -48,6 +49,8 @@ struct State {
     /// How many rows below the cursor the menu on screen starts, if one is
     /// showing.
     menu_rows: Option<usize>,
+    /// The completion menu for the line and cursor it was made for.
+    menu: Option<Menu>,
     /// Set when bash may have printed while the line was being edited: the
     /// cursor may not be where readline thinks it is, so readline draws the
     /// rest of the line on its own. Cleared when the next line starts.
@@ -148,6 +151,7 @@ thread_local! {
         shown_at: None,
         message_rows: None,
         menu_rows: None,
+        menu: None,
         displaced: false,
         unloaded: false,
         checker: Checker::new(),
@@ -346,6 +350,7 @@ fn disable() {
     let enabled = STATE.try_with(|s| {
         s.try_borrow_mut().map(|mut s| {
             s.suggestion = None;
+            s.menu = None;
             std::mem::replace(&mut s.enabled, false)
         })
     });
@@ -942,6 +947,7 @@ extern "C" fn pre_input() -> c_int {
                 s.wants_pause = false;
                 s.goal_column = None;
                 s.search_continues = false;
+                s.menu = None;
             });
             // A new line at the main prompt drops the mode servers' replies;
             // a line read while Lisp runs is part of the line Lisp runs in.
@@ -1140,9 +1146,11 @@ fn repaint_now() {
 }
 
 /// Repaints the line readline just drew, in colour, with a suggestion after it
-/// when the cursor is at the end. Outside plain editing (a count prefix, a
-/// search) the stored suggestion is kept, so `M-3 C-f` can still take from it;
-/// `accept` checks it against the line before using it.
+/// when the cursor is at the end and the completion menu under it. Outside
+/// plain editing (a count prefix, a search) the stored suggestion and menu are
+/// kept, so `M-3 C-f` can still take from the suggestion and `M-2 C-n` can
+/// move the menu's pick; `accept` checks the suggestion against the line
+/// before using it.
 fn draw() {
     if !repaint_line() {
         // Readline's plain drawing has no underline, and an error that shows
@@ -1164,10 +1172,30 @@ fn draw() {
 /// Does `draw`'s work. Returns whether it repainted the line.
 fn repaint_line() -> bool {
     let editing = ffi::normal_editing();
-    if editing {
-        STATE.with_borrow_mut(|s| s.suggestion = None);
-    }
-    let Some(line) = ffi::line() else {
+    let line = ffi::line();
+    let point = ffi::point();
+    STATE.with_borrow_mut(|s| {
+        if editing {
+            // The menu counts as shown only once this draw puts it on
+            // screen. A draw outside plain editing, such as while a count is
+            // typed, leaves it as it was, so the menu keys act on it after
+            // the count.
+            if let Some(m) = &mut s.menu {
+                m.shown = false;
+            }
+            s.suggestion = None;
+            // A kept menu, and its pick, belong to one text of the line and
+            // one cursor place.
+            let text = line.as_deref();
+            if s.menu
+                .as_ref()
+                .is_some_and(|m| text.is_none_or(|l| !m.is_for(l, point)))
+            {
+                s.menu = None;
+            }
+        }
+    });
+    let Some(line) = line else {
         return false;
     };
     if (line.is_empty() && MESSAGE.with_borrow(Option::is_none))
@@ -1179,21 +1207,22 @@ fn repaint_line() -> bool {
     let Some(prompt_width) = render::prompt_width(&ffi::display_prompt()) else {
         return false;
     };
-    let point = ffi::point();
     let (rows, cols) = ffi::screen_size();
     let colors = crate::lisp::settings::colors();
     let suggestion_lines = crate::lisp::settings::suggestion_lines();
     let path = ffi::shell_variable("PATH").unwrap_or_default();
-    let suggestion = if editing && !line.is_empty() && point == line.len() {
-        ffi::history_find_map(|entry| suggest::rest(&line, entry).map(str::to_owned)).or_else(
-            || {
-                let full = crate::lisp::hooks::suggestion(&line)?;
-                suggest::rest(&line, &full).map(str::to_owned)
-            },
-        )
-    } else {
-        None
-    };
+    let show_menu = crate::lisp::settings::show_menu();
+    let show_suggestion = crate::lisp::settings::show_suggestion();
+    // With both the menu and the grey text off, nothing is gathered.
+    let menu = (editing && !line.is_empty() && (show_menu || show_suggestion))
+        .then(|| menu_for(&line, point));
+    let suggestion = menu
+        .as_ref()
+        .filter(|_| show_suggestion)
+        .and_then(|m| m.grey_item())
+        .and_then(|item| menu::grey(&line, point, item))
+        .map(str::to_owned);
+    let menu_lines = crate::lisp::settings::menu_lines();
     let found = ask_mode_servers(&line, &path);
     let (found, sets) = highlight::with_sets(found, &colors, mode_server::colors);
     show_mode_server_notices(&line);
@@ -1227,7 +1256,11 @@ fn repaint_line() -> bool {
             span_sets: &painted.span_sets,
             script_sets: &painted.script_sets,
             message: message.as_deref(),
-            menu: None,
+            menu: menu.as_ref().filter(|_| show_menu).map(|m| MenuView {
+                items: &m.items,
+                picked: m.picked,
+                max_rows: menu_lines,
+            }),
             rows,
             cols,
         };
@@ -1238,12 +1271,56 @@ fn repaint_line() -> bool {
         s.shown_at = out.suggestion_col;
         s.message_rows = out.message_rows;
         s.menu_rows = out.menu_rows;
+        if editing {
+            s.menu = menu.map(|mut m| {
+                m.shown = out.menu_rows.is_some();
+                m
+            });
+        }
         s.underlined = error;
         if let (Some(_), Some(rest)) = (out.suggestion_col, suggestion) {
             s.suggestion = Some((line.clone(), rest));
         }
         true
     })
+}
+
+/// The menu for `line` with the cursor at `point`: the one kept in `STATE`
+/// when it was made for the same line and cursor (so a pick stays), else a
+/// new one gathered from the sources: history and the suggestion hook when
+/// the cursor is at the end of the line, then the completion hook.
+fn menu_for(line: &str, point: usize) -> Menu {
+    let lisp_runs = crate::lisp::RUNNING.load(Ordering::Relaxed);
+    // A menu made while Lisp ran has no items from the Lisp hooks: once Lisp
+    // has stopped, a new one is gathered.
+    if let Some(menu) = STATE.with_borrow(|s| {
+        s.menu
+            .clone()
+            .filter(|m| m.is_for(line, point) && (lisp_runs || !m.lisp_ran))
+    }) {
+        return menu;
+    }
+    let style = crate::lisp::settings::completion_style();
+    let at_end = point == line.len();
+    let mut history = menu::HistoryGather::new(line, style);
+    if at_end {
+        ffi::history_find_map(|entry| history.offer(entry).then_some(()));
+    }
+    let whole = at_end
+        .then(|| crate::lisp::hooks::suggestion(line))
+        .flatten()
+        .map(|text| Item {
+            text,
+            start: 0,
+            end: line.len(),
+            source: Source::Lisp,
+        });
+    let words = crate::lisp::hooks::completions(line, point);
+    let items = menu::assemble(line, point, style, history.into_items(), whole, words);
+    Menu {
+        lisp_ran: lisp_runs,
+        ..Menu::new(line, point, items)
+    }
 }
 
 /// Asks the mode servers of the commands on `line` that use a mode how to

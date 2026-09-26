@@ -244,8 +244,11 @@ pub struct Menu {
     pub items: Vec<Item>,
     /// The picked item's index; None until `C-n` or `C-p`.
     pub picked: Option<usize>,
-    /// Whether the last draw put the menu on screen.
+    /// Whether the last draw in plain editing put the menu on screen.
     pub shown: bool,
+    /// Whether it was made while Lisp ran; the Lisp hooks give no items
+    /// then.
+    pub lisp_ran: bool,
 }
 
 impl Menu {
@@ -256,6 +259,7 @@ impl Menu {
             items,
             picked: None,
             shown: false,
+            lisp_ran: false,
         }
     }
 

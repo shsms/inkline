@@ -10,6 +10,13 @@ fn with_history(history: Vec<&'static str>) -> Options {
     }
 }
 
+/// Turns the completion menu off, for tests that read text the menu would
+/// show again under the line, or a multi-line suggestion, which takes one
+/// row while the menu shows.
+fn no_menu() -> Option<String> {
+    Some("(setq inkline-show-menu nil)".to_owned())
+}
+
 fn showing(opts: Options, keys: &str, row: &str) -> Shell {
     let mut sh = Shell::start(opts);
     sh.send(keys);
@@ -20,7 +27,10 @@ fn showing(opts: Options, keys: &str, row: &str) -> Shell {
 #[test]
 fn suggests_the_newest_matching_entry() {
     let sh = showing(
-        with_history(vec!["git stash", "git status"]),
+        Options {
+            init_el: no_menu(),
+            ..with_history(vec!["git stash", "git status"])
+        },
         "git st",
         "$ git status",
     );
@@ -152,7 +162,10 @@ fn none_while_reading_a_count() {
 #[test]
 fn multi_line_history_entry() {
     showing(
-        with_history(vec!["for i in 1\ndo echo $i; done"]),
+        Options {
+            init_el: no_menu(),
+            ..with_history(vec!["for i in 1\ndo echo $i; done"])
+        },
         "for i",
         "$ for i in 1",
     );
@@ -178,6 +191,7 @@ const LOOP: &str = "for x in a b; do\n    echo $x\ndone";
 #[test]
 fn a_multi_line_entry_is_suggested_whole() {
     let mut sh = Shell::start(Options {
+        init_el: no_menu(),
         history: vec![LOOP],
         ..Options::default()
     });
@@ -192,6 +206,7 @@ fn a_multi_line_entry_is_suggested_whole() {
 #[test]
 fn accepting_takes_every_line() {
     let mut sh = Shell::start(Options {
+        init_el: no_menu(),
         history: vec![LOOP],
         ..Options::default()
     });
@@ -218,6 +233,7 @@ fn erased_when_enter_comes_in_the_same_burst() {
 #[test]
 fn scrolls_at_the_bottom_and_comes_back() {
     let mut sh = Shell::start(Options {
+        init_el: no_menu(),
         rows: 6,
         history: vec![LOOP],
         ..Options::default()
@@ -237,6 +253,7 @@ fn scrolls_at_the_bottom_and_comes_back() {
 #[test]
 fn a_long_suggestion_is_cut() {
     let mut sh = Shell::start(Options {
+        init_el: no_menu(),
         rc: "inkline eval '(setq inkline-suggestion-lines 3)' >/dev/null\n".into(),
         history: vec!["echo 1\necho 2\necho 3\necho 4\necho 5"],
         ..Options::default()
@@ -252,6 +269,7 @@ fn a_long_suggestion_is_cut() {
 #[test]
 fn redrawn_once_after_a_resize() {
     let mut sh = Shell::start(Options {
+        init_el: no_menu(),
         history: vec![LOOP],
         ..Options::default()
     });
@@ -266,6 +284,7 @@ fn redrawn_once_after_a_resize() {
 #[test]
 fn every_row_erased_when_the_line_stops_matching() {
     let mut sh = Shell::start(Options {
+        init_el: no_menu(),
         history: vec![LOOP],
         ..Options::default()
     });

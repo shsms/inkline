@@ -146,6 +146,8 @@ fn colours_survive_a_resize() {
     let mut sh = typed(
         Options {
             history: vec!["ls \"abc\" -l"],
+            // The menu would show `"abc"` again under the line.
+            init_el: Some("(setq inkline-show-menu nil)".into()),
             ..Options::default()
         },
         "ls \"abc\"",
