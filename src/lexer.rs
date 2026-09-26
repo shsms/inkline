@@ -178,6 +178,8 @@ impl Painter<'_> {
                 Some(Kind::Keyword)
             } else if DECLARATIONS.contains(&token) {
                 Some(self.command_kind(token))
+            } else if separates_commands(node, parent) {
+                Some(Kind::Separator)
             } else if OPERATORS.contains(&token)
                 || (token == ")"
                     && matches!(
@@ -205,6 +207,21 @@ impl Painter<'_> {
             "ERROR" if text.starts_with(['\'', '"']) => Some(Kind::String),
             _ => None,
         }
+    }
+}
+
+/// Whether `node`, a token whose parent is `parent`, stands between two
+/// commands: a pipeline's `|` or `|&`, or a `;` other than the two inside
+/// an arithmetic `for ((…; …; …))`. A `|` between `case` patterns has a
+/// `case_item` parent.
+fn separates_commands(node: Node, parent: Option<&str>) -> bool {
+    match node.kind() {
+        "|" | "|&" => parent == Some("pipeline"),
+        ";" => {
+            parent != Some("c_style_for_statement")
+                || node.prev_sibling().is_some_and(|n| n.kind() == "))")
+        }
+        _ => false,
     }
 }
 
@@ -248,7 +265,7 @@ mod tests {
                 (String, "\"foo "),
                 (Variable, "$HOME"),
                 (String, "\""),
-                (Operator, "|"),
+                (Separator, "|"),
                 (Command, "grep"),
                 (Operator, ">"),
                 (Operator, "2>&"),
@@ -266,7 +283,7 @@ mod tests {
                 (Keyword, "[["),
                 (Option, "-f"),
                 (Keyword, "]]"),
-                (Operator, ";"),
+                (Separator, ";"),
                 (Keyword, "then"),
             ]
         );
@@ -292,7 +309,7 @@ mod tests {
             ]
         );
         assert_eq!(labels("echo 'raw"), [(Command, "echo"), (String, "'raw")]);
-        assert_eq!(labels("ls |"), [(Command, "ls"), (Operator, "|")]);
+        assert_eq!(labels("ls |"), [(Command, "ls"), (Separator, "|")]);
         assert_eq!(
             labels("echo $(date"),
             [(Command, "echo"), (Operator, "$("), (Command, "date")]
@@ -303,13 +320,95 @@ mod tests {
                 (Keyword, "for"),
                 (Variable, "i"),
                 (Keyword, "in"),
-                (Operator, ";"),
+                (Separator, ";"),
                 (Keyword, "do"),
                 (Command, "echo"),
                 (Variable, "$i"),
             ]
         );
         assert_eq!(labels("echo \\"), [(Command, "echo")]);
+    }
+
+    #[test]
+    fn pipes_and_semicolons_between_commands_are_separators() {
+        assert_eq!(
+            labels("ls | wc"),
+            [(Command, "ls"), (Separator, "|"), (Command, "wc")]
+        );
+        assert_eq!(
+            labels("ls |& wc"),
+            [(Command, "ls"), (Separator, "|&"), (Command, "wc")]
+        );
+        assert_eq!(
+            labels("a; b"),
+            [(Command, "a"), (Separator, ";"), (Command, "b")]
+        );
+        assert_eq!(
+            labels("echo $(a; b | c)"),
+            [
+                (Command, "echo"),
+                (Operator, "$("),
+                (Command, "a"),
+                (Separator, ";"),
+                (Command, "b"),
+                (Separator, "|"),
+                (Command, "c"),
+                (Operator, ")"),
+            ]
+        );
+    }
+
+    #[test]
+    fn other_marks_between_commands_stay_operators() {
+        assert_eq!(
+            labels("a && b"),
+            [(Command, "a"), (Operator, "&&"), (Command, "b")]
+        );
+        assert_eq!(
+            labels("a || b"),
+            [(Command, "a"), (Operator, "||"), (Command, "b")]
+        );
+        assert_eq!(labels("a &"), [(Command, "a"), (Operator, "&")]);
+    }
+
+    /// A `|` between the patterns of a `case` item, `;;`, the `;`s inside
+    /// an arithmetic `for ((…))` and a `|` or `;` in a string or comment
+    /// separate no commands.
+    #[test]
+    fn case_patterns_and_quoted_marks_are_not_separators() {
+        assert_eq!(
+            labels("case x in a|b) ;; esac"),
+            [
+                (Keyword, "case"),
+                (Keyword, "in"),
+                (Operator, "|"),
+                (Operator, ";;"),
+                (Keyword, "esac"),
+            ]
+        );
+        assert_eq!(
+            labels("for ((i=0; i<3; i++)); do :; done"),
+            [
+                (Keyword, "for"),
+                (Variable, "i"),
+                (Operator, ";"),
+                (Operator, "<"),
+                (Operator, ";"),
+                (Separator, ";"),
+                (Keyword, "do"),
+                (Command, ":"),
+                (Separator, ";"),
+                (Keyword, "done"),
+            ]
+        );
+        assert_eq!(
+            labels("echo 'a|b;c' # d; e | f"),
+            [
+                (Command, "echo"),
+                (String, "'a|b;c'"),
+                (Comment, "# d; e | f")
+            ]
+        );
     }
 
     #[test]

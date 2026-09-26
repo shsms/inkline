@@ -78,6 +78,26 @@ fn inkline_colors_overrides_defaults() {
     assert_eq!(fg(&s, "ls"), Color::Idx(5));
 }
 
+/// Bash's `|`, `|&` and `;` take the `separator` colour when it is set;
+/// `&&` keeps the `operator` colour.
+#[test]
+fn separators_have_their_own_colour() {
+    let opts = Options {
+        rc: "inkline eval '(setq inkline-colors \"separator=31\")' >/dev/null\n".into(),
+        ..Options::default()
+    };
+    let line = "ls | wc |& cat && ls; cd";
+    let sh = typed(opts, line);
+    let s = sh.wait_for("the whole line in colour", |s| {
+        cursor_row(s) == format!("$ {line}") && fg_is(s, "cd", Color::Idx(2))
+    });
+    assert_eq!(fg(&s, "| wc"), Color::Idx(1));
+    assert_eq!(fg(&s, "|& cat"), Color::Idx(1));
+    assert_eq!(fg(&s, "; cd"), Color::Idx(1));
+    let and = cell(&s, "&& ls").unwrap();
+    assert!(and.bold() && and.fgcolor() == Color::Default);
+}
+
 #[test]
 fn off_and_on() {
     let mut sh = typed(Options::default(), "inkline off\r");
