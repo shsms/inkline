@@ -4,6 +4,7 @@
 #            and double quotes (a raw argument keeps its quote marks): the
 #            first word of each `|` stage is `command`, `|` is `operator`,
 #            digits are `number`, other words `variable`
+#   separator  as words, but `|` is `separator`
 #   error    as words, plus an error on a word "bad"
 #   noplace  as words, plus ":error - - - no place"
 #   late     as words, answering after 0.5 s
@@ -63,6 +64,7 @@ answer() {
         tok=${s:i:j-i}
         if [[ $tok == '|' ]]; then
             kind=operator
+            [[ $does == separator ]] && kind=separator
             stage_start=1
         elif [[ $tok =~ ^[0-9]+$ ]]; then
             kind=number

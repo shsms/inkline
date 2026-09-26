@@ -14,7 +14,9 @@ const DEFAULT_ERROR: &str = "\x1b[4m\x1b[4:3m\x1b[58:5:1m";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Colors {
-    kinds: [String; 10],
+    /// By `Kind as usize`. `None` only for `Separator` when it is not set:
+    /// a separator is then drawn with the `operator` colour.
+    kinds: [Option<String>; Kind::COUNT],
     suggestion: String,
     /// The SGR codes of the `script` style, drawn on top of a part's colour;
     /// empty means no style.
@@ -57,21 +59,22 @@ impl Colors {
             if codes.is_empty() {
                 continue;
             }
-            let slot = if name == "suggestion" {
-                &mut self.suggestion
+            if name == "suggestion" {
+                self.suggestion = codes;
             } else if name == "script" {
-                &mut self.script
+                self.script = codes;
             } else if let Some(kind) = kind_named(name) {
-                &mut self.kinds[kind as usize]
-            } else {
-                continue;
-            };
-            *slot = codes;
+                self.kinds[kind as usize] = Some(codes);
+            }
         }
     }
 
     pub fn sgr(&self, kind: Kind) -> &str {
-        &self.kinds[kind as usize]
+        match &self.kinds[kind as usize] {
+            Some(codes) => codes,
+            None if kind == Kind::Separator => self.sgr(Kind::Operator),
+            None => "",
+        }
     }
 
     pub fn suggestion(&self) -> &str {
@@ -86,11 +89,13 @@ impl Colors {
         &self.error
     }
 
-    /// These colours with `set`'s on top.
+    /// These colours with `set`'s on top. A separator the set leaves out
+    /// keeps these colours' `separator` if they have one, and otherwise takes
+    /// the `operator` colour of the result.
     pub fn layered(&self, set: &ColorSet) -> Colors {
         let mut colors = self.clone();
         for (slot, codes) in colors.kinds.iter_mut().zip(&set.kinds) {
-            if let Some(codes) = codes {
+            if codes.is_some() {
                 slot.clone_from(codes);
             }
         }
@@ -123,7 +128,7 @@ impl Colors {
                 "suggestion" => colors.suggestion = codes,
                 "script" => colors.script = codes,
                 _ => match kind_named(name) {
-                    Some(kind) => colors.kinds[kind as usize] = codes,
+                    Some(kind) => colors.kinds[kind as usize] = Some(codes),
                     None => return Err(format!("unknown colour name {name}")),
                 },
             }
@@ -139,18 +144,18 @@ impl Default for Colors {
 }
 
 /// A mode's own colours (`inkline-define-mode`'s third argument): SGR codes
-/// for some of the nine kinds a mode server sends and for `script`. The ones
+/// for some of the ten kinds a mode server sends and for `script`. The ones
 /// left out come from `inkline-colors`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ColorSet {
     /// By `Kind as usize`; `Unknown` is never set.
-    kinds: [Option<String>; 10],
+    kinds: [Option<String>; Kind::COUNT],
     script: Option<String>,
 }
 
 impl ColorSet {
     /// A set from `entries` (name, value in codes or words). The first
-    /// entry for a name wins. A name other than the nine a mode server sends
+    /// entry for a name wins. A name other than the ten a mode server sends
     /// and `script`, or a value that cannot be read, is an error, in a
     /// later entry for a name too.
     pub fn from_entries(entries: &[(String, String)]) -> Result<ColorSet, String> {
@@ -216,20 +221,14 @@ fn entries(spec: &str) -> Vec<String> {
     entries
 }
 
+/// The `Kind` a colour name names: `unknown`, or one of the kinds a mode
+/// server sends.
 fn kind_named(name: &str) -> Option<Kind> {
-    Some(match name {
-        "command" => Kind::Command,
-        "unknown" => Kind::Unknown,
-        "keyword" => Kind::Keyword,
-        "option" => Kind::Option,
-        "string" => Kind::String,
-        "variable" => Kind::Variable,
-        "operator" => Kind::Operator,
-        "comment" => Kind::Comment,
-        "number" => Kind::Number,
-        "function" => Kind::Function,
-        _ => return None,
-    })
+    if name == "unknown" {
+        Some(Kind::Unknown)
+    } else {
+        crate::mode_server::protocol::kind_named(name)
+    }
 }
 
 /// The SGR codes for a colour value. A value made only of digits, `;` and
@@ -590,8 +589,17 @@ mod tests {
     #[test]
     fn a_mode_set_takes_only_the_server_names() {
         for name in [
-            "command", "keyword", "option", "operator", "string", "number", "variable", "function",
-            "comment", "script",
+            "command",
+            "keyword",
+            "option",
+            "operator",
+            "string",
+            "number",
+            "variable",
+            "function",
+            "comment",
+            "separator",
+            "script",
         ] {
             assert!(
                 ColorSet::from_entries(&entries(&[(name, "1")])).is_ok(),
@@ -607,6 +615,41 @@ mod tests {
         assert_eq!(
             ColorSet::from_entries(&entries(&[("number", "on")])),
             Err("number: \"on\" needs a colour after it".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_separator_takes_the_operator_colour_until_it_is_set() {
+        assert_eq!(Colors::default().sgr(Kind::Separator), "1");
+        let colors = Colors::parse("operator=31");
+        assert_eq!(colors.sgr(Kind::Separator), "31");
+        let colors = Colors::parse("operator=31:separator=bold cyan");
+        assert_eq!(colors.sgr(Kind::Separator), "1;36");
+        assert_eq!(colors.sgr(Kind::Operator), "31");
+        let colors = Colors::from_entries(&entries(&[("operator", "31")])).unwrap();
+        assert_eq!(colors.sgr(Kind::Separator), "31");
+        let colors =
+            Colors::from_entries(&entries(&[("operator", "31"), ("separator", "")])).unwrap();
+        assert_eq!(colors.sgr(Kind::Separator), "", "an empty value is plain");
+    }
+
+    /// A mode's `separator`, else `inkline-colors`' `separator`, else the
+    /// `operator` colour found the same way.
+    #[test]
+    fn a_separator_colour_is_looked_up_in_order() {
+        let set = |spec| ColorSet::parse(spec).unwrap();
+        let plain = Colors::parse("operator=31");
+        let own = Colors::parse("operator=31:separator=32");
+        assert_eq!(own.layered(&set("separator=33")).sgr(Kind::Separator), "33");
+        assert_eq!(own.layered(&set("operator=34")).sgr(Kind::Separator), "32");
+        assert_eq!(
+            plain.layered(&set("operator=34")).sgr(Kind::Separator),
+            "34"
+        );
+        assert_eq!(plain.layered(&set("")).sgr(Kind::Separator), "31");
+        assert_eq!(
+            plain.layered(&set("separator=33")).sgr(Kind::Operator),
+            "31"
         );
     }
 

@@ -345,6 +345,24 @@ fn a_script_is_coloured_and_dimmed() {
     assert_eq!(fg(&s, "x.csv"), Color::Default);
 }
 
+/// A `separator` span is drawn with the `separator` colour when it is set.
+#[test]
+fn a_separator_has_its_own_colour() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{}(setq inkline-colors '((separator . \"red\")))\n",
+            fake("separator")
+        )),
+        ..Options::default()
+    });
+    sh.send("csvm 'select a | sort b' x.csv");
+    sh.wait_for("colours", |s| fg_is(s, "select", Color::Idx(2)));
+    let s = sh.settle();
+    assert_eq!(fg(&s, "| sort"), Color::Idx(1), "{}", dump(&s));
+    assert!(cell(&s, "| sort").unwrap().dim(), "the script style");
+    assert_eq!(fg(&s, "sort"), Color::Idx(2));
+}
+
 /// A mode's own colours go on its script; the keys they leave out come
 /// from `inkline-colors`. Defining the same mode again keeps the server
 /// running and only changes the colours.

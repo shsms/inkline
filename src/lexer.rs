@@ -22,6 +22,15 @@ pub enum Kind {
     /// A function name. Only a mode server produces this (never the
     /// lexer itself).
     Function,
+    /// A mark between parts, such as a pipeline's `|`. Drawn with the
+    /// `operator` colour unless `separator` is set.
+    Separator,
+}
+
+impl Kind {
+    /// How many kinds there are: the length of a table indexed by
+    /// `Kind as usize`.
+    pub const COUNT: usize = Kind::Separator as usize + 1;
 }
 
 /// A labelled piece of the line, as byte offsets.

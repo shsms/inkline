@@ -352,8 +352,9 @@ fn bad_reply(line: &[u8]) -> String {
     format!("bad reply: {:?}", String::from_utf8_lossy(cut))
 }
 
-/// The `Kind` named by one of the protocol's nine kind names (`command
-/// keyword option operator string number variable function comment`).
+/// The `Kind` named by one of the protocol's ten kind names (`command
+/// keyword option operator string number variable function comment
+/// separator`).
 pub fn kind_named(name: &str) -> Option<Kind> {
     Some(match name {
         "command" => Kind::Command,
@@ -365,6 +366,7 @@ pub fn kind_named(name: &str) -> Option<Kind> {
         "variable" => Kind::Variable,
         "function" => Kind::Function,
         "comment" => Kind::Comment,
+        "separator" => Kind::Separator,
         _ => return None,
     })
 }
@@ -562,6 +564,20 @@ mod tests {
                 place: None,
                 message: "no place here".into()
             })
+        );
+    }
+
+    #[test]
+    fn a_separator_span_is_read() {
+        let r = done(b":span 1 2 3 separator\n:end 3\n", &[4, 4]);
+        assert_eq!(
+            r.spans,
+            [ReplySpan {
+                arg: 1,
+                start: 2,
+                end: 3,
+                kind: Kind::Separator
+            }]
         );
     }
 
