@@ -994,3 +994,85 @@ fn a_helper_that_cannot_tell_keeps_the_line_above() {
     sh.send(CTRL_J);
     sh.wait_for("the third line", |s| s.cursor_position() == (2, 3));
 }
+
+#[test]
+fn a_helper_without_indent_is_not_asked_for_depths() {
+    let (mut sh, _dir, log) = indenting_shell("words");
+    type_then(&mut sh, "csvm \"head", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("one step in", |s| s.cursor_position() == (1, 2));
+    type_then(&mut sh, " | sort x", "sort", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the line above's indentation", |s| {
+        s.cursor_position() == (2, 3)
+    });
+    assert_no_indent_request(&log);
+}
+
+#[test]
+fn a_raw_script_is_not_asked_for_depths() {
+    let (mut sh, _dir, log) = indenting_shell("indent");
+    type_then(&mut sh, "csvm \"head $x", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("one step in", |s| s.cursor_position() == (1, 2));
+    type_then(&mut sh, " | sort", "sort", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the line above's indentation", |s| {
+        s.cursor_position() == (2, 3)
+    });
+    assert_no_indent_request(&log);
+}
+
+#[test]
+fn pasted_lines_are_not_asked_for_depths() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        init_el: Some(indenting("indent", &log)),
+        rc: "bind 'set enable-bracketed-paste off'\n".into(),
+        ..Options::default()
+    });
+    warm_up(&mut sh);
+    sh.send("csvm 'head\n| sort x'");
+    let s = sh.wait_for("the pasted lines", |s| row_text(s, 1) == "| sort x'");
+    assert_eq!(row_text(&s, 0), "$ csvm 'head", "{}", dump(&s));
+    assert_no_indent_request(&log);
+}
+
+#[test]
+fn inkline_indent_0_asks_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "(setq inkline-indent 0)\n{}",
+            fake_logging("indent", &log)
+        )),
+        ..Options::default()
+    });
+    warm_up(&mut sh);
+    type_then(&mut sh, "csvm \"head", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 0));
+    assert_no_indent_request(&log);
+}
+
+/// A line added by a Lisp command asks for no depths.
+#[test]
+fn a_lisp_command_asks_for_no_depths() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{}(defun add-line () (interactive) (call-interactively 'insert-newline))\n\
+             (keymap-global-set \"C-x j\" 'add-line)\n",
+            indenting("indent", &log)
+        )),
+        ..Options::default()
+    });
+    warm_up(&mut sh);
+    type_then(&mut sh, "csvm \"head", "head", COMMAND);
+    sh.send("\x18j");
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    assert_no_indent_request(&log);
+}
