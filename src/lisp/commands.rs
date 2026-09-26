@@ -553,6 +553,14 @@ pub(crate) fn install_line(writable: bool) -> buffer::Installed {
     installed
 }
 
+/// Installs readline's line as the buffer, read-only for the hook named
+/// `hook`.
+pub(crate) fn install_line_read_only(hook: &'static str) -> buffer::Installed {
+    let installed = buffer::install(Box::new(ReadlineBuffer));
+    buffer::set_read_only_for(hook);
+    installed
+}
+
 /// Runs `f` with `current-prefix-arg` set to `prefix` (`nil` for none), and
 /// `this-command` and `last-command` to the symbols `this` and `last` (`nil`
 /// for none). The bindings come off again on every path.

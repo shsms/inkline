@@ -240,7 +240,7 @@ pub fn char_start_within(text: &[u8], byte: usize) -> usize {
 
 /// A 1-based character position clamped to `1..=` the text's character
 /// count plus one.
-fn to_byte(text: &str, pos: i64) -> usize {
+pub(crate) fn to_byte(text: &str, pos: i64) -> usize {
     usize::try_from(pos.max(1) - 1)
         .ok()
         .and_then(|index| text.char_indices().nth(index))
@@ -250,7 +250,7 @@ fn to_byte(text: &str, pos: i64) -> usize {
 /// The 1-based character position of the character `byte` falls inside
 /// (its start, for a byte inside a multi-byte character); one past the
 /// last character when `byte` is at or past the end.
-fn to_pos(text: &str, byte: usize) -> i64 {
+pub(crate) fn to_pos(text: &str, byte: usize) -> i64 {
     if byte >= text.len() {
         return point_max(text);
     }
@@ -265,7 +265,7 @@ fn to_pos(text: &str, byte: usize) -> i64 {
 }
 
 /// One past the last character of `text`, as a 1-based position.
-fn point_max(text: &str) -> i64 {
+pub(crate) fn point_max(text: &str) -> i64 {
     text.chars().count() as i64 + 1
 }
 

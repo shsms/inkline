@@ -1,5 +1,5 @@
 //! Hooks: lists of Lisp functions inkline runs when a line is run, changed,
-//! started or needs a suggestion.
+//! started, or needs a suggestion or completions.
 
 #[cfg(not(test))]
 use std::ffi::c_int;
@@ -10,6 +10,8 @@ use super::commands::Failure;
 #[cfg(not(test))]
 use tulisp::FuncallArgs;
 use tulisp::{TulispContext, TulispObject};
+
+use crate::menu::{Item, Source, drawable};
 
 pub const ACCEPT: &str = "inkline-accept-functions";
 pub const AFTER_CHANGE: &str = "inkline-after-change-functions";
@@ -28,6 +30,7 @@ const PRELUDE: &str = r#"
 (defvar inkline-after-change-functions nil)
 (defvar inkline-line-start-functions nil)
 (defvar inkline-suggestion-functions nil)
+(defvar inkline-completion-functions nil)
 (defun inkline--hook-single-p (value)
   (cond ((null value) nil)
         ((symbolp value) (not (eq value t)))
@@ -185,6 +188,19 @@ thread_local! {
     /// The suggestion hook's answers for this line.
     #[cfg(not(test))]
     static ANSWERS: std::cell::RefCell<Answers> = std::cell::RefCell::default();
+    /// What the completion hook was last asked about on this line.
+    #[cfg(not(test))]
+    static COMPLETIONS: std::cell::RefCell<Option<Asked>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The line text and cursor (a byte offset) the completion hook was asked
+/// about, and the items its functions gave.
+#[cfg(not(test))]
+struct Asked {
+    line: String,
+    point: usize,
+    items: Vec<Item>,
 }
 
 /// What the suggestion hook answered on this line, so it is asked once for each
@@ -208,6 +224,7 @@ pub fn line_started() {
     if !super::RUNNING.load(std::sync::atomic::Ordering::Relaxed) {
         see_line(None);
         let _ = ANSWERS.try_with(|answers| answers.take());
+        let _ = COMPLETIONS.try_with(|c| c.take());
     }
 }
 
@@ -504,6 +521,169 @@ fn ask(ctx: &mut TulispContext, line: &str, wins: impl Fn(&str) -> bool) -> Opti
     (!stopped).then_some(answer)
 }
 
+/// The items in `value`, a completion function's answer for `line` with the
+/// cursor at byte `point`: none for `nil`; for a list `(START END ITEMS)`,
+/// each string of ITEMS, replacing the line from START to END (1-based
+/// character positions with START <= point <= END). An item that cannot be
+/// drawn is left out. Anything else is an error that says what was
+/// expected.
+pub fn read_answer(value: &TulispObject, line: &str, point: usize) -> Result<Vec<Item>, String> {
+    use super::values::{items, read_int, read_str};
+    if value.null() {
+        return Ok(Vec::new());
+    }
+    let shape = || "expected nil or (START END ITEMS)".to_owned();
+    let mut parts = items(value);
+    let (Some(start), Some(end), Some(list)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(shape());
+    };
+    if parts.next().is_some() || !parts.proper() {
+        return Err(shape());
+    }
+    let (Some(start), Some(end)) = (read_int(&start), read_int(&end)) else {
+        return Err(shape());
+    };
+    // A point inside a character (a locale that is not UTF-8) counts as that
+    // character's start.
+    let point_pos = super::buffer::to_pos(line, point);
+    if !(1 <= start
+        && start <= point_pos
+        && point_pos <= end
+        && end <= super::buffer::point_max(line))
+    {
+        return Err("START and END must be positions around the cursor".to_owned());
+    }
+    let (start, end) = (
+        super::buffer::to_byte(line, start),
+        super::buffer::to_byte(line, end),
+    );
+    let strings = || "ITEMS must be a list of strings".to_owned();
+    if !list.listp() {
+        return Err(strings());
+    }
+    let mut texts = items(&list);
+    let mut found = Vec::new();
+    for text in texts.by_ref() {
+        let text = read_str(&text).ok_or_else(strings)?;
+        if drawable(&text) {
+            found.push(Item {
+                text,
+                start,
+                end,
+                source: Source::Lisp,
+            });
+        }
+    }
+    if !texts.proper() {
+        return Err(strings());
+    }
+    Ok(found)
+}
+
+/// The items the functions of `inkline-completion-functions` give for
+/// `line` with the cursor at byte `point`, at the main prompt. When the
+/// functions were last asked about this same line text and cursor, the
+/// items they gave then are the answer, and they are not asked again.
+/// Else, where hooks may run, every function is asked in order with the
+/// line read-only, and all their items are kept in place of the ones kept
+/// before, until the line text or cursor changes or the next line starts.
+/// A function that fails or answers something other than `nil` or
+/// `(START END ITEMS)` is removed from the hook, and the message says so.
+/// After a `quit` no later function is asked, and this line and cursor get
+/// no items. A hook with no functions gives no items and keeps nothing, so
+/// a function added later is asked at once. A `C-c` while functions were
+/// left to ask keeps nothing. A busy interpreter gives none.
+#[cfg(not(test))]
+pub fn completions(line: &str, point: usize) -> Vec<Item> {
+    if !crate::ffi::reading_command() {
+        return Vec::new();
+    }
+    let kept = COMPLETIONS
+        .try_with(|c| {
+            c.borrow()
+                .as_ref()
+                .filter(|asked| asked.line == line && asked.point == point)
+                .map(|asked| asked.items.clone())
+        })
+        .ok()
+        .flatten();
+    if let Some(kept) = kept {
+        return kept;
+    }
+    if !crate::hooks::hooks_allowed() {
+        return Vec::new();
+    }
+    let Some(items) = super::with_lisp_marking_panics(|ctx| ask_completions(ctx, line, point))
+        .ok()
+        .flatten()
+    else {
+        return Vec::new();
+    };
+    let asked = Asked {
+        line: line.to_owned(),
+        point,
+        items: items.clone(),
+    };
+    let _ = COMPLETIONS.try_with(|c| c.replace(Some(asked)));
+    items
+}
+
+/// Asks the functions of `inkline-completion-functions` for `completions`.
+/// None when the hook has no functions, or when a `C-c` came while
+/// functions were left to ask: then nothing is kept.
+#[cfg(not(test))]
+fn ask_completions(ctx: &mut TulispContext, line: &str, point: usize) -> Option<Vec<Item>> {
+    let hook = ctx.intern(COMPLETION);
+    let hook_functions = functions(&hook);
+    if hook_functions.is_empty() {
+        return None;
+    }
+    let _line = super::commands::install_line_read_only(COMPLETION);
+    let mut errors = Vec::new();
+    let mut found = Vec::new();
+    let mut stopped = false;
+    let mut quit = false;
+    for function in &hook_functions {
+        if crate::hooks::lisp_must_stop() || crate::ffi::interrupt_caught() {
+            stopped = true;
+            break;
+        }
+        let failed = match ctx.funcall(function, ()) {
+            Ok(value) => match read_answer(&value, line, point) {
+                Ok(items) => {
+                    found.extend(items);
+                    None
+                }
+                Err(why) => Some(why),
+            },
+            Err(e) => match super::commands::failure_of(ctx, &e) {
+                Failure::Error(text) | Failure::Refused(text) => Some(text),
+                Failure::Quit => {
+                    quit = true;
+                    break;
+                }
+            },
+        };
+        if let Some(text) = failed {
+            remove(&hook, function);
+            errors.push(format!(
+                "inkline: {}: {text} (removed from {COMPLETION})",
+                function_name(function)
+            ));
+        }
+    }
+    if !errors.is_empty() {
+        crate::hooks::show_message(&errors.join("; "));
+    }
+    if stopped {
+        None
+    } else if quit {
+        Some(Vec::new())
+    } else {
+        Some(found)
+    }
+}
+
 /// Runs the functions of the hook named `hook` on readline's line, in order,
 /// with `args` and `KEY` set to `key`, as one undo step; each function's
 /// changes are a step of their own inside it, undone when that function fails.
@@ -670,10 +850,87 @@ mod tests {
     }
 
     #[test]
-    fn the_four_hooks_start_empty() {
+    fn the_hooks_start_empty() {
         let mut ctx = ctx();
-        for hook in [ACCEPT, AFTER_CHANGE, LINE_START, SUGGESTION] {
+        for hook in [ACCEPT, AFTER_CHANGE, LINE_START, SUGGESTION, COMPLETION] {
             assert_eq!(eval(&mut ctx, hook), "nil");
+        }
+    }
+
+    fn answer(
+        ctx: &mut TulispContext,
+        text: &str,
+        line: &str,
+        point: usize,
+    ) -> Result<Vec<(String, usize, usize)>, String> {
+        let value = ctx.eval_string(text).unwrap();
+        read_answer(&value, line, point).map(|items| {
+            items
+                .into_iter()
+                .map(|i| (i.text, i.start, i.end))
+                .collect()
+        })
+    }
+
+    #[test]
+    fn a_completion_answer_is_read_into_items() {
+        let mut ctx = ctx();
+        assert_eq!(answer(&mut ctx, "nil", "git st", 6), Ok(vec![]));
+        assert_eq!(
+            answer(&mut ctx, r#"'(5 7 ("status" "stash"))"#, "git st", 6),
+            Ok(vec![("status".into(), 4, 6), ("stash".into(), 4, 6)])
+        );
+        // Positions count characters: "é" is two bytes.
+        assert_eq!(
+            answer(&mut ctx, r#"'(3 4 ("x"))"#, "éab", 4),
+            Ok(vec![("x".into(), 3, 4)])
+        );
+        // A cursor inside a character is at that character's start.
+        assert_eq!(
+            answer(&mut ctx, r#"'(1 2 ("x"))"#, "é", 1),
+            Ok(vec![("x".into(), 0, 2)])
+        );
+        // An item that cannot be drawn is left out.
+        assert_eq!(
+            answer(
+                &mut ctx,
+                "(list 1 1 (list \"a\" (make-string 1 27)))",
+                "",
+                0
+            ),
+            Ok(vec![("a".into(), 0, 0)])
+        );
+    }
+
+    #[test]
+    fn a_bad_completion_answer_is_an_error() {
+        let mut ctx = ctx();
+        let shape = Err("expected nil or (START END ITEMS)".to_owned());
+        for text in [
+            r#""x""#,
+            "'(1 2)",
+            "'(1 2 (\"a\") 4)",
+            "'(a 2 (\"a\"))",
+            "'(1 2 . 3)",
+        ] {
+            assert_eq!(answer(&mut ctx, text, "ab", 2), shape, "{text}");
+        }
+        let place = Err("START and END must be positions around the cursor".to_owned());
+        for text in [
+            r#"'(0 3 ("a"))"#,
+            r#"'(1 4 ("a"))"#,
+            r#"'(1 2 ("a"))"#,
+            r#"'(2 1 ("a"))"#,
+        ] {
+            assert_eq!(answer(&mut ctx, text, "ab", 2), place, "{text}");
+        }
+        let strings = Err("ITEMS must be a list of strings".to_owned());
+        for text in [
+            r#"'(1 3 ("a" 5))"#,
+            r#"'(1 3 "a")"#,
+            r#"'(1 3 ("a" . "b"))"#,
+        ] {
+            assert_eq!(answer(&mut ctx, text, "ab", 2), strings, "{text}");
         }
     }
 }
