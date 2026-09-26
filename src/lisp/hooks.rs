@@ -15,6 +15,7 @@ pub const ACCEPT: &str = "inkline-accept-functions";
 pub const AFTER_CHANGE: &str = "inkline-after-change-functions";
 pub const LINE_START: &str = "inkline-line-start-functions";
 pub const SUGGESTION: &str = "inkline-suggestion-functions";
+pub const COMPLETION: &str = "inkline-completion-functions";
 
 /// `add-hook` and `remove-hook` follow Emacs: LOCAL is ignored (inkline has no
 /// buffer-local variables), and a hook may hold a single function instead of a

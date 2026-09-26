@@ -90,6 +90,8 @@ impl Buffer for TextBuffer {
 thread_local! {
     static CURRENT: RefCell<Option<Box<dyn Buffer>>> = const { RefCell::new(None) };
     static WRITABLE: Cell<bool> = const { Cell::new(true) };
+    /// The hook a read-only line belongs to, named in `refuse_when_read_only`.
+    static READ_ONLY_FOR: Cell<&'static str> = const { Cell::new(super::hooks::SUGGESTION) };
     /// Byte offsets `save-excursion` keeps, moved by inserts and deletes.
     static MARKERS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
@@ -101,6 +103,7 @@ impl Drop for Installed {
     fn drop(&mut self) {
         CURRENT.with_borrow_mut(|c| *c = None);
         WRITABLE.set(true);
+        READ_ONLY_FOR.set(super::hooks::SUGGESTION);
         MARKERS.with_borrow_mut(Vec::clear);
     }
 }
@@ -110,6 +113,7 @@ impl Drop for Installed {
 pub fn install(buffer: Box<dyn Buffer>) -> Installed {
     CURRENT.with_borrow_mut(|c| *c = Some(buffer));
     WRITABLE.set(true);
+    READ_ONLY_FOR.set(super::hooks::SUGGESTION);
     Installed(())
 }
 
@@ -117,6 +121,13 @@ pub fn install(buffer: Box<dyn Buffer>) -> Installed {
 /// True by default once a buffer is installed.
 pub fn set_writable(writable: bool) {
     WRITABLE.set(writable);
+}
+
+/// Makes the installed buffer read-only for the hook named `hook`, which
+/// `refuse_when_read_only` names.
+pub fn set_read_only_for(hook: &'static str) {
+    WRITABLE.set(false);
+    READ_ONLY_FOR.set(hook);
 }
 
 /// Whether a line is being edited (a buffer is installed).
@@ -135,14 +146,15 @@ fn read_only_error() -> Error {
 }
 
 /// An error naming `name` when the installed buffer is read-only: the line is
-/// read-only only while `inkline-suggestion-functions` runs, and those
-/// functions may not use the kill ring, run a command, read a key, show
-/// anything, or change key bindings or readline's variables.
+/// read-only only while `inkline-suggestion-functions` or
+/// `inkline-completion-functions` runs, and those functions may not use the
+/// kill ring, run a command, read a key, show anything, or change key bindings
+/// or readline's variables. The error names the hook that runs.
 pub fn refuse_when_read_only(name: &str) -> Result<(), Error> {
     if read_only() {
         return Err(Error::lisp_error(format!(
             "{name} is not allowed in {}",
-            super::hooks::SUGGESTION
+            READ_ONLY_FOR.get()
         )));
     }
     Ok(())
@@ -1113,6 +1125,25 @@ mod tests {
                 "{program}"
             );
         }
+    }
+
+    #[test]
+    fn the_read_only_error_names_the_hook_that_runs() {
+        let mut ctx = TulispContext::new();
+        crate::lisp::errors::register(&mut ctx);
+        register(&mut ctx);
+        let _installed = install(Box::new(TextBuffer {
+            text: "ab".into(),
+            point: 2,
+            mark: 0,
+            kills: Vec::new(),
+        }));
+        set_read_only_for(super::super::hooks::COMPLETION);
+        let e = ctx.eval_string("(kill-region 1 2)").unwrap_err();
+        assert_eq!(
+            e.desc(),
+            "kill-region is not allowed in inkline-completion-functions"
+        );
     }
 
     /// A line that is not UTF-8, as readline's can be. Changing it is a
