@@ -301,6 +301,27 @@ look:
 `(script . "")` turns it off. The helper's colours use the usual keys, and
 `number` and `function` (see "Colours" below).
 
+A third argument to `inkline-highlight-arguments` gives the command colours
+of its own, in the forms `inkline-colors` takes. They are used only inside
+that command's arguments, for the nine kinds a helper sends (`command`,
+`keyword`, `option`, `operator`, `string`, `number`, `variable`, `function`
+and `comment`) and for `script`; a name they leave out uses
+`inkline-colors`. Bash's own colours inside the script, such as the colour
+of a `$min`, of the quote marks and of the error underline, stay as
+`inkline-colors` sets them.
+
+```elisp
+;; ~/.config/inkline/init.el
+(inkline-highlight-arguments "csvm" '("csvm" "--highlight")
+  '((command . "bold magenta") (variable . "cyan") (number . "yellow")
+    (script . "on grey3")))
+```
+
+A bad colour, or a name other than those ten, is an error, and nothing
+changes. Registering the command again with the same program keeps its
+helper running and only changes the colours, from the next draw; leaving the
+third argument out drops them.
+
 The command is found by its name as typed, after quotes are removed, so
 `'csvm'` matches too. Its arguments are its words as bash will pass them to
 the program: a redirection such as `2>err` and `VAR=x` words before the name
@@ -348,8 +369,8 @@ Two limits:
   its words end, or what bash will make of them.
 - A subshell that bash forks while a helper runs, such as `while :; do sleep
   100; done &`, keeps the helper's connection open. A helper stopped by
-  `inkline reload` or by registering it again keeps running until that
-  subshell ends.
+  `inkline reload` or by registering the command again with another program
+  keeps running until that subshell ends.
 
 To write a helper for your own program, see
 [`docs/highlight-protocol.md`](docs/highlight-protocol.md).

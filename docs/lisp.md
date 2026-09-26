@@ -445,19 +445,33 @@ See the README's
 ["Colouring a program's arguments"](../README.md#colouring-a-programs-arguments),
 and [`docs/highlight-protocol.md`](highlight-protocol.md) for writing one.
 
-- `(inkline-highlight-arguments NAME PROGRAM)` — makes `PROGRAM` the helper
-  for the command `NAME`, a string. `PROGRAM` is a list of non-empty
-  strings: the program, then its arguments, such as `'("csvm"
+- `(inkline-highlight-arguments NAME PROGRAM &optional COLORS)` — makes
+  `PROGRAM` the helper for the command `NAME`, a string. `PROGRAM` is a list
+  of non-empty strings: the program, then its arguments, such as `'("csvm"
   "--highlight")`. A program name without a `/` is looked up in bash's
   `PATH` when the helper starts; `~` and variables in `PROGRAM` are not
   expanded. Returns `nil`. A `NAME` that is not a string, or a `PROGRAM`
   that is neither such a list nor `nil`, is a `wrong-type-argument` error.
+  - `COLORS` gives the command colours of its own, in the forms
+    `inkline-colors` takes: an alist of `(NAME . "VALUE")` pairs or a
+    string in `LS_COLORS`'s format, such as `'((command . "bold magenta")
+    (script . "on grey3"))`. The names are the nine kinds a helper sends
+    (`command`, `keyword`, `option`, `operator`, `string`, `number`,
+    `variable`, `function`, `comment`) and `script`. They are used only
+    inside that command's arguments, and a name left out uses
+    `inkline-colors`. A value that cannot be read, or any other name, is an
+    error (`inkline-highlight-arguments: WHY`), in the string form too, and
+    nothing changes. Left out or `nil`, the command has no colours of its
+    own.
   - `NAME` matches a command word that is exactly `NAME` once its quotes
     are removed. An alias is not expanded: `alias c=csvm` needs
     `(inkline-highlight-arguments "c" …)` too.
-  - Registering a `NAME` again, even with the same `PROGRAM`, replaces its
-    helper: the old process is stopped, and a new one starts the next time
-    a line holds the command. This also turns back on a helper that failed.
+  - Registering a `NAME` again with the same `PROGRAM` keeps its running
+    helper and only changes its colours, from the next draw. A different
+    `PROGRAM` replaces the helper: the old process is stopped, and a new one
+    starts the next time a line holds the command. Registering again, with
+    any `PROGRAM`, turns back on a helper that failed. To restart a running
+    helper, remove it, then register it again.
   - `(inkline-highlight-arguments NAME nil)` removes the helper for `NAME`.
   - `inkline reload` stops every helper and forgets them; `init.el` then
     registers them again.
