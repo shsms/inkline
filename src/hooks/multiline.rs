@@ -1,9 +1,12 @@
 //! The readline commands for a command that spans several lines.
 
 use std::ffi::c_int;
+use std::sync::atomic::Ordering;
 
 use super::{STATE, guard, status_of};
+use crate::args;
 use crate::ffi;
+use crate::helper::{self, protocol::Depths};
 use crate::indent;
 use crate::lines;
 use crate::render;
@@ -137,6 +140,11 @@ pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
 /// line left moves out when it starts with a closing word, the spaces and
 /// tabs around the cursor go, and the new line gets its indentation.
 ///
+/// Inside a quoted argument of a command that has a highlight helper, the
+/// helper says how deep both lines are (see `in_script`); without its answer,
+/// the new line gets the indentation of the cursor's line, or one step in from
+/// the command's line when the cursor is on the line the script starts on.
+///
 /// None of this happens when more input is already waiting (pasted text keeps
 /// its own spacing) or `inkline-indent` is 0. With `close_below`, the text
 /// after the cursor goes on a line of its own below the new one, as indented
@@ -154,6 +162,21 @@ fn new_line(line: &str, point: usize, close_below: bool) {
             // The indentation comes from the line as it was, so a line split
             // right after its own indentation keeps it.
             indentation = indent::for_new_line(&text, point, step);
+            blanks = lines::blanks_around(&text, point);
+        } else if let Some(script) = in_script(&text, point) {
+            let split = indent::script_line(
+                &text,
+                point,
+                script.command_line,
+                script.first_line,
+                script.depths,
+                step,
+            );
+            if let Some(to) = &split.moved_out {
+                point = set_indentation(&text, point, to);
+            }
+            let text = ffi::line().unwrap_or_default();
+            indentation = split.new_line;
             blanks = lines::blanks_around(&text, point);
         }
     }
@@ -181,6 +204,71 @@ fn new_line(line: &str, point: usize, close_below: bool) {
         ffi::set_point(at);
     }
     ffi::end_undo_group();
+}
+
+/// A new line's place inside a quoted argument of a command that has a
+/// highlight helper.
+struct InScript {
+    /// Where the line that holds the command's name starts.
+    command_line: usize,
+    /// Where the line the argument starts on starts: the script's first
+    /// line.
+    first_line: usize,
+    /// The depths the helper gave; `None` when it was not asked or gave
+    /// none in time.
+    depths: Option<Depths>,
+}
+
+/// Whether the cursor at `point` in `text` is inside a quoted argument of
+/// a command that has a highlight helper, found as for colours. If so, asks
+/// the helper how deep the lines are (`helper::indent`, waiting up to
+/// `helper::INDENT_WAIT`), unless the argument is `raw` or Lisp is running.
+/// `None` when the cursor is not inside such an argument: the bash rules
+/// apply.
+fn in_script(text: &str, point: usize) -> Option<InScript> {
+    if !helper::any_registered() {
+        return None;
+    }
+    let quote = syntax::open_quote(&text[..point])?;
+    // `STATE` is borrowed only for the parse: never while waiting on the
+    // helper.
+    let tree = STATE.with_borrow_mut(|s| s.lexer.tree(text))?;
+    let commands = args::commands(&tree, text, helper::is_registered);
+    let (command, index) = args::with_quote(&commands, quote)?;
+    let command_line = lines::line_start(text, command.args[0].start()?);
+    let arg = &command.args[index];
+    let first_line = lines::line_start(text, arg.start()?);
+    let depths = if arg.raw || crate::lisp::RUNNING.load(Ordering::Relaxed) {
+        None
+    } else {
+        let cwd = ffi::shell_variable("PWD").unwrap_or_default().into_bytes();
+        helper::indent(
+            &command.name,
+            &helper::request(cwd, command),
+            (index, arg.offset_at(point)),
+            helper::INDENT_WAIT,
+            ffi::signal_to_act_on,
+        )
+    };
+    Some(InScript {
+        command_line,
+        first_line,
+        depths,
+    })
+}
+
+/// Replaces the indentation of the line `point` is on with `to`, and
+/// returns where the cursor is then. The cursor must be past the
+/// indentation.
+fn set_indentation(text: &str, point: usize, to: &str) -> usize {
+    let start = lines::line_start(text, point);
+    let old = indent::indentation(&text[start..]).len();
+    ffi::delete_text(start, start + old);
+    ffi::set_point(start);
+    ffi::insert_text(to);
+    let point = point - old + to.len();
+    ffi::set_point(point);
+    point
 }
 
 fn indent_step() -> usize {

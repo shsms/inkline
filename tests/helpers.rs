@@ -726,3 +726,271 @@ fn a_notice_comes_before_an_errors_message() {
         has_row(s, error) && !has_row(s, notice) && underlined_on_row(s, 0, "bad")
     });
 }
+
+/// The `command` colour, which the fake gives the first word of a stage.
+const COMMAND: Color = Color::Idx(2);
+/// The `variable` colour, which the fake gives the other words.
+const VARIABLE: Color = Color::Idx(4);
+
+/// An `init.el` with `inkline-indent` 2 and the fake helper for `csvm`
+/// doing `mode`, logging to `log`.
+fn indenting(mode: &str, log: &std::path::Path) -> String {
+    format!("(setq inkline-indent 2)\n{}", fake_logging(mode, log))
+}
+
+/// Types `csvm 'warm'`, waits for its colours, and empties the line: the
+/// helper is then running.
+fn warm_up(sh: &mut Shell) {
+    sh.send("csvm 'warm'");
+    sh.wait_for("the helper's colours", |s| fg_is(s, "warm", COMMAND));
+    sh.send("\x01\x0b");
+    sh.wait_for("an empty line", |s| cursor_row(s) == "$");
+}
+
+/// Sends `keys`, then waits until `word` has the colour `color`: the
+/// helper has answered for the line as it is now, so no colour request is
+/// in flight when the next key comes.
+fn type_then(sh: &mut Shell, keys: &str, word: &str, color: Color) {
+    sh.send(keys);
+    sh.wait_for(&format!("{word} coloured"), |s| fg_is(s, word, color));
+}
+
+/// The text of the first `n` rows.
+fn rows(s: &vt100::Screen, n: u16) -> Vec<String> {
+    (0..n).map(|r| row_text(s, r)).collect()
+}
+
+/// Waits a little for requests to reach the log, then checks that none
+/// asked for depths.
+fn assert_no_indent_request(log: &std::path::Path) {
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let logged = std::fs::read_to_string(log).unwrap_or_default();
+    assert!(!logged.lines().any(|l| l.starts_with("at:")), "{logged}");
+}
+
+/// Starts a shell with `inkline-indent` 2 and the fake doing `mode`, and
+/// warms the helper up. The log's directory must live as long as the
+/// shell.
+fn indenting_shell(mode: &str) -> (Shell, tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        init_el: Some(indenting(mode, &log)),
+        ..Options::default()
+    });
+    warm_up(&mut sh);
+    (sh, dir, log)
+}
+
+#[test]
+fn a_scripts_lines_are_one_step_in() {
+    let (mut sh, _dir, log) = indenting_shell("indent");
+    type_then(&mut sh, "csvm \"head", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    wait_for_log(&log, "at:1 4");
+    type_then(&mut sh, "| sort x", "sort", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the third line", |s| s.cursor_position() == (2, 2));
+    type_then(&mut sh, "| etc", "etc", COMMAND);
+    let s = sh.settle();
+    assert_eq!(
+        rows(&s, 3),
+        ["$ csvm \"head", "  | sort x", "  | etc\""],
+        "{}",
+        dump(&s)
+    );
+}
+
+#[test]
+fn a_line_after_a_pipe_is_one_step_in() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    type_then(&mut sh, "csvm \"head |", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    type_then(&mut sh, "sort x", "sort", COMMAND);
+    let s = sh.settle();
+    assert_eq!(
+        rows(&s, 2),
+        ["$ csvm \"head |", "  sort x\""],
+        "{}",
+        dump(&s)
+    );
+}
+
+#[test]
+fn a_group_adds_a_step_and_its_closer_moves_out() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    type_then(&mut sh, "csvm \"head", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    type_then(&mut sh, "| join (", "join", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("inside the group", |s| s.cursor_position() == (2, 4));
+    type_then(&mut sh, "cols a,b", "cols", VARIABLE);
+    sh.send(CTRL_J);
+    sh.wait_for("still inside", |s| s.cursor_position() == (3, 4));
+    type_then(&mut sh, ") other.csv on a", "other.csv", VARIABLE);
+    sh.send(CTRL_J);
+    sh.wait_for("after the group", |s| {
+        s.cursor_position() == (4, 2) && row_text(s, 3) == "  ) other.csv on a"
+    });
+    type_then(&mut sh, "| sort x", "sort", COMMAND);
+    let s = sh.settle();
+    assert_eq!(
+        rows(&s, 5),
+        [
+            "$ csvm \"head",
+            "  | join (",
+            "    cols a,b",
+            "  ) other.csv on a",
+            "  | sort x\"",
+        ],
+        "{}",
+        dump(&s)
+    );
+}
+
+/// Types `csvm \`, Enter, and a script six spaces in on the next line,
+/// then adds a line inside the script.
+fn split_after_a_backslash(sh: &mut Shell) {
+    sh.send("csvm \\\r");
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    type_then(sh, "    \"head x", "head", COMMAND);
+    sh.send(CTRL_J);
+}
+
+/// The line where the script's quote opens is its first line: it never
+/// moves, even when the command's name is on a line above it.
+#[test]
+fn the_line_the_script_starts_on_stays() {
+    let (mut sh, _dir, log) = indenting_shell("indent");
+    split_after_a_backslash(&mut sh);
+    let s = sh.wait_for("the new line", |s| s.cursor_position() == (2, 2));
+    wait_for_log(&log, "at:1 6");
+    assert_eq!(
+        rows(&s, 3),
+        ["$ csvm \\", "      \"head x", "  \""],
+        "{}",
+        dump(&s)
+    );
+}
+
+/// Without depths, a new line after the script's first line is one step
+/// in from the command's line, as it is when the quote opens on that line.
+#[test]
+fn without_depths_the_line_the_script_starts_on_gives_one_step() {
+    let (mut sh, _dir, log) = indenting_shell("words");
+    split_after_a_backslash(&mut sh);
+    let s = sh.wait_for("the new line", |s| s.cursor_position() == (2, 2));
+    assert_eq!(
+        rows(&s, 3),
+        ["$ csvm \\", "      \"head x", "  \""],
+        "{}",
+        dump(&s)
+    );
+    assert_no_indent_request(&log);
+}
+
+/// Enter adds a line while the quote is open (C-v keeps `"` from being
+/// paired), and moves a closing line out.
+#[test]
+fn enter_moves_a_closing_line_out() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    type_then(&mut sh, "csvm \x16\"fn f {", "fn", COMMAND);
+    sh.send("\r");
+    sh.wait_for("inside the body", |s| s.cursor_position() == (1, 4));
+    type_then(&mut sh, "a", "a", VARIABLE);
+    sh.send("\r");
+    sh.wait_for("still inside", |s| s.cursor_position() == (2, 4));
+    sh.send("}\r");
+    sh.wait_for("the brace moved out", |s| {
+        s.cursor_position() == (3, 2) && row_text(s, 2) == "  }"
+    });
+}
+
+#[test]
+fn one_undo_takes_back_the_new_line_and_the_move_out() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    type_then(&mut sh, "csvm 'fn f {", "fn", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("inside the body", |s| s.cursor_position() == (1, 4));
+    type_then(&mut sh, "a", "a", VARIABLE);
+    sh.send(CTRL_J);
+    sh.wait_for("still inside", |s| s.cursor_position() == (2, 4));
+    sh.send("}");
+    sh.wait_for("the brace", |s| row_text(s, 2) == "    }'");
+    sh.send(CTRL_J);
+    sh.wait_for("the brace moved out", |s| row_text(s, 2) == "  }");
+    sh.send("\x1f");
+    // Readline's undo leaves the cursor where the first edit of the group
+    // was, at the line's start plus its old indentation, so only its row is
+    // checked.
+    sh.wait_for("the line as it was", |s| {
+        row_text(s, 2) == "    }'" && s.cursor_position().0 == 2 && row_text(s, 3).is_empty()
+    });
+}
+
+/// The spaces and tabs around the cursor go inside a script too.
+#[test]
+fn the_blanks_around_the_cursor_go_in_a_script() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    type_then(&mut sh, "csvm \"head   | sort x", "sort", COMMAND);
+    sh.send(&"\x02".repeat(11));
+    sh.wait_for("the cursor after head", |s| s.cursor_position() == (0, 12));
+    sh.send(CTRL_J);
+    let s = sh.wait_for("the new line", |s| {
+        s.cursor_position() == (1, 2) && row_text(s, 1) == "  | sort x\""
+    });
+    assert_eq!(row_text(&s, 0), "$ csvm \"head", "{}", dump(&s));
+}
+
+/// Without depths in time, a new line after the command's line goes one step
+/// in, and a new line after a later line gets that line's indentation.
+/// Neither waits for the late depths, which do not turn the helper off.
+#[test]
+fn no_depths_in_time_keeps_the_line_above() {
+    let (mut sh, _dir, log) = indenting_shell("slow-indent");
+    type_then(&mut sh, "csvm \"head", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    wait_for_log(&log, "at:1 4");
+    type_then(&mut sh, " | sort x", "sort", COMMAND);
+    let began = std::time::Instant::now();
+    sh.send(CTRL_J);
+    sh.wait_for("the third line", |s| s.cursor_position() == (2, 3));
+    let took = began.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(450),
+        "took {took:?}"
+    );
+    // C-u would clear only the last line of the command: C-c drops it all.
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    status_row(&mut sh, "highlight csvm: running");
+}
+
+#[test]
+fn c_c_while_waiting_for_depths() {
+    let (mut sh, _dir, _log) = indenting_shell("slow-indent");
+    type_then(&mut sh, "csvm \"head", "head", COMMAND);
+    sh.send(CTRL_J);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("echo still here\r");
+    sh.wait_for("bash is alive", |s| has_row(s, "still here"));
+    status_row(&mut sh, "highlight csvm: running");
+}
+
+#[test]
+fn a_helper_that_cannot_tell_keeps_the_line_above() {
+    let (mut sh, _dir, log) = indenting_shell("indent");
+    type_then(&mut sh, "csvm \"nodepth", "nodepth", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    wait_for_log(&log, "at:1 7");
+    type_then(&mut sh, " | x", "x", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the third line", |s| s.cursor_position() == (2, 3));
+}
