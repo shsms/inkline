@@ -799,6 +799,7 @@ pub fn accept_line(count: c_int, key: c_int) -> c_int {
 
 unsafe extern "C" {
     fn rl_complete(count: c_int, key: c_int) -> c_int;
+    fn rl_abort(count: c_int, key: c_int) -> c_int;
 }
 
 /// readline's `complete`. `C-g` at its questions, or `C-c` while it runs,
@@ -814,6 +815,12 @@ pub fn complete(count: c_int, key: c_int) -> c_int {
 /// commands.
 pub fn continue_completion() {
     unsafe { rl_last_func = Some(rl_complete) };
+}
+
+/// readline's `abort`. It jumps back to readline's top level: the caller's
+/// frames must hold nothing to drop.
+pub fn abort(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_abort(count, key) }
 }
 
 /// Whether readline is replaying a macro: the text bound to a key, or a

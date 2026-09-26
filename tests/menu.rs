@@ -303,6 +303,7 @@ fn a_menu_drawn_while_lisp_runs_is_not_kept() {
 
 const C_N: &str = "\x0e";
 const C_P: &str = "\x10";
+const C_G: &str = "\x07";
 const UNDO: &str = "\x1f";
 
 /// Whether row `row` is drawn in reverse video.
@@ -470,6 +471,33 @@ fn the_menu_keys_work_in_read_e_under_lisp() {
 }
 
 #[test]
+fn ctrl_g_hides_the_menu_until_the_line_changes() {
+    let mut sh = two_items();
+    sh.send(C_G);
+    let s = sh.wait_for("no menu", |s| row_text(s, 1).is_empty());
+    assert_eq!(cursor_row(&s), "$ git st", "no grey text either");
+    sh.send("a");
+    sh.wait_for("the menu again", |s| {
+        cursor_row(s) == "$ git status" && row_text(s, 1) == "h  git status"
+    });
+}
+
+/// The hide lasts only until the text changes: typing a character and
+/// deleting it brings the menu back for the same text.
+#[test]
+fn ctrl_g_hide_ends_when_the_text_changes_and_comes_back() {
+    let mut sh = two_items();
+    sh.send(C_G);
+    sh.wait_for("no menu", |s| row_text(s, 1).is_empty());
+    sh.send("u");
+    sh.wait_for("the typed text", |s| cursor_row(s).starts_with("$ git stu"));
+    sh.send("\x7f");
+    sh.wait_for("the menu again", |s| {
+        cursor_row(s) == "$ git status" && row_text(s, 1) == "h  git status"
+    });
+}
+
+#[test]
 fn ctrl_p_walks_history_without_a_menu() {
     let mut sh = Shell::start(with_init(
         "(setq inkline-show-menu nil)",
@@ -523,4 +551,22 @@ fn up_after_a_pick_keeps_the_cursors_column() {
     sh.send("\x1b[A");
     let s = sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
     assert_eq!(s.cursor_position(), (0, col), "{}", dump(&s));
+}
+
+/// `C-g` with no menu is readline's `abort`, which rings the bell, and the
+/// shell goes on.
+#[test]
+fn ctrl_g_without_a_menu_aborts_and_the_shell_goes_on() {
+    let mut sh = Shell::start(Options {
+        rc: "bind 'set bell-style audible'\n".into(),
+        ..Options::default()
+    });
+    sh.send("zzz");
+    sh.wait_for("the typed text", |s| cursor_row(s) == "$ zzz");
+    assert_eq!(row_text(&sh.settle(), 1), "", "no menu");
+    sh.take_output();
+    sh.send(C_G);
+    sh.wait_for_output("the bell", b"\x07");
+    sh.send("\x15echo ok\r");
+    sh.wait_for("the output", |s| has_row(s, "ok"));
 }

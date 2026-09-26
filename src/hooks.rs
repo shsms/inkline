@@ -51,6 +51,9 @@ struct State {
     menu_rows: Option<usize>,
     /// The completion menu for the line and cursor it was made for.
     menu: Option<Menu>,
+    /// The line text `C-g` hid the menu on: no menu and no grey text show
+    /// until a draw in plain editing finds another text.
+    hidden_on: Option<String>,
     /// Set when bash may have printed while the line was being edited: the
     /// cursor may not be where readline thinks it is, so readline draws the
     /// rest of the line on its own. Cleared when the next line starts.
@@ -155,6 +158,7 @@ thread_local! {
         message_rows: None,
         menu_rows: None,
         menu: None,
+        hidden_on: None,
         displaced: false,
         unloaded: false,
         checker: Checker::new(),
@@ -211,6 +215,7 @@ pub fn load() {
                 ffi::add_command(c"menu-next", menu_next);
                 ffi::add_command(c"menu-previous", menu_previous);
                 ffi::add_command(c"menu-take", menu_take);
+                ffi::add_command(c"menu-hide", menu_hide);
                 ffi::add_command(c"inkline-lisp-key", crate::lisp::commands::SHARED);
             });
             crate::lisp::start_for_shell();
@@ -358,6 +363,7 @@ fn disable() {
         s.try_borrow_mut().map(|mut s| {
             s.suggestion = None;
             s.menu = None;
+            s.hidden_on = None;
             std::mem::replace(&mut s.enabled, false)
         })
     });
@@ -955,6 +961,7 @@ extern "C" fn pre_input() -> c_int {
                 s.goal_column = None;
                 s.search_continues = false;
                 s.menu = None;
+                s.hidden_on = None;
             });
             // A new line at the main prompt drops the mode servers' replies;
             // a line read while Lisp runs is part of the line Lisp runs in.
@@ -1192,13 +1199,16 @@ fn repaint_line() -> bool {
             }
             s.suggestion = None;
             // A kept menu, and its pick, belong to one text of the line and
-            // one cursor place.
+            // one cursor place; `C-g` hides the menu until the text changes.
             let text = line.as_deref();
             if s.menu
                 .as_ref()
                 .is_some_and(|m| text.is_none_or(|l| !m.is_for(l, point)))
             {
                 s.menu = None;
+            }
+            if s.hidden_on.as_deref() != text {
+                s.hidden_on = None;
             }
         }
     });
@@ -1221,7 +1231,7 @@ fn repaint_line() -> bool {
     let show_menu = crate::lisp::settings::show_menu();
     let show_suggestion = crate::lisp::settings::show_suggestion();
     // With both the menu and the grey text off, nothing is gathered.
-    let menu = (editing && !line.is_empty() && (show_menu || show_suggestion))
+    let menu = (editing && !line.is_empty() && (show_menu || show_suggestion) && !is_hidden(&line))
         .then(|| menu_for(&line, point));
     let suggestion = menu
         .as_ref()
@@ -1328,6 +1338,11 @@ fn menu_for(line: &str, point: usize) -> Menu {
         lisp_ran: lisp_runs,
         ..Menu::new(line, point, items)
     }
+}
+
+/// Whether `C-g` hid the menu on this text of the line.
+fn is_hidden(line: &str) -> bool {
+    STATE.with_borrow(|s| s.hidden_on.as_deref() == Some(line))
 }
 
 /// Whether the last draw in plain editing showed the menu, and it is for
@@ -1539,6 +1554,27 @@ extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
         ffi::continue_completion();
     }
     ffi::complete(count, key)
+}
+
+/// `C-g`: hides the menu and the grey text until the line's text changes;
+/// with no menu, readline's `abort`, which jumps back to readline's top
+/// level, so it runs last with nothing here to drop.
+extern "C" fn menu_hide(count: c_int, key: c_int) -> c_int {
+    let hidden = guard(
+        || {
+            if !showing_menu() {
+                return false;
+            }
+            let line = ffi::line();
+            STATE.with_borrow_mut(|s| {
+                s.hidden_on = line;
+                s.menu = None;
+            });
+            true
+        },
+        || false,
+    );
+    if hidden { 0 } else { ffi::abort(count, key) }
 }
 
 /// Takes the picked item into the line, as one undo step, when the menu on

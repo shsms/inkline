@@ -134,6 +134,7 @@ pub const LAYOUT: &[Entry] = &[
     e(Menu, "C-n", "menu-next", &["next-history"]),
     e(Menu, "C-p", "menu-previous", &["previous-history"]),
     e(Menu, "TAB", "menu-take", &["complete"]),
+    e(Menu, "C-g", "menu-hide", &["abort"]),
 ];
 
 /// What `menu-next` and `menu-previous` run with no menu. When the menu
