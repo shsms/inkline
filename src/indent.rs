@@ -80,12 +80,13 @@ pub struct ScriptLine {
 /// command's name is on the line that starts at `command_line` and whose
 /// argument starts on the line that starts at `first_line` (the script's
 /// first line). With the mode server's `depths`, the new line gets `NEW`'s
-/// indentation; the cursor's line moves out to `CURRENT`'s when the cursor
-/// is past its first non-blank character, it is not the script's first
-/// line, and that is less far in than it is now (a line is never pushed
-/// further in). Without depths nothing moves, and the new line gets depth
-/// 0's indentation when the cursor is on the script's first line, and the
-/// cursor's line's own indentation below it.
+/// indentation; the cursor's line moves out to `CURRENT`'s when the server
+/// gave a number (not `-`), the cursor is past its first non-blank
+/// character, it is not the script's first line, and that is less far in
+/// than it is now (a line is never pushed further in). Without depths
+/// nothing moves, and the new line gets depth 0's indentation when the
+/// cursor is on the script's first line, and the cursor's line's own
+/// indentation below it.
 pub fn script_line(
     text: &str,
     point: usize,
@@ -108,12 +109,16 @@ pub fn script_line(
             new_line,
         };
     };
-    let current = for_depth(base, depths.current, step);
-    let moves = start != first_line
-        && point > start + present.len()
-        && crate::lines::width(&current) < crate::lines::width(present);
+    let moved_out = depths
+        .current
+        .map(|current| for_depth(base, current, step))
+        .filter(|current| {
+            start != first_line
+                && point > start + present.len()
+                && crate::lines::width(current) < crate::lines::width(present)
+        });
     ScriptLine {
-        moved_out: moves.then_some(current),
+        moved_out,
         new_line: for_depth(base, depths.new, step),
     }
 }
@@ -240,7 +245,15 @@ mod tests {
     }
 
     fn depths(new: usize, current: usize) -> Option<Depths> {
-        Some(Depths { new, current })
+        Some(Depths {
+            new,
+            current: Some(current),
+        })
+    }
+
+    /// Depths whose `CURRENT` is `-`.
+    fn dash(new: usize) -> Option<Depths> {
+        Some(Depths { new, current: None })
     }
 
     #[test]
@@ -284,6 +297,21 @@ mod tests {
                 new_line: "  ".into()
             }
         );
+    }
+
+    #[test]
+    fn a_dash_leaves_the_cursors_line_as_it_is() {
+        let text = "csvm \"a (\n        ) c";
+        let got = script_line(text, text.len(), 0, 0, dash(0), 2);
+        assert_eq!(
+            got,
+            ScriptLine {
+                moved_out: None,
+                new_line: "  ".into()
+            }
+        );
+        let got = script_line(text, text.len(), 0, 0, depths(0, 0), 2);
+        assert_eq!(got.moved_out, Some("  ".into()), "a number moves it");
     }
 
     #[test]

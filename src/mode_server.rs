@@ -404,14 +404,14 @@ pub fn request(cwd: Vec<u8>, command: &CommandArgs) -> Request {
 }
 
 /// Asks the server of the mode `mode` how deep the new line and the
-/// cursor's line are, with the cursor at `at` (an argument's index and a
-/// byte offset in its text) in `request`'s arguments. Only a running mode
-/// server that named `indent` is asked. The reply to a request already in
-/// flight comes first (one request at a time), all within `wait`; a signal
-/// for which `interrupted` holds (such as C-c) ends the wait. `None` when no
-/// depths came: the server was not asked, gave none in time, or sent only
-/// `:end`. A server that fails is turned off, with a message for
-/// `take_notices`.
+/// cursor's line are (or that the cursor's line stays as it is), with the
+/// cursor at `at` (an argument's index and a byte offset in its text) in
+/// `request`'s arguments. Only a running mode server that named `indent`
+/// is asked. The reply to a request already in flight comes first (one
+/// request at a time), all within `wait`; a signal for which `interrupted`
+/// holds (such as C-c) ends the wait. `None` when no depths came: the
+/// server was not asked, gave none in time, or sent only `:end`. A server
+/// that fails is turned off, with a message for `take_notices`.
 pub fn indent(
     mode: &str,
     request: &Request,
@@ -1059,15 +1059,24 @@ mod tests {
         let wait = Duration::from_secs(2);
         assert_eq!(
             depths("fn f {\n  a", 10, wait, || false),
-            Some(Depths { new: 1, current: 1 })
+            Some(Depths {
+                new: 1,
+                current: Some(1)
+            })
         );
         assert_eq!(
             depths("fn f {\n  }", 10, wait, || false),
-            Some(Depths { new: 0, current: 0 })
+            Some(Depths {
+                new: 0,
+                current: Some(0)
+            })
         );
         assert_eq!(
             depths("a {\n  b }", 8, wait, || false),
-            Some(Depths { new: 0, current: 1 }),
+            Some(Depths {
+                new: 0,
+                current: Some(1)
+            }),
             "the `}}` after the cursor goes to the new line"
         );
         assert!(waiting_fds().is_empty(), "nothing in flight");
@@ -1111,7 +1120,10 @@ mod tests {
         ask(&["a 1"], Duration::ZERO);
         assert_eq!(
             depths("a {", 3, Duration::from_secs(2), || false),
-            Some(Depths { new: 1, current: 0 })
+            Some(Depths {
+                new: 1,
+                current: Some(0)
+            })
         );
         assert!(
             ask(&["a 1"], Duration::ZERO)[0].is_some(),

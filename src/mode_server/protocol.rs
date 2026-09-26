@@ -276,14 +276,15 @@ fn parse_error(rest: &[u8], lens: &[usize]) -> Result<ReplyError, ()> {
 pub struct Depths {
     /// The depth of the new line.
     pub new: usize,
-    /// The depth of the line the cursor is on, the one being split.
-    pub current: usize,
+    /// The depth of the line the cursor is on, the one being split; `None` when
+    /// the reply gave `-`: leave that line as it is.
+    pub current: Option<usize>,
 }
 
 /// Reads a whole indent reply: at most one `:depth NEW CURRENT` line, then
-/// `:end ID`; other lines starting with `:` are ignored. `Done(None, _)`
-/// for a reply with no `:depth`: the server cannot tell. `seen` is as for
-/// `reply`.
+/// `:end ID`; other lines starting with `:` are ignored. `CURRENT` may be `-`.
+/// `Done(None, _)` for a reply with no `:depth`: the server cannot tell. `seen`
+/// is as for `reply`.
 pub fn indent_reply(buf: &[u8], id: u64, seen: &mut usize) -> Read<Option<Depths>> {
     if !settled(buf, seen) {
         return Read::Incomplete;
@@ -316,15 +317,21 @@ pub fn indent_reply(buf: &[u8], id: u64, seen: &mut usize) -> Read<Option<Depths
     }
 }
 
-/// `NEW CURRENT`: two numbers in decimal digits, one space apart.
+/// `NEW CURRENT`, one space apart: `NEW` a number in decimal digits, `CURRENT`
+/// one too, or `-`.
 fn parse_depths(rest: &[u8]) -> Result<Depths, ()> {
     let fields: Vec<&[u8]> = rest.split(|&b| b == b' ').collect();
     let [new, current] = fields[..] else {
         return Err(());
     };
+    let current = if current == b"-" {
+        None
+    } else {
+        Some(parse_number(current)?)
+    };
     Ok(Depths {
         new: parse_number(new)?,
-        current: parse_number(current)?,
+        current,
     })
 }
 
@@ -405,15 +412,34 @@ mod tests {
     fn indent_replies() {
         assert_eq!(
             depths(b":depth 2 1\n:end 3\n"),
-            Some(Depths { new: 2, current: 1 })
+            Some(Depths {
+                new: 2,
+                current: Some(1)
+            })
+        );
+        assert_eq!(
+            depths(b":depth 2 -\n:end 3\n"),
+            Some(Depths {
+                new: 2,
+                current: None
+            }),
+            "`-` leaves the cursor's line as it is"
         );
         assert_eq!(depths(b":end 3\n"), None, "cannot tell");
         assert_eq!(
             depths(b":hint x\n:span 1 0 1 number\n:depth 0 0\n:error - - - e\n:end 3\n"),
-            Some(Depths { new: 0, current: 0 }),
+            Some(Depths {
+                new: 0,
+                current: Some(0)
+            }),
             "other lines starting with `:` are ignored"
         );
-        for buf in [&b":depth 1 0\n"[..], b":depth 1 0\n:en", b":depth x 0\n"] {
+        for buf in [
+            &b":depth 1 0\n"[..],
+            b":depth 1 0\n:en",
+            b":depth x 0\n",
+            b":depth 1 -\n",
+        ] {
             assert!(matches!(indent_reply(buf, 3, &mut 0), Read::Incomplete));
         }
     }
@@ -432,6 +458,14 @@ mod tests {
             (b":depth +1 0\n:end 3\n", ":depth +1 0"),
             (b":depth x 0\n:end 3\n", ":depth x 0"),
             (b":depth 1  0\n:end 3\n", ":depth 1  0"),
+            (b":depth - 0\n:end 3\n", ":depth - 0"),
+            (b":depth - -\n:end 3\n", ":depth - -"),
+            (b":depth 1 x\n:end 3\n", ":depth 1 x"),
+            (b":depth 1 --\n:end 3\n", ":depth 1 --"),
+            (b":depth 1 -0\n:end 3\n", ":depth 1 -0"),
+            (b":depth 1 -1\n:end 3\n", ":depth 1 -1"),
+            (b":depth 1 - \n:end 3\n", ":depth 1 - "),
+            (b":depth 1 -\n:depth 1 -\n:end 3\n", ":depth 1 -"),
             (
                 b":depth 99999999999999999999999 0\n:end 3\n",
                 ":depth 99999999999999999999999 0",

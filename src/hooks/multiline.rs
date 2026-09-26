@@ -141,9 +141,11 @@ pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
 /// tabs around the cursor go, and the new line gets its indentation.
 ///
 /// Inside a quoted argument of a command that uses a mode, the mode's
-/// server says how deep both lines are (see `in_script`); without its answer,
-/// the new line gets the indentation of the cursor's line, or one step in from
-/// the command's line when the cursor is on the line the script starts on.
+/// server says how deep the new line is and, unless it leaves the
+/// cursor's line as it is, how deep that line is (see `in_script`);
+/// without its answer, the new line gets the indentation of the cursor's
+/// line, or one step in from the command's line when the cursor is on the
+/// line the script starts on.
 /// Between an empty pair of such quotes, the new line is one step in from
 /// the command's line, and, when the screen has room for both lines, the
 /// closing quote goes on a line of its own below it, as indented as the
