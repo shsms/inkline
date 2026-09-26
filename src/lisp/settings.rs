@@ -24,13 +24,52 @@ struct Symbols {
 
 #[derive(Default)]
 struct Cache {
-    /// A copy of the `inkline-colors` value `colors` was made from.
-    colors_from: Option<TulispObject>,
+    /// What the `inkline-colors` value held when `colors` was made from it.
+    colors_from: Option<ColorsSource>,
     colors: Colors,
     /// Bad values already reported, by variable name.
     reported: Vec<(&'static str, TulispObject)>,
     /// Bad values found and not reported yet.
     pending: Vec<String>,
+}
+
+/// What an `inkline-colors` value holds: `nil`, a string, or a list of
+/// `(NAME . VALUE)` pairs.
+enum ColorsSource {
+    Nil,
+    Str(String),
+    Pairs(Vec<(String, String)>),
+}
+
+impl ColorsSource {
+    fn read(v: &TulispObject) -> Result<ColorsSource, String> {
+        if v.null() {
+            Ok(ColorsSource::Nil)
+        } else if let Some(s) = read_str(v) {
+            Ok(ColorsSource::Str(s))
+        } else if v.consp() {
+            Ok(ColorsSource::Pairs(color_pairs(v)?))
+        } else {
+            Err(BAD_COLORS.to_owned())
+        }
+    }
+
+    fn colors(&self) -> Result<Colors, String> {
+        match self {
+            ColorsSource::Nil => Ok(Colors::default()),
+            ColorsSource::Str(s) => Ok(Colors::parse(s)),
+            ColorsSource::Pairs(pairs) => Colors::from_entries(pairs),
+        }
+    }
+
+    /// Whether the live value `v` still holds the same.
+    fn matches(&self, v: &TulispObject) -> bool {
+        match self {
+            ColorsSource::Nil => v.null(),
+            ColorsSource::Str(s) => read_str(v).as_deref() == Some(s.as_str()),
+            ColorsSource::Pairs(pairs) => same_pairs(pairs, v),
+        }
+    }
 }
 
 thread_local! {
@@ -83,16 +122,7 @@ pub fn parse_cursor(v: &TulispObject) -> Result<bool, String> {
 const BAD_COLORS: &str = "expected a list of (NAME . \"VALUE\") pairs or a string";
 
 pub fn parse_colors(v: &TulispObject) -> Result<Colors, String> {
-    if v.null() {
-        return Ok(Colors::default());
-    }
-    if v.stringp() {
-        return Ok(Colors::parse(&v.as_string().map_err(|e| e.desc())?));
-    }
-    if !v.consp() {
-        return Err(BAD_COLORS.to_owned());
-    }
-    Colors::from_entries(&color_pairs(v)?)
+    ColorsSource::read(v)?.colors()
 }
 
 /// A command's own colours (`inkline-highlight-arguments`' third
@@ -120,11 +150,7 @@ fn color_pairs(v: &TulispObject) -> Result<Vec<(String, String)>, String> {
         let (Ok(name), Ok(codes)) = (pair.car(), pair.cdr()) else {
             return Err(BAD_COLORS.to_owned());
         };
-        let name = if name.stringp() {
-            name.as_string().map_err(|e| e.desc())?
-        } else if name.symbolp() {
-            name.to_string()
-        } else {
+        let Some(name) = read_name(&name) else {
             return Err(BAD_COLORS.to_owned());
         };
         let Some(codes) = read_str(&codes) else {
@@ -136,6 +162,35 @@ fn color_pairs(v: &TulispObject) -> Result<Vec<(String, String)>, String> {
         return Err(BAD_COLORS.to_owned());
     }
     Ok(entries)
+}
+
+/// A symbol's name or a string's content. `None` for anything else.
+fn read_name(o: &TulispObject) -> Option<String> {
+    if o.symbolp() {
+        Some(o.to_string())
+    } else {
+        read_str(o)
+    }
+}
+
+/// Whether the list `value` holds exactly the `(NAME . VALUE)` pairs in
+/// `kept`, in order. The walk stops after `kept.len()` pairs and one more,
+/// so a very long or circular `value` neither overflows the stack nor takes
+/// long.
+fn same_pairs(kept: &[(String, String)], value: &TulispObject) -> bool {
+    let mut pairs = items(value);
+    let same = kept.iter().all(|(name, codes)| {
+        pairs.next().is_some_and(|pair| {
+            pair.consp()
+                && matches!(
+                    (pair.car(), pair.cdr()),
+                    (Ok(n), Ok(c))
+                        if read_name(&n).as_deref() == Some(name.as_str())
+                            && read_str(&c).as_deref() == Some(codes.as_str())
+                )
+        })
+    });
+    same && pairs.next().is_none() && pairs.proper()
 }
 
 /// The value of the variable `pick` names, if it is set.
@@ -231,9 +286,11 @@ pub fn history_cursor_end() -> bool {
     )
 }
 
-/// The colours. A value that parses is kept, and parsed again only once the
-/// value is no longer `equal` to it; a kept value is finite, so `equal` on it
-/// ends.
+/// The colours. What a value that parses held is kept, and the value is
+/// parsed again only once it no longer holds the same. The comparison
+/// walks a list in a loop, so a very long list does not overflow the stack,
+/// and reads the live strings each time, so a string changed in place is
+/// seen.
 pub fn colors() -> Colors {
     let Some(value) = current(|s| &s.colors) else {
         return Colors::default();
@@ -241,21 +298,22 @@ pub fn colors() -> Colors {
     let cached = CACHE.with_borrow(|c| {
         c.colors_from
             .as_ref()
-            .is_some_and(|from| from.equal(&value))
+            .is_some_and(|from| from.matches(&value))
             .then(|| c.colors.clone())
     });
     if let Some(colors) = cached {
         return colors;
     }
-    let colors = match parse_colors(&value) {
-        Ok(colors) => colors,
+    let read = ColorsSource::read(&value).and_then(|from| Ok((from.colors()?, from)));
+    let (colors, from) = match read {
+        Ok(read) => read,
         Err(why) => {
             note("inkline-colors", &value, why);
             return Colors::default();
         }
     };
     CACHE.with_borrow_mut(|c| {
-        c.colors_from = Some(value.deep_copy().unwrap_or(value));
+        c.colors_from = Some(from);
         c.colors = colors.clone();
     });
     colors
@@ -443,5 +501,74 @@ mod tests {
             parse_color_set(&value(&mut ctx, r#"'((command . "1") . 5)"#)),
             Err(BAD_COLORS.to_owned())
         );
+    }
+
+    /// Long enough that a comparison that recursed once per list element
+    /// would overflow a test thread's 2 MB stack. The second read of such a
+    /// list is the one that compares it with what was kept.
+    const LONG_LIST: i64 = 200_000;
+
+    #[test]
+    fn a_long_colour_list_is_compared_without_recursion() {
+        crate::lisp::start();
+        crate::lisp::eval(&format!(
+            r#"(setq inkline-colors
+                   (let ((l nil) (i 0))
+                     (while (< i {LONG_LIST})
+                       (setq l (cons (cons "string" "1") l))
+                       (setq i (1+ i)))
+                     l))"#
+        ))
+        .unwrap();
+        assert_eq!(colors().sgr(Kind::String), "1");
+        assert_eq!(colors().sgr(Kind::String), "1", "read again");
+    }
+
+    #[test]
+    fn a_colour_string_changed_in_place_is_seen() {
+        crate::lisp::start();
+        // `49` and `50` are the character codes of `1` and `2`; tulisp has
+        // no character literals.
+        crate::lisp::eval(r#"(setq inkline-colors (list (cons 'string (make-string 1 49))))"#)
+            .unwrap();
+        assert_eq!(colors().sgr(Kind::String), "1");
+        crate::lisp::eval("(aset (cdr (car inkline-colors)) 0 50)").unwrap();
+        assert_eq!(
+            colors().sgr(Kind::String),
+            "2",
+            "a string changed in place is seen"
+        );
+    }
+
+    #[test]
+    fn a_colour_string_value_changed_is_seen() {
+        crate::lisp::start();
+        crate::lisp::eval(r#"(setq inkline-colors "command=35")"#).unwrap();
+        assert_eq!(colors().sgr(Kind::Command), "35");
+        crate::lisp::eval(r#"(setq inkline-colors "command=36")"#).unwrap();
+        assert_eq!(colors().sgr(Kind::Command), "36");
+    }
+
+    #[test]
+    fn a_kept_colour_value_changed_to_one_that_holds_itself_is_reported() {
+        use crate::lisp::values::{HOLDS_ITSELF, QUOTES_ITSELF};
+        crate::lisp::start();
+        set("quotes-itself", QUOTES_ITSELF);
+        set("inkline-colors", r#""command=35""#);
+        assert_eq!(colors().sgr(Kind::Command), "35");
+        set("inkline-colors", HOLDS_ITSELF);
+        assert_eq!(colors(), Colors::default());
+        set("inkline-colors", r#"(list (cons 'command "35"))"#);
+        assert_eq!(colors().sgr(Kind::Command), "35");
+        crate::lisp::eval("(progn (setcar inkline-colors quotes-itself) nil)").unwrap();
+        assert_eq!(colors(), Colors::default(), "an entry that is not a list");
+        set(
+            "inkline-colors",
+            r#"(list (cons 'command "35") (cons 'string "1"))"#,
+        );
+        assert_eq!(colors().sgr(Kind::Command), "35");
+        crate::lisp::eval("(progn (setcdr inkline-colors quotes-itself) nil)").unwrap();
+        assert_eq!(colors(), Colors::default(), "an end that is not a list");
+        assert_eq!(problems().len(), 3);
     }
 }
