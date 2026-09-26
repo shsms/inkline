@@ -35,6 +35,7 @@ target/bash-%/bin/bash:
 check:
 	cargo fmt --check
 	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --release --all-targets --all-features -- -D warnings
 	cargo test --lib
 
 clean:

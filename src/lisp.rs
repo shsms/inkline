@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tulisp::{TulispContext, TulispObject};
+use tulisp::TulispContext;
 
 pub mod buffer;
 #[cfg(not(test))]
@@ -81,7 +81,7 @@ fn new_context() -> TulispContext {
     ctx.defun("getenv", |name: String| crate::ffi::shell_variable(&name));
     // Lets the end-to-end tests check what a panic in Lisp does.
     #[cfg(debug_assertions)]
-    ctx.defun("inkline--panic", || -> TulispObject {
+    ctx.defun("inkline--panic", || -> tulisp::TulispObject {
         panic!("inkline--panic")
     });
     ctx
