@@ -85,6 +85,22 @@ pub fn kill_backward(text: &str, point: usize) -> Range<usize> {
     }
 }
 
+/// The spaces and tabs around `point` on its line, which a new line at
+/// `point` drops. A blank right after a backslash is part of a word, so it
+/// stays.
+pub fn blanks_around(text: &str, point: usize) -> Range<usize> {
+    let before = &text[line_start(text, point)..point];
+    let kept = before.trim_end_matches([' ', '\t']);
+    let mut start = point - (before.len() - kept.len());
+    let backslashes = kept.bytes().rev().take_while(|&b| b == b'\\').count();
+    if start < point && backslashes % 2 == 1 {
+        start += 1;
+    }
+    let after = &text[point..line_end(text, point)];
+    let end = point + (after.len() - after.trim_start_matches([' ', '\t']).len());
+    start..end
+}
+
 /// `text` with `begin` put in front of every line; with `toggle`, taken off
 /// every line instead when they all start with it.
 pub fn comment(text: &str, begin: &str, toggle: bool) -> String {
@@ -159,6 +175,16 @@ mod tests {
         assert_eq!(kill_backward("ab\ncd", 4), 3..4);
         assert_eq!(kill_backward("ab\ncd", 3), 2..3);
         assert_eq!(kill_backward("ab\ncd", 0), 0..0);
+    }
+
+    #[test]
+    fn blanks_around_the_point_on_its_line() {
+        assert_eq!(blanks_around("then   \n  x", 5), 4..7);
+        assert_eq!(blanks_around("a  \t b", 3), 1..5);
+        assert_eq!(blanks_around("a\n  b", 2), 2..4);
+        assert_eq!(blanks_around("ab", 1), 1..1);
+        assert_eq!(blanks_around("a\\  ", 4), 3..4);
+        assert_eq!(blanks_around("a\\\\  ", 5), 3..5);
     }
 
     #[test]

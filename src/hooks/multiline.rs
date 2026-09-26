@@ -134,27 +134,44 @@ pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
 }
 
 /// Inserts a newline at `point` as one undo step with what goes with it: the
-/// line left moves out when it starts with a closing word, and the new line
-/// gets its indentation. Neither happens when more input is already waiting
-/// (pasted text keeps its own spacing) or `inkline-indent` is 0. With
-/// `close_below`, the text after the cursor goes on a line of its own below
-/// the new one, as indented as the cursor's line.
+/// line left moves out when it starts with a closing word, the spaces and
+/// tabs around the cursor go, and the new line gets its indentation.
+///
+/// None of this happens when more input is already waiting (pasted text keeps
+/// its own spacing) or `inkline-indent` is 0. With `close_below`, the text
+/// after the cursor goes on a line of its own below the new one, as indented
+/// as the cursor's line.
 fn new_line(line: &str, point: usize, close_below: bool) {
     let step = indent_step();
     ffi::begin_undo_group();
     let mut indentation = String::new();
     let mut point = point;
+    let mut blanks = point..point;
     if step > 0 && !ffi::input_waiting() {
         point = move_out(line, point).unwrap_or(point);
         let text = ffi::line().unwrap_or_default();
         if starts_code(&text[..point]) {
+            // The indentation comes from the line as it was, so a line split
+            // right after its own indentation keeps it.
             indentation = indent::for_new_line(&text, point, step);
+            blanks = lines::blanks_around(&text, point);
         }
     }
-    ffi::insert_text(&format!("\n{indentation}"));
+    let inserted = format!("\n{indentation}");
+    ffi::insert_text(&inserted);
+    // The blanks go after the newline is in: undo then takes the newline out
+    // last, which puts the cursor back where it was.
+    let after = point + inserted.len();
+    if blanks.end > point {
+        ffi::delete_text(after, after + (blanks.end - point));
+    }
+    if blanks.start < point {
+        ffi::delete_text(blanks.start, point);
+        point = blanks.start;
+        ffi::set_point(point + inserted.len());
+    }
     if close_below {
-        // The newline went in at `point`, so the cursor's line still ends
-        // there.
+        // The cursor's line now ends at `point`, where the newline went in.
         let text = ffi::line().unwrap_or_default();
         let base = indent::indentation(&text[lines::line_start(&text, point)..point]);
         let at = ffi::point();

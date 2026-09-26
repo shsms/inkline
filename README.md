@@ -221,7 +221,10 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   paired.
 - **Multi-line commands.** Enter on an unfinished command (an open quote, a
   `for` without `done`, a trailing `|` or `\`) adds a line to it, indented to
-  match; a closing word such as `done` moves back out when you press Enter.
+  match. In bash code, but not inside a string or a here-document, the spaces
+  and tabs around the cursor go, so the new line starts with just its
+  indentation. A closing word such as `done` moves back out when you press
+  Enter.
   Enter on a finished command runs it, even one with a syntax error, so bash
   prints its usual message. `C-j` adds a line, even to a finished command; where
   inkline adds no lines, such as at bash's `> ` prompt, in `read -e` or while

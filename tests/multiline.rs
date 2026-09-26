@@ -351,6 +351,83 @@ fn ctrl_j_adds_an_indented_line() {
     sh.wait_for("the next line", |s| s.cursor_position() == (2, 4));
 }
 
+/// `if true; then    echo hi; fi` with the cursor right after `then`.
+const AFTER_THEN: &str =
+    "if true; then    echo hi; fi\x01\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06";
+
+/// The new line starts with just its indentation: the blanks that were
+/// after the cursor go.
+#[test]
+fn ctrl_j_drops_the_blanks_after_the_cursor() {
+    let mut sh = Shell::start(Options::default());
+    sh.send(AFTER_THEN);
+    sh.wait_for("the cursor after then", |s| s.cursor_position() == (0, 15));
+    sh.send(CTRL_J);
+    sh.wait_for("the new line", |s| {
+        row_text(s, 0) == "$ if true; then"
+            && row_text(s, 1) == "    echo hi; fi"
+            && s.cursor_position() == (1, 4)
+    });
+}
+
+#[test]
+fn enter_drops_the_blanks_after_the_cursor() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("if true; then    echo hi\x01\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06\x06");
+    sh.wait_for("the cursor after then", |s| s.cursor_position() == (0, 15));
+    sh.send("\r");
+    sh.wait_for("the new line", |s| {
+        row_text(s, 0) == "$ if true; then"
+            && row_text(s, 1) == "    echo hi"
+            && s.cursor_position() == (1, 4)
+    });
+}
+
+/// The line left behind loses its trailing blanks.
+#[test]
+fn ctrl_j_drops_the_blanks_before_the_cursor() {
+    let mut sh = Shell::start(Options::default());
+    sh.send(&format!("if true; then   {CTRL_J}"));
+    sh.wait_for("the new line", |s| s.cursor_position() == (1, 4));
+    // C-b over the indentation and the newline, to the end of the first line.
+    sh.send("\x02\x02\x02\x02\x02");
+    sh.wait_for("the end of the first line", |s| {
+        s.cursor_position() == (0, 15)
+    });
+}
+
+/// A blank after a backslash is part of a word, so it stays.
+#[test]
+fn ctrl_j_keeps_an_escaped_blank() {
+    let mut sh = Shell::start(Options::default());
+    sh.send(&format!("echo a\\   {CTRL_J}"));
+    sh.wait_for("the new line", |s| s.cursor_position() == (1, 0));
+    sh.send("\x02");
+    sh.wait_for("the end of the first line", |s| {
+        s.cursor_position() == (0, 10)
+    });
+}
+
+/// Undo brings back the blanks on both sides, and the cursor between them.
+#[test]
+fn one_undo_brings_back_the_dropped_blanks() {
+    let mut sh = Shell::start(Options::default());
+    sh.send(&format!("{AFTER_THEN}\x06\x06"));
+    sh.wait_for("the cursor between the blanks", |s| {
+        s.cursor_position() == (0, 17)
+    });
+    sh.send(CTRL_J);
+    sh.wait_for("the new line", |s| {
+        row_text(s, 1) == "    echo hi; fi" && s.cursor_position() == (1, 4)
+    });
+    sh.send("\x1f");
+    sh.wait_for("the original line", |s| {
+        cursor_row(s) == "$ if true; then    echo hi; fi"
+            && s.cursor_position() == (0, 17)
+            && row_text(s, 1).is_empty()
+    });
+}
+
 #[test]
 fn alt_enter_sends_the_command_as_it_is() {
     let mut sh = Shell::start(Options::default());
