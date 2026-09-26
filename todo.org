@@ -114,6 +114,17 @@ that line is wider than the test terminal's 80 columns and wraps, so the
 exact match fails. Matching the start and end of the line, or a wider
 terminal for these two tests, would fix it.
 
+** TODO A csvm call nested in a double-quoted =$( … )= gets no script indentation
+
+In =echo "$(csvm "…=, the open quote found first is the outer one, so the
+script's argument is not found and the new line follows bash's rules.
+
+** TODO One blank after a backslash stays inside a script
+
+When C-j adds a line inside a script, a blank right after a backslash is
+kept (it may be an escaped space), so it stays at the end of the line
+above.
+
 * Code
 
 ** TODO Write the "single function" check for hooks once
@@ -133,3 +144,10 @@ colours, once to find the commands); =src/helper.rs= has four separate
 paths that read what a helper sent (one of them for indentation); the
 typing-pause step is written twice, in =show_helper_notices= and
 =error_to_underline=.
+
+** TODO Keep each command's colour set with its spans
+
+A command's colour set is found through range lists that the drawing code
+walks side by side with the spans (=span_sets=, =script_sets=). Putting the
+set's index in the spans themselves would make "these lists line up" part
+of the types.
