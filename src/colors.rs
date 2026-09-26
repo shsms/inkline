@@ -1,6 +1,7 @@
 //! The colour table: the SGR codes each kind of piece is drawn with, set by
 //! `inkline-colors` (see `crate::lisp::settings`), as a list of pairs or in
-//! the same format as `LS_COLORS`.
+//! the same format as `LS_COLORS`. A value is SGR codes or colour words
+//! (`codes_for`).
 
 use crate::lexer::Kind;
 
@@ -38,15 +39,13 @@ impl Colors {
 
     fn apply(&mut self, spec: &str) {
         for entry in entries(spec) {
-            let Some((name, codes)) = entry.split_once('=') else {
+            let Some((name, value)) = entry.split_once('=') else {
                 continue;
             };
-            if !codes
-                .bytes()
-                .all(|b| b.is_ascii_digit() || b == b';' || b == b':')
-            {
+            // The string form skips an entry it cannot read.
+            let Ok(codes) = codes_for(value) else {
                 continue;
-            }
+            };
             if name == "error" {
                 self.error = if codes.is_empty() {
                     String::new()
@@ -67,7 +66,7 @@ impl Colors {
             } else {
                 continue;
             };
-            *slot = codes.to_string();
+            *slot = codes;
         }
     }
 
@@ -87,23 +86,18 @@ impl Colors {
         &self.error
     }
 
-    /// The default colours with `entries` (name, SGR codes) applied on top.
-    /// The first entry for a name wins; empty codes mean no colour, and turn
-    /// the underline off for `error`.
+    /// The default colours with `entries` (name, value in codes or words)
+    /// applied on top. The first entry for a name wins; an empty value means
+    /// no colour, and turns the underline off for `error`.
     pub fn from_entries(entries: &[(String, String)]) -> Result<Colors, String> {
         let mut colors = Colors::default();
         let mut seen: Vec<&str> = Vec::new();
-        for (name, codes) in entries {
+        for (name, value) in entries {
             if seen.contains(&name.as_str()) {
                 continue;
             }
             seen.push(name);
-            if !codes
-                .bytes()
-                .all(|b| b.is_ascii_digit() || b == b';' || b == b':')
-            {
-                return Err(format!("{name}: {codes:?} is not an SGR code"));
-            }
+            let codes = codes_for(value).map_err(|e| format!("{name}: {e}"))?;
             match name.as_str() {
                 "error" => {
                     colors.error = if codes.is_empty() {
@@ -112,10 +106,10 @@ impl Colors {
                         format!("\x1b[{codes}m")
                     }
                 }
-                "suggestion" => colors.suggestion = codes.clone(),
-                "script" => colors.script = codes.clone(),
+                "suggestion" => colors.suggestion = codes,
+                "script" => colors.script = codes,
                 _ => match kind_named(name) {
-                    Some(kind) => colors.kinds[kind as usize] = codes.clone(),
+                    Some(kind) => colors.kinds[kind as usize] = codes,
                     None => return Err(format!("unknown colour name {name}")),
                 },
             }
@@ -171,6 +165,145 @@ fn kind_named(name: &str) -> Option<Kind> {
     })
 }
 
+/// The SGR codes for a colour value. A value made only of digits, `;` and
+/// `:` is codes already (an empty one means no colour). Any other value is
+/// words separated by blanks, in any case: `bold`, `dim`, `italic`,
+/// `underline` or `reverse`; a colour for the text; `on` and a colour for
+/// the background. The error names the word that is wrong.
+pub fn codes_for(value: &str) -> Result<String, String> {
+    if is_codes(value) {
+        return Ok(value.to_owned());
+    }
+    let mut codes: Vec<String> = Vec::new();
+    let mut words = value.split_whitespace();
+    while let Some(word) = words.next() {
+        let lower = word.to_ascii_lowercase();
+        if lower == "on" {
+            let Some(next) = words.next() else {
+                return Err("\"on\" needs a colour after it".to_owned());
+            };
+            let colour = colour_named(&next.to_ascii_lowercase())
+                .ok_or_else(|| format!("unknown colour {next:?} after \"on\""))?;
+            codes.push(colour.background());
+        } else if let Some(code) = attribute(&lower) {
+            codes.push(code.to_owned());
+        } else if let Some(colour) = colour_named(&lower) {
+            codes.push(colour.foreground());
+        } else {
+            return Err(format!("unknown colour word {word:?}"));
+        }
+    }
+    Ok(codes.join(";"))
+}
+
+/// Whether `value` is made only of the characters SGR codes hold.
+fn is_codes(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|b| b.is_ascii_digit() || b == b';' || b == b':')
+}
+
+/// The code of an attribute word, in lower case.
+fn attribute(word: &str) -> Option<&'static str> {
+    Some(match word {
+        "bold" => "1",
+        "dim" => "2",
+        "italic" => "3",
+        "underline" => "4",
+        "reverse" => "7",
+        _ => return None,
+    })
+}
+
+/// The eight basic colours, in the order of their codes.
+const BASIC: [&str; 8] = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+];
+
+/// A colour a word names.
+enum Colour {
+    /// One of `BASIC`, by its place in the list.
+    Basic(u8),
+    /// The bright form of one of `BASIC`.
+    Bright(u8),
+    /// An entry of the 256-colour palette.
+    Palette(u8),
+    /// Red, green and blue, for 24-bit colour.
+    Rgb(u8, u8, u8),
+}
+
+impl Colour {
+    fn foreground(&self) -> String {
+        match *self {
+            Colour::Basic(n) => (30 + n).to_string(),
+            Colour::Bright(n) => (90 + n).to_string(),
+            Colour::Palette(n) => format!("38;5;{n}"),
+            Colour::Rgb(r, g, b) => format!("38;2;{r};{g};{b}"),
+        }
+    }
+
+    fn background(&self) -> String {
+        match *self {
+            Colour::Basic(n) => (40 + n).to_string(),
+            Colour::Bright(n) => (100 + n).to_string(),
+            Colour::Palette(n) => format!("48;5;{n}"),
+            Colour::Rgb(r, g, b) => format!("48;2;{r};{g};{b}"),
+        }
+    }
+}
+
+/// The colour `word`, in lower case, names: a basic colour, its `bright-`
+/// form, `grey` (bright black), `grey0` to `grey23` (the palette's greys,
+/// 232 to 255), `colorN` or `colourN` (palette entry N), or `#rrggbb`.
+/// `gray` is the same as `grey`.
+fn colour_named(word: &str) -> Option<Colour> {
+    let basic = |name: &str| {
+        BASIC
+            .iter()
+            .position(|b| *b == name)
+            .and_then(|i| u8::try_from(i).ok())
+    };
+    if let Some(i) = basic(word) {
+        return Some(Colour::Basic(i));
+    }
+    if let Some(i) = word.strip_prefix("bright-").and_then(basic) {
+        return Some(Colour::Bright(i));
+    }
+    if let Some(step) = word
+        .strip_prefix("grey")
+        .or_else(|| word.strip_prefix("gray"))
+    {
+        if step.is_empty() {
+            return Some(Colour::Bright(0));
+        }
+        return number(step)
+            .filter(|&n| n <= 23)
+            .map(|n| Colour::Palette(232 + n));
+    }
+    if let Some(n) = word
+        .strip_prefix("colour")
+        .or_else(|| word.strip_prefix("color"))
+    {
+        return number(n).map(Colour::Palette);
+    }
+    if let Some(hex) = word.strip_prefix('#') {
+        if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        return Some(Colour::Rgb(byte(0)?, byte(2)?, byte(4)?));
+    }
+    None
+}
+
+/// A number from 0 to 255 written only in decimal digits.
+fn number(digits: &str) -> Option<u8> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,8 +338,8 @@ mod tests {
             Err("unknown colour name comand".to_owned())
         );
         assert_eq!(
-            Colors::from_entries(&entries(&[("command", "red")])),
-            Err("command: \"red\" is not an SGR code".to_owned())
+            Colors::from_entries(&entries(&[("command", "redd")])),
+            Err("command: unknown colour word \"redd\"".to_owned())
         );
     }
 
@@ -240,7 +373,7 @@ mod tests {
 
     #[test]
     fn invalid_entries_are_ignored() {
-        let colors = Colors::parse("command=red:bogus=1:string=:=4:novalue:operator=38;5;208");
+        let colors = Colors::parse("command=redd:bogus=1:string=:=4:novalue:operator=38;5;208");
         assert_eq!(colors.sgr(Kind::Command), "32");
         assert_eq!(colors.sgr(Kind::String), "33");
         assert_eq!(colors.sgr(Kind::Operator), "38;5;208");
@@ -285,5 +418,78 @@ mod tests {
         let colors = Colors::parse("command=32:novalue:string=33");
         assert_eq!(colors.sgr(Kind::Command), "32");
         assert_eq!(colors.sgr(Kind::String), "33");
+    }
+
+    #[test]
+    fn colour_words() {
+        for (value, codes) in [
+            ("bold magenta", "1;35"),
+            ("dim", "2"),
+            ("italic underline reverse", "3;4;7"),
+            ("on grey4", "48;5;236"),
+            ("underline bright-cyan on black", "4;96;40"),
+            ("bright-red on bright-blue", "91;104"),
+            ("white", "37"),
+            ("bright-white", "97"),
+            ("bright-black", "90"),
+            ("grey", "90"),
+            ("gray", "90"),
+            ("on grey", "100"),
+            ("grey0", "38;5;232"),
+            ("grey23", "38;5;255"),
+            ("GRAY23", "38;5;255"),
+            ("color0", "38;5;0"),
+            ("colour255", "38;5;255"),
+            ("on color17", "48;5;17"),
+            ("#3a3a3a", "38;2;58;58;58"),
+            ("on #FF0080", "48;2;255;0;128"),
+            ("Bold  RED", "1;31"),
+            ("red blue", "31;34"),
+        ] {
+            assert_eq!(codes_for(value), Ok(codes.to_owned()), "{value}");
+        }
+    }
+
+    #[test]
+    fn plain_codes_are_kept() {
+        for value in ["38;5;208", "4:3", "1", ""] {
+            assert_eq!(codes_for(value), Ok(value.to_owned()), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_wrong_word_is_named() {
+        for (value, error) in [
+            ("magneta", "unknown colour word \"magneta\""),
+            ("bold Magneta", "unknown colour word \"Magneta\""),
+            ("bold on", "\"on\" needs a colour after it"),
+            ("on bold", "unknown colour \"bold\" after \"on\""),
+            ("grey24", "unknown colour word \"grey24\""),
+            ("colour256", "unknown colour word \"colour256\""),
+            ("color", "unknown colour word \"color\""),
+            ("#12345", "unknown colour word \"#12345\""),
+            ("#gggggg", "unknown colour word \"#gggggg\""),
+            ("bright-grey", "unknown colour word \"bright-grey\""),
+            ("grey+1", "unknown colour word \"grey+1\""),
+        ] {
+            assert_eq!(codes_for(value), Err(error.to_owned()), "{value}");
+        }
+    }
+
+    #[test]
+    fn values_in_words() {
+        let colors =
+            Colors::from_entries(&entries(&[("command", "red"), ("script", "on grey3")])).unwrap();
+        assert_eq!(colors.sgr(Kind::Command), "31");
+        assert_eq!(colors.script(), "48;5;235");
+        assert_eq!(
+            Colors::from_entries(&entries(&[("error", "underline")]))
+                .unwrap()
+                .error(),
+            "\x1b[4m"
+        );
+        let colors = Colors::parse("command=bold magenta:script=on grey3");
+        assert_eq!(colors.sgr(Kind::Command), "1;35");
+        assert_eq!(colors.script(), "48;5;235");
     }
 }

@@ -77,7 +77,7 @@ pub fn parse_cursor(v: &TulispObject) -> Result<bool, String> {
     }
 }
 
-const BAD_COLORS: &str = "expected a list of (NAME . \"SGR\") pairs or a string";
+const BAD_COLORS: &str = "expected a list of (NAME . \"VALUE\") pairs or a string";
 
 pub fn parse_colors(v: &TulispObject) -> Result<Colors, String> {
     if v.null() {
@@ -295,13 +295,13 @@ mod tests {
         assert_eq!((c.sgr(Kind::Command), c.error()), ("38:5:208", ""));
         assert_eq!(
             parse_colors(&value(&mut ctx, "5")),
-            Err("expected a list of (NAME . \"SGR\") pairs or a string".to_owned())
+            Err("expected a list of (NAME . \"VALUE\") pairs or a string".to_owned())
         );
         assert_eq!(
             parse_colors(&value(&mut ctx, r#"'((command . 32))"#)),
             Err("command: expected a string".to_owned())
         );
-        let bad = Err("expected a list of (NAME . \"SGR\") pairs or a string".to_owned());
+        let bad = Err("expected a list of (NAME . \"VALUE\") pairs or a string".to_owned());
         for text in [
             r#"'((command . "35") . 5)"#,
             r#"(let ((l (list (cons 'command "35")))) (setcdr l l) l)"#,
@@ -309,6 +309,18 @@ mod tests {
         ] {
             assert_eq!(parse_colors(&value(&mut ctx, text)), bad, "{text}");
         }
+        let c = parse_colors(&value(&mut ctx, r#"'((command . "bold magenta"))"#)).unwrap();
+        assert_eq!(c.sgr(Kind::Command), "1;35");
+        assert_eq!(
+            parse_colors(&value(&mut ctx, r#"'((command . "magneta"))"#)),
+            Err("command: unknown colour word \"magneta\"".to_owned())
+        );
+        let c = parse_colors(&value(&mut ctx, r#""command=bold magenta:string=magneta""#)).unwrap();
+        assert_eq!(
+            (c.sgr(Kind::Command), c.sgr(Kind::String)),
+            ("1;35", "33"),
+            "the string form skips what it cannot read"
+        );
     }
 
     #[test]
