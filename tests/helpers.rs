@@ -818,6 +818,31 @@ fn a_line_after_a_pipe_is_one_step_in() {
     );
 }
 
+/// A script that starts on its own line: C-j between the empty quotes
+/// opens them, and the closing quote goes on a line of its own.
+#[test]
+fn a_script_on_lines_of_its_own() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    sh.send("csvm \"");
+    sh.wait_for("the empty script", |s| cursor_row(s) == "$ csvm \"\"");
+    sh.send(CTRL_J);
+    sh.wait_for("the first script line", |s| {
+        s.cursor_position() == (1, 2) && row_text(s, 2) == "\""
+    });
+    type_then(&mut sh, "head", "head", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the next line", |s| s.cursor_position() == (2, 2));
+    type_then(&mut sh, "| sort x", "sort", COMMAND);
+    sh.send(&format!("{DOWN}\x05 data.csv"));
+    let s = sh.wait_for("the whole command", |s| row_text(s, 3) == "\" data.csv");
+    assert_eq!(
+        rows(&s, 4),
+        ["$ csvm \"", "  head", "  | sort x", "\" data.csv"],
+        "{}",
+        dump(&s)
+    );
+}
+
 #[test]
 fn a_group_adds_a_step_and_its_closer_moves_out() {
     let (mut sh, _dir, _log) = indenting_shell("indent");
@@ -845,6 +870,49 @@ fn a_group_adds_a_step_and_its_closer_moves_out() {
             "    cols a,b",
             "  ) other.csv on a",
             "  | sort x\"",
+        ],
+        "{}",
+        dump(&s)
+    );
+}
+
+#[test]
+fn a_function_body_adds_a_step() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    sh.send("csvm '");
+    sh.wait_for("the empty script", |s| cursor_row(s) == "$ csvm ''");
+    sh.send(CTRL_J);
+    sh.wait_for("the first script line", |s| {
+        s.cursor_position() == (1, 2) && row_text(s, 2) == "'"
+    });
+    type_then(&mut sh, "fn prep(n) {", "fn", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("inside the body", |s| s.cursor_position() == (2, 4));
+    type_then(&mut sh, "rename value=n", "rename", VARIABLE);
+    sh.send(CTRL_J);
+    sh.wait_for("still inside", |s| s.cursor_position() == (3, 4));
+    type_then(&mut sh, "| cols -v metric", "cols", COMMAND);
+    sh.send(CTRL_J);
+    sh.wait_for("the closing line", |s| s.cursor_position() == (4, 4));
+    sh.send("}");
+    sh.wait_for("the brace", |s| row_text(s, 4) == "    }");
+    sh.send(CTRL_J);
+    sh.wait_for("the brace moved out", |s| {
+        s.cursor_position() == (5, 2) && row_text(s, 4) == "  }"
+    });
+    type_then(&mut sh, "prep(pv)", "prep(pv)", VARIABLE);
+    sh.send(&format!("{DOWN}\x05 pv.csv"));
+    let s = sh.wait_for("the whole command", |s| row_text(s, 6) == "' pv.csv");
+    assert_eq!(
+        rows(&s, 7),
+        [
+            "$ csvm '",
+            "  fn prep(n) {",
+            "    rename value=n",
+            "    | cols -v metric",
+            "  }",
+            "  prep(pv)",
+            "' pv.csv",
         ],
         "{}",
         dump(&s)
@@ -890,6 +958,102 @@ fn without_depths_the_line_the_script_starts_on_gives_one_step() {
         dump(&s)
     );
     assert_no_indent_request(&log);
+}
+
+/// The closing quote of an empty pair goes as far in as the command's
+/// line, not the line the quote opens on, and no depths are asked for.
+#[test]
+fn an_empty_pair_opens_from_the_commands_line() {
+    let (mut sh, _dir, log) = indenting_shell("indent");
+    sh.send("csvm \\\r");
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    sh.send("    \"");
+    sh.wait_for("the empty script", |s| row_text(s, 1) == "      \"\"");
+    sh.send(CTRL_J);
+    let s = sh.wait_for("the pair opened", |s| {
+        s.cursor_position() == (2, 2) && row_text(s, 3) == "\""
+    });
+    assert_eq!(
+        rows(&s, 4),
+        ["$ csvm \\", "      \"", "", "\""],
+        "{}",
+        dump(&s)
+    );
+    assert_no_indent_request(&log);
+}
+
+/// Opening an empty pair needs no depths, so a helper that cannot indent
+/// opens it the same way.
+#[test]
+fn an_empty_pair_opens_without_depths() {
+    let (mut sh, _dir, _log) = indenting_shell("words");
+    sh.send("if true; then\r");
+    sh.wait_for("inside the block", |s| s.cursor_position() == (1, 2));
+    sh.send("csvm \"");
+    sh.wait_for("the empty script", |s| row_text(s, 1) == "  csvm \"\"");
+    sh.send(CTRL_J);
+    let s = sh.wait_for("the pair opened", |s| {
+        s.cursor_position() == (2, 4) && row_text(s, 3) == "  \""
+    });
+    assert_eq!(
+        rows(&s, 4),
+        ["$ if true; then", "  csvm \"", "", "  \""],
+        "{}",
+        dump(&s)
+    );
+}
+
+#[test]
+fn one_undo_closes_the_opened_pair() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    sh.send("csvm \"");
+    sh.wait_for("the empty script", |s| cursor_row(s) == "$ csvm \"\"");
+    sh.send(CTRL_J);
+    sh.wait_for("the pair opened", |s| row_text(s, 2) == "\"");
+    sh.send("\x1f");
+    sh.wait_for("the pair as it was", |s| {
+        cursor_row(s) == "$ csvm \"\"" && s.cursor_position() == (0, 8) && row_text(s, 1).is_empty()
+    });
+}
+
+/// With room for only one more line, C-j adds one line and leaves the pair
+/// closed: readline cannot draw a command taller than the screen.
+#[test]
+fn an_empty_pair_stays_closed_on_a_full_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = Shell::start(Options {
+        rows: 4,
+        init_el: Some(indenting("words", &log)),
+        ..Options::default()
+    });
+    warm_up(&mut sh);
+    sh.send("if true; then\r");
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 2));
+    sh.send("a\r");
+    sh.wait_for("the third line", |s| s.cursor_position() == (2, 2));
+    sh.send("csvm \"");
+    sh.wait_for("the empty script", |s| row_text(s, 2) == "  csvm \"\"");
+    sh.send(CTRL_J);
+    let s = sh.wait_for("one new line", |s| s.cursor_position() == (3, 4));
+    assert_eq!(
+        rows(&s, 4),
+        ["$ if true; then", "  a", "  csvm \"", "    \""],
+        "{}",
+        dump(&s)
+    );
+}
+
+/// An empty pair of quotes in bash code is a plain string: C-j adds a line
+/// inside it and leaves the closing quote after the cursor.
+#[test]
+fn an_empty_bash_string_is_not_opened() {
+    let (mut sh, _dir, _log) = indenting_shell("indent");
+    sh.send("echo \"");
+    sh.wait_for("the empty string", |s| cursor_row(s) == "$ echo \"\"");
+    sh.send(CTRL_J);
+    let s = sh.wait_for("the new line", |s| s.cursor_position() == (1, 0));
+    assert_eq!(rows(&s, 3), ["$ echo \"", "\"", ""], "{}", dump(&s));
 }
 
 /// Enter adds a line while the quote is open (C-v keeps `"` from being

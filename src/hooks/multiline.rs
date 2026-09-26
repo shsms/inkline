@@ -144,6 +144,10 @@ pub(super) extern "C" fn insert_newline(count: c_int, key: c_int) -> c_int {
 /// helper says how deep both lines are (see `in_script`); without its answer,
 /// the new line gets the indentation of the cursor's line, or one step in from
 /// the command's line when the cursor is on the line the script starts on.
+/// Between an empty pair of such quotes, the new line is one step in from
+/// the command's line, and, when the screen has room for both lines, the
+/// closing quote goes on a line of its own below it, as indented as the
+/// command's line.
 ///
 /// None of this happens when more input is already waiting (pasted text keeps
 /// its own spacing) or `inkline-indent` is 0. With `close_below`, the text
@@ -155,6 +159,9 @@ fn new_line(line: &str, point: usize, close_below: bool) {
     let mut indentation = String::new();
     let mut point = point;
     let mut blanks = point..point;
+    // The indentation of the line below the new one that the text after the
+    // cursor goes on, when it gets a line of its own.
+    let mut below = None;
     if step > 0 && !ffi::input_waiting() {
         point = move_out(line, point).unwrap_or(point);
         let text = ffi::line().unwrap_or_default();
@@ -178,6 +185,9 @@ fn new_line(line: &str, point: usize, close_below: bool) {
             let text = ffi::line().unwrap_or_default();
             indentation = split.new_line;
             blanks = lines::blanks_around(&text, point);
+            if script.empty_pair && fits_more_rows(&text, point, 2) {
+                below = Some(indent::indentation(&text[script.command_line..]).to_owned());
+            }
         }
     }
     let inserted = format!("\n{indentation}");
@@ -196,7 +206,10 @@ fn new_line(line: &str, point: usize, close_below: bool) {
     if close_below {
         // The cursor's line now ends at `point`, where the newline went in.
         let text = ffi::line().unwrap_or_default();
-        let base = indent::indentation(&text[lines::line_start(&text, point)..point]);
+        below = Some(indent::indentation(&text[lines::line_start(&text, point)..point]).to_owned());
+    }
+    if let Some(base) = below {
+        let text = ffi::line().unwrap_or_default();
         let at = ffi::point();
         let blanks = indent::indentation(&text[at..]).len();
         ffi::delete_text(at, at + blanks);
@@ -217,14 +230,17 @@ struct InScript {
     /// The depths the helper gave; `None` when it was not asked or gave
     /// none in time.
     depths: Option<Depths>,
+    /// Whether the cursor is between the argument's opening quote and the
+    /// one that closes it, with only blanks between them.
+    empty_pair: bool,
 }
 
 /// Whether the cursor at `point` in `text` is inside a quoted argument of
 /// a command that has a highlight helper, found as for colours. If so, asks
 /// the helper how deep the lines are (`helper::indent`, waiting up to
-/// `helper::INDENT_WAIT`), unless the argument is `raw` or Lisp is running.
-/// `None` when the cursor is not inside such an argument: the bash rules
-/// apply.
+/// `helper::INDENT_WAIT`), unless the argument is `raw`, it is an empty
+/// pair of quotes, or Lisp is running. `None` when the cursor is not inside
+/// such an argument: the bash rules apply.
 fn in_script(text: &str, point: usize) -> Option<InScript> {
     if !helper::any_registered() {
         return None;
@@ -238,7 +254,8 @@ fn in_script(text: &str, point: usize) -> Option<InScript> {
     let command_line = lines::line_start(text, command.args[0].start()?);
     let arg = &command.args[index];
     let first_line = lines::line_start(text, arg.start()?);
-    let depths = if arg.raw || crate::lisp::RUNNING.load(Ordering::Relaxed) {
+    let empty_pair = empty_quote_pair(text, point, quote);
+    let depths = if empty_pair || arg.raw || crate::lisp::RUNNING.load(Ordering::Relaxed) {
         None
     } else {
         let cwd = ffi::shell_variable("PWD").unwrap_or_default().into_bytes();
@@ -254,7 +271,21 @@ fn in_script(text: &str, point: usize) -> Option<InScript> {
         command_line,
         first_line,
         depths,
+        empty_pair,
     })
+}
+
+/// Whether the cursor is between the quote mark at byte `quote` and the one
+/// that closes it, with only spaces and tabs between them, such as pairing
+/// leaves after `csvm "`.
+fn empty_quote_pair(text: &str, point: usize, quote: usize) -> bool {
+    let mark = text.as_bytes()[quote];
+    text[quote + 1..point].trim_matches([' ', '\t']).is_empty()
+        && text[point..]
+            .trim_start_matches([' ', '\t'])
+            .as_bytes()
+            .first()
+            == Some(&mark)
 }
 
 /// Replaces the indentation of the line `point` is on with `to`, and
