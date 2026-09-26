@@ -5,6 +5,7 @@ use tulisp::{Error, TulispContext, TulispObject};
 
 use super::buffer::refuse_when_read_only;
 use super::settings::parse_color_set;
+use super::values::{describe, items};
 
 const NAME: &str = "inkline-highlight-arguments";
 
@@ -46,10 +47,8 @@ fn program_words(program: &TulispObject) -> Result<Vec<String>, Error> {
     if !program.consp() {
         return Err(wrong_type("listp", program));
     }
-    // Stops at the end of a dotted list, and once a circular list comes back
-    // to a cell it has been through.
-    let mut items = program.base_iter();
-    let words = items
+    let mut elements = items(program);
+    let words = elements
         .by_ref()
         .map(|item| {
             if !item.stringp() {
@@ -62,14 +61,17 @@ fn program_words(program: &TulispObject) -> Result<Vec<String>, Error> {
             Ok(word)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    items
-        .take_error()
-        .map_err(|_| wrong_type("a list of strings", program))?;
+    if !elements.proper() {
+        return Err(wrong_type("a list of strings", program));
+    }
     Ok(words)
 }
 
 fn wrong_type(expected: &str, value: &TulispObject) -> Error {
-    Error::type_mismatch(format!("Wrong type argument: {expected}, {value}"))
+    Error::type_mismatch(format!(
+        "Wrong type argument: {expected}, {}",
+        describe(value)
+    ))
 }
 
 #[cfg(test)]
@@ -125,6 +127,39 @@ mod tests {
             ),
         ] {
             let err = eval(expr).unwrap_err();
+            assert!(err.starts_with(message), "{expr}: {err}");
+        }
+        assert!(mode_server::status_lines().is_empty());
+    }
+
+    #[test]
+    fn values_that_hold_themselves_are_described_short() {
+        use crate::lisp::values::{HOLDS_ITSELF, QUOTES_ITSELF};
+        // Set in its own eval, before the calls below. An error's text
+        // shows the form it came from, and this form changes a quoted list
+        // inside itself, so an error in it would print that list.
+        eval(&format!("(progn (setq quotes-itself {QUOTES_ITSELF}) nil)")).unwrap();
+        for (expr, message) in [
+            (
+                format!("(inkline-highlight-arguments {HOLDS_ITSELF} nil)"),
+                "Wrong type argument: stringp, ((((((((...))))))))",
+            ),
+            (
+                format!(r#"(inkline-highlight-arguments "c" (list "x" {HOLDS_ITSELF}))"#),
+                "Wrong type argument: stringp, ((((((((...))))))))",
+            ),
+            (
+                r#"(inkline-highlight-arguments "c" (cons "x" quotes-itself))"#.to_owned(),
+                r#"Wrong type argument: a list of strings, ("x" . ...)"#,
+            ),
+            (
+                format!(
+                    r#"(inkline-highlight-arguments "c" '("x") (list (cons 'command {HOLDS_ITSELF})))"#
+                ),
+                "inkline-highlight-arguments: command: expected a string",
+            ),
+        ] {
+            let err = eval(&expr).unwrap_err();
             assert!(err.starts_with(message), "{expr}: {err}");
         }
         assert!(mode_server::status_lines().is_empty());

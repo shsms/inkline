@@ -114,6 +114,22 @@ that line is wider than the test terminal's 80 columns and wraps, so the
 exact match fails. Matching the start and end of the line, or a wider
 terminal for these two tests, would fix it.
 
+** TODO A value that holds itself crashes bash when tulisp prints it
+
+tulisp prints a value into the text of some errors: =car= or =cdr= of a
+value that is not a list, and a string or a number read from any other
+value. Printing a list that holds itself (made with =setcar=) never ends
+and overflows the stack. inkline's settings, and the function that
+takes a program and its colours, check each value before reading it
+(=src/lisp/values.rs=), but other paths still print: an error's text
+shows the form it came from, =inkline eval= prints its result, the hook
+variables are walked with =base_iter=, and other functions read or print
+their arguments unchecked, such as position arguments,
+=inkline-unbind-defaults=, =inkline-set-readline-variable=, =upcase=,
+=downcase=, =keymap-global-set=, =insert=, and every function with a
+string or number argument. A limit on how deep tulisp prints a value
+would fix it for every caller.
+
 ** TODO A csvm call nested in a double-quoted =$( … )= gets no script indentation
 
 In =echo "$(csvm "…=, the open quote found first is the outer one, so the

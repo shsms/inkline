@@ -5,6 +5,7 @@ use std::cell::RefCell;
 
 use tulisp::{TulispContext, TulispObject};
 
+use super::values::{items, read_int, read_str};
 use crate::colors::{ColorSet, Colors};
 
 const DEFINITIONS: &str = "
@@ -53,16 +54,14 @@ pub fn register(ctx: &mut TulispContext) {
 }
 
 pub fn parse_indent(v: &TulispObject) -> Result<usize, String> {
-    v.as_int()
-        .ok()
+    read_int(v)
         .and_then(|n| usize::try_from(n).ok())
         .filter(|&n| n <= 16)
         .ok_or_else(|| "expected a number from 0 to 16".to_owned())
 }
 
 pub fn parse_lines(v: &TulispObject) -> Result<usize, String> {
-    v.as_int()
-        .ok()
+    read_int(v)
         .and_then(|n| usize::try_from(n).ok())
         .filter(|&n| n >= 1)
         .ok_or_else(|| "expected a number of at least 1".to_owned())
@@ -70,10 +69,14 @@ pub fn parse_lines(v: &TulispObject) -> Result<usize, String> {
 
 /// Whether the value asks for `end`.
 pub fn parse_cursor(v: &TulispObject) -> Result<bool, String> {
-    match (v.symbolp(), v.to_string().as_str()) {
-        (true, "start") => Ok(false),
-        (true, "end") => Ok(true),
-        _ => Err("expected start or end".to_owned()),
+    let bad = || Err("expected start or end".to_owned());
+    if !v.symbolp() {
+        return bad();
+    }
+    match v.to_string().as_str() {
+        "start" => Ok(false),
+        "end" => Ok(true),
+        _ => bad(),
     }
 }
 
@@ -106,11 +109,14 @@ pub fn parse_color_set(v: &TulispObject) -> Result<ColorSet, String> {
 }
 
 /// The `(NAME . VALUE)` pairs of the list `v`, a name being a symbol or a
-/// string and a value a string.
+/// string and a value a string. A `nil` entry reads as `(nil . nil)`.
 fn color_pairs(v: &TulispObject) -> Result<Vec<(String, String)>, String> {
     let mut entries = Vec::new();
-    let mut pairs = v.base_iter();
+    let mut pairs = items(v);
     for pair in pairs.by_ref() {
+        if !pair.listp() {
+            return Err(BAD_COLORS.to_owned());
+        }
         let (Ok(name), Ok(codes)) = (pair.car(), pair.cdr()) else {
             return Err(BAD_COLORS.to_owned());
         };
@@ -121,12 +127,14 @@ fn color_pairs(v: &TulispObject) -> Result<Vec<(String, String)>, String> {
         } else {
             return Err(BAD_COLORS.to_owned());
         };
-        let codes = codes
-            .as_string()
-            .map_err(|_| format!("{name}: expected a string"))?;
+        let Some(codes) = read_str(&codes) else {
+            return Err(format!("{name}: expected a string"));
+        };
         entries.push((name, codes));
     }
-    pairs.take_error().map_err(|_| BAD_COLORS.to_owned())?;
+    if !pairs.proper() {
+        return Err(BAD_COLORS.to_owned());
+    }
     Ok(entries)
 }
 
@@ -340,6 +348,32 @@ mod tests {
             ("1;35", "33"),
             "the string form skips what it cannot read"
         );
+    }
+
+    /// Sets `variable` to `value` without printing the result.
+    fn set(variable: &str, value: &str) {
+        crate::lisp::eval(&format!("(progn (setq {variable} {value}) nil)")).unwrap();
+    }
+
+    #[test]
+    fn values_that_hold_themselves_are_reported_not_printed() {
+        use crate::lisp::values::{HOLDS_ITSELF, QUOTES_ITSELF};
+        crate::lisp::start();
+        set("inkline-indent", HOLDS_ITSELF);
+        assert_eq!(indent(), 4);
+        set("inkline-suggestion-lines", QUOTES_ITSELF);
+        assert_eq!(suggestion_lines(), 5);
+        set("inkline-history-cursor", HOLDS_ITSELF);
+        assert!(!history_cursor_end());
+        for colors in [
+            format!("(list {QUOTES_ITSELF})"),
+            format!("(cons (cons 'command \"35\") {QUOTES_ITSELF})"),
+            format!("(list (cons 'command {HOLDS_ITSELF}))"),
+        ] {
+            set("inkline-colors", &colors);
+            assert_eq!(self::colors(), Colors::default(), "{colors}");
+        }
+        assert_eq!(problems().len(), 6);
     }
 
     #[test]
