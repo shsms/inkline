@@ -638,6 +638,14 @@ fn readme_examples_work() {
     // The Lisp suggestion.
     sh.send("make t");
     sh.wait_for("the suggestion", |s| cursor_row(s) == "$ make test");
+    // The completion function's items.
+    sh.send("\x15git s");
+    sh.wait_for("the menu", |s| {
+        let row = s.cursor_position().0;
+        cursor_row(s) == "$ git switch"
+            && row_text(s, row + 1) == "l  switch"
+            && row_text(s, row + 2) == "l  show"
+    });
 }
 
 /// Shell code for the tests below: `slow` takes about a second, and first

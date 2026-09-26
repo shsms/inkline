@@ -1,11 +1,11 @@
 # inkline
 
-Syntax highlighting, history suggestions and bracket/quote pairing for bash,
-without replacing readline. inkline binds its own layout of keys when it
-loads, but only on a key that still has readline's default binding for it —
-`inputrc`, and your own `bind` lines after `enable -f`, win.
-`(inkline-unbind-defaults)` in `init.el` gives every key in the layout back
-to readline.
+Syntax highlighting, history suggestions, a completion menu and bracket/quote
+pairing for bash, without replacing readline. inkline binds its own layout of
+keys when it loads, but only on a key that still has readline's default binding
+for it — `inputrc`, and your own `bind` lines after `enable -f`, win.
+`(inkline-unbind-defaults)` in `init.el` gives every key in the layout back to
+readline.
 
 It is a bash loadable builtin written in Rust, for bash 5.0 and later,
 configured with `init.el`, a small Emacs Lisp file (see "Configuration"
@@ -45,8 +45,8 @@ lines of your own after `enable -f`; they run after inkline's and win.
 | multi-line | `RET` | `accept-or-newline` | `accept-line` |
 | multi-line | `C-j` | `insert-newline` | `accept-line` |
 | multi-line | `M-RET` | `accept-as-is` | unbound or `vi-editing-mode` |
-| multi-line | `<up>`, `C-p` | `previous-line-or-history` | `previous-history` |
-| multi-line | `<down>`, `C-n` | `next-line-or-history` | `next-history` |
+| multi-line | `<up>` | `previous-line-or-history` | `previous-history` |
+| multi-line | `<down>` | `next-line-or-history` | `next-history` |
 | multi-line | `C-a`, `<home>` | `line-start` | `beginning-of-line` |
 | multi-line | `C-k` | `kill-to-line-end` | `kill-line` |
 | multi-line | `C-u` | `kill-to-line-start` | `unix-line-discard` |
@@ -54,6 +54,10 @@ lines of your own after `enable -f`; they run after inkline's and win.
 | pairing | `(` `[` `{` `"` `'` `` ` `` | `insert-pair` | `self-insert` |
 | pairing | `)` `]` `}` | `insert-close` | `self-insert` |
 | pairing | `DEL` | `delete-pair` | `backward-delete-char` |
+| menu | `C-n` | `menu-next` | `next-history` |
+| menu | `C-p` | `menu-previous` | `previous-history` |
+| menu | `TAB` | `menu-take` | `complete` |
+| menu | `C-g` | `menu-hide` | `abort` |
 
 `<right>`, `<end>`, `<home>`, `<up>` and `<down>` are also taken when they are
 unbound (many terminals send sequences for them that plain bash never binds
@@ -63,7 +67,8 @@ on its own); `M-RET` is taken when it is unbound or bound to
 `previous-line-or-search`/`next-line-or-search` there instead: they move
 between lines the same way, and search past the first or last line.
 
-Turn part of the layout off in `init.el`:
+Turn part of the layout off in `init.el`, naming one of its groups
+(`suggestions`, `multi-line`, `pairing`, `menu`):
 
 ```elisp
 ;; ~/.config/inkline/init.el
@@ -71,7 +76,9 @@ Turn part of the layout off in `init.el`:
 ```
 
 `(inkline-unbind-defaults)` with no argument gives back the whole layout; a
-single group name also works, as `(inkline-unbind-defaults 'pairing)`.
+single group name also works, as `(inkline-unbind-defaults 'pairing)`. With
+`menu` turned off and `multi-line` kept, `C-n` and `C-p` move between the lines
+of a command, and past the first or last line through history.
 
 `C-u` and Backspace need `bind-tty-special-chars off`: otherwise readline binds
 the terminal's kill and erase characters back to `unix-line-discard` and
@@ -185,8 +192,10 @@ with a function in `inkline-accept-functions`:
 `gst` then Space gives `git status `; `ll` then Enter runs `ls -l`.
 
 A function in `inkline-suggestion-functions` gets the line and returns a longer
-line to suggest, or `nil`. inkline asks it only when history has no suggestion.
-It may read the line, but not change it:
+line to suggest, or `nil`. inkline asks it whenever the line is not empty and
+the cursor is at its end, and its answer becomes an item of the completion
+menu; a matching history entry still shows first. It may read the line, but
+not change it:
 
 ```elisp
 ;; ~/.config/inkline/init.el
@@ -203,6 +212,9 @@ It may read the line, but not change it:
 
 Typing `make t` now shows `est` in grey after the cursor.
 
+A function in `inkline-completion-functions` offers items for the completion
+menu; see "Completion menu" below.
+
 Every variable, function, command and hook inkline adds to Lisp is listed in
 [`docs/lisp.md`](docs/lisp.md).
 
@@ -214,6 +226,18 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
 - **Suggestions.** When the cursor is at the end of the line, the newest history
   entry starting with what you typed is shown in grey after the cursor. Accepted
   text can be undone with `C-_`.
+- **Completion menu.** As you type, a menu of possible completions shows under
+  the command, each row marked `h` for a past command or `l` for one your own
+  Lisp function offers; the grey text after the cursor is the rest of the
+  picked item, or of the top item when none is picked.
+  `C-n` and `C-p` pick an item in the menu; Tab or Enter (while Enter runs
+  the multi-line layout's `accept-or-newline`) take the picked item, and with
+  no item picked they do what they always did. `C-g` hides the menu
+  until the line changes. A line brought back from history (`C-p`, `<up>`, a
+  search) shows no menu and no grey text until you change it. With no menu,
+  `C-n` and `C-p` move between lines and through history, as `<down>` and
+  `<up>` do. `inkline-show-menu` and `inkline-show-suggestion` turn the menu
+  and the grey text off on their own. See "Completion menu" below.
 - **Pairing.** `(`, `[`, `{` and quotes insert their closing character; typing
   the closer moves over it; Backspace between an empty pair deletes both. It
   stays out of the way after letters and digits (`don't`), after a backslash,
@@ -258,6 +282,61 @@ Each keystroke's output is sent as one synchronized update (DEC private mode
 show a single frame per key. Terminals without it ignore the markers, and there
 the grey text and new characters can flicker briefly as readline and inkline
 draw in turn.
+
+## Completion menu
+
+As you type, a small menu of possible completions shows under the command, and
+the grey text after the cursor shows the rest of one of them. Here `git s` is
+typed, the cursor is after it, and `witch main` is grey:
+
+```
+$ git switch main
+h  git switch main
+h  git switch -c fix
+l  switch
+l  show
+```
+
+A row marked `h` is a past command that starts with what you typed, newest
+first; a row marked `l` is an item your own Lisp function offers. The menu
+takes at most `inkline-menu-lines` rows; when there are more items, the last
+row says how many more.
+
+- `C-n` and `C-p` pick the next or the previous item; `C-p` with nothing
+  picked starts at the bottom. The grey text is the rest of the picked item,
+  or of the top item when none is picked.
+- Tab or Enter take the picked item into the line, as one step that `C-_`
+  undoes; a second Enter runs the line. With no item picked, Tab completes as
+  bash does and Enter does what it always did. Enter takes an item only while
+  it runs `accept-or-newline`, from the multi-line group of the layout.
+- `C-g` hides the menu and the grey text until the line's text changes. With
+  no menu, `C-g` is readline's `abort`.
+- A line brought back from history (`C-p`, `<up>`, a search) shows no menu
+  and no grey text until you change it. With no menu, `C-n` and `C-p` move
+  between lines and through history, as `<down>` and `<up>` do.
+
+`inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
+text off on their own, and `inkline-completion-style` set to `fuzzy` lets the
+letters you typed match with gaps; see [`docs/lisp.md`](docs/lisp.md). The
+menu's colours are set with the `menu`, `menu-selected` and `menu-source`
+keys (see "Colours").
+
+A function in `inkline-completion-functions` reads the line and offers items
+for the menu:
+
+```elisp
+;; ~/.config/inkline/init.el
+(add-hook 'inkline-completion-functions
+  (lambda ()
+    (let ((start (point)))
+      (while (let ((c (char-before start))) (and c (<= 97 c) (<= c 122)))
+        (setq start (- start 1)))
+      (when (< start (point))
+        (list start (point) '("switch" "show"))))))
+```
+
+It offers `switch` and `show` for the lowercase word before the cursor, and
+inkline keeps those that start with it: `git s` shows both.
 
 ## Command modes
 
@@ -477,13 +556,14 @@ what you want to change; a change applies from the next key.
 (setq inkline-colors '((command . "32") (unknown . "31") (keyword . "35")
                         (option . "36") (string . "33") (variable . "34")
                         (operator . "1") (comment . "2") (suggestion . "90")
-                        (number . "36") (function . "32") (script . "2")))
+                        (number . "36") (function . "32") (script . "2")
+                        (menu-selected . "7") (menu-source . "2")))
 ```
 
 or, in the old string format:
 
 ```elisp
-(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2")
+(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2")
 ```
 
 In the alist form, a name can be a symbol or a string, and the first entry
@@ -555,7 +635,9 @@ changes.
   cursor in a multi-line entry it recalls: the symbol `start` (the default)
   or `end`, where readline puts it.
 - `inkline-suggestion-lines`: the most lines of a multi-line suggestion to
-  show, an integer of at least 1, 5 by default.
+  show, an integer of at least 1, 5 by default. It applies only while no menu
+  or message shows under the line; with one, a multi-line suggestion takes
+  one row.
 - `inkline-command-mode-alist`: which commands use which command mode (see
   "Command modes").
 
@@ -720,9 +802,9 @@ under the line.
   layout binds Enter to `accept-or-newline`, and `\n` is `C-j`, which always
   adds a line. Send `\r` instead, start bash with `--norc`, or turn
   multi-line editing off with `(inkline-unbind-defaults '(multi-line))`.
-- `inkline-after-change-functions` and `inkline-suggestion-functions` run
-  on almost every key you type, so keep their functions small and fast: a
-  slow one makes typing slow.
+- `inkline-after-change-functions`, `inkline-suggestion-functions` and
+  `inkline-completion-functions` run on almost every key you type, so keep
+  their functions small and fast: a slow one makes typing slow.
 - These ways of running a line skip the accept hook
   (`inkline-accept-functions`): `C-o` (`operate-and-get-next`), `M-#`
   (`comment-lines`), and a key bound with `bind` to readline's `accept-line`.
