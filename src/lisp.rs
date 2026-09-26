@@ -20,6 +20,7 @@ pub mod layout;
 pub mod lockout;
 pub mod modes;
 pub mod settings;
+pub mod values;
 
 thread_local! {
     static SLOT: RefCell<Option<TulispContext>> = const { RefCell::new(None) };
