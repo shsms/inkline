@@ -15,15 +15,30 @@ pub const VERSION_LINE: &str = "inkline-highlight 1";
 /// is the argument's text and whether it still holds something bash will
 /// expand (`false` for the argument bash would actually pass the program).
 pub fn request(id: u64, cwd: &[u8], args: &[(bool, String)]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(format!(":request {id}\n").as_bytes());
-    write_block(&mut out, "cwd", cwd);
-    for (raw, text) in args {
-        let head = if *raw { "arg raw" } else { "arg final" };
-        write_block(&mut out, head, text.as_bytes());
-    }
+    let mut out = format!(":request {id}\n").into_bytes();
+    write_args(&mut out, cwd, args);
     out.extend_from_slice(b":done\n");
     out
+}
+
+/// Writes an indent request: as `request`, headed `:indent ID`, with
+/// `:at ARG OFFSET` before `:done`. `at` is where the new line breaks: an
+/// argument's index and a byte offset in its text.
+pub fn indent_request(id: u64, cwd: &[u8], args: &[(bool, String)], at: (usize, usize)) -> Vec<u8> {
+    let mut out = format!(":indent {id}\n").into_bytes();
+    write_args(&mut out, cwd, args);
+    out.extend_from_slice(format!(":at {} {}\n", at.0, at.1).as_bytes());
+    out.extend_from_slice(b":done\n");
+    out
+}
+
+/// Writes `:cwd` and one `:arg` per argument.
+fn write_args(out: &mut Vec<u8>, cwd: &[u8], args: &[(bool, String)]) {
+    write_block(out, "cwd", cwd);
+    for (raw, text) in args {
+        let head = if *raw { "arg raw" } else { "arg final" };
+        write_block(out, head, text.as_bytes());
+    }
 }
 
 /// Writes `:HEAD LEN\nBYTES\n`.
@@ -294,6 +309,15 @@ mod tests {
             String::from_utf8(request(7, b"/tmp", &args)).unwrap(),
             ":request 7\n:cwd 4\n/tmp\n:arg final 4\ncsvm\n:arg final 3\na\nb\n\
              :arg raw 7\n$HOME/x\n:arg final 0\n\n:done\n"
+        );
+    }
+
+    #[test]
+    fn indent_requests_follow_the_protocol() {
+        let args = [(false, "csvm".to_owned()), (false, "a\n{b".to_owned())];
+        assert_eq!(
+            String::from_utf8(indent_request(8, b"/tmp", &args, (1, 3))).unwrap(),
+            ":indent 8\n:cwd 4\n/tmp\n:arg final 4\ncsvm\n:arg final 4\na\n{b\n:at 1 3\n:done\n"
         );
     }
 
