@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 /// The longest `send` waits for the helper to take a request.
 const SEND_WAIT: Duration = Duration::from_secs(1);
 
-/// How often `send` looks for a signal to act on while it waits: one that
-/// came just before a wait began does not end it.
-const SIGNAL_CHECK: Duration = Duration::from_millis(20);
+/// How often a wait looks for a signal to act on: one that came just before
+/// a wait began does not end it.
+pub const SIGNAL_CHECK: Duration = Duration::from_millis(20);
 
 /// The most one read takes from the helper, so a helper that writes without
 /// end cannot keep a read going.

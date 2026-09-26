@@ -1256,10 +1256,7 @@ fn ask_helpers(line: &str, path: &str) -> Vec<(CommandArgs, Reply)> {
     let cwd = ffi::shell_variable("PWD").unwrap_or_default().into_bytes();
     let asks: Vec<(String, helper::Request)> = commands
         .iter()
-        .map(|c| {
-            let args = c.args.iter().map(|a| (a.raw, a.text.clone())).collect();
-            (c.name.clone(), (cwd.clone(), args))
-        })
+        .map(|c| (c.name.clone(), helper::request(cwd.clone(), c)))
         .collect();
     let wait = helper::WAIT.saturating_sub(began.elapsed());
     let replies = helper::replies(&asks, wait, ffi::signal_to_act_on);

@@ -6,9 +6,10 @@ use std::cell::RefCell;
 use std::os::fd::RawFd;
 use std::time::{Duration, Instant};
 
+use crate::args::CommandArgs;
 use crate::colors::ColorSet;
 use process::Process;
-use protocol::{Read, Reply};
+use protocol::{Depths, Read, Reply};
 
 pub mod process;
 pub mod protocol;
@@ -16,6 +17,10 @@ pub mod protocol;
 /// The longest a redraw waits for helpers, in all: for the first line of
 /// the ones starting, then for their replies.
 pub const WAIT: Duration = Duration::from_millis(15);
+
+/// The longest a new line waits for a helper's depths, in all: for the
+/// reply to a request already in flight, then for the depths.
+pub const INDENT_WAIT: Duration = Duration::from_millis(100);
 
 /// The most a helper may have written that inkline has not used, while a
 /// reply or its first line is still incomplete.
@@ -52,20 +57,34 @@ struct Helper {
 /// A helper that named itself, and the requests it was sent.
 struct Running {
     process: Process,
-    /// The ID of the last request sent, 0 before the first.
+    /// Whether its first line named `indent`.
+    indent: bool,
+    /// The ID of the last request sent, 0 before the first. Colour and
+    /// indent requests share it.
     last_id: u64,
     /// The request sent and not answered yet, with its ID. There is at
-    /// most one at a time.
-    in_flight: Option<(u64, Request)>,
+    /// most one at a time, of either kind.
+    in_flight: Option<(u64, Asked)>,
     /// The replies kept, each with the request it answers; at most one per
     /// request.
     kept: Vec<(Request, Reply)>,
-    /// How far `protocol::reply` has looked into the process's buffer for
-    /// the reply in flight.
+    /// How far `protocol::reply` or `protocol::indent_reply` has looked
+    /// into the process's buffer for the reply in flight.
     reply_seen: usize,
-    /// The replies to requests with this ID or a lower one are dropped when
-    /// they come (see `forget_replies`).
+    /// The replies to colour requests with this ID or a lower one are
+    /// dropped when they come (see `forget_replies`).
     forgotten: u64,
+    /// The depths of the last indent reply read: `ask_indent` takes them
+    /// once the reply to its own request comes.
+    indent_answer: Option<Depths>,
+}
+
+/// What a request in flight asked.
+enum Asked {
+    /// Colours for these arguments.
+    Colors(Request),
+    /// Depths for a new line.
+    Indent,
 }
 
 thread_local! {
@@ -285,6 +304,47 @@ fn requests_for<'a>(asks: &'a [(String, Request)], name: &str) -> Vec<&'a Reques
         .collect()
 }
 
+/// The request for `command`'s arguments, with `cwd` as the directory.
+pub fn request(cwd: Vec<u8>, command: &CommandArgs) -> Request {
+    let args = command
+        .args
+        .iter()
+        .map(|a| (a.raw, a.text.clone()))
+        .collect();
+    (cwd, args)
+}
+
+/// Asks the helper for `name` how deep the new line and the cursor's line
+/// are, with the cursor at `at` (an argument's index and a byte offset in
+/// its text) in `request`'s arguments. Only a running helper that named
+/// `indent` is asked. The reply to a request already in flight comes first
+/// (one request at a time), all within `wait`; a signal for which
+/// `interrupted` holds (such as C-c) ends the wait. `None` when no depths
+/// came: the helper was not asked, gave none in time, or sent only `:end`.
+/// A helper that fails is turned off, with a message for `take_notices`.
+pub fn indent(
+    name: &str,
+    request: &Request,
+    at: (usize, usize),
+    wait: Duration,
+    interrupted: fn() -> bool,
+) -> Option<Depths> {
+    let deadline = Instant::now() + wait;
+    HELPERS.with_borrow_mut(|helpers| {
+        let h = helpers.iter_mut().find(|h| h.name == name)?;
+        let asked = h.read_first_line().and_then(|()| match &mut h.state {
+            State::Running(running) if running.indent => {
+                running.ask_indent(request, at, deadline, interrupted)
+            }
+            State::NotStarted | State::Starting(_) | State::Running(_) | State::Off(_) => Ok(None),
+        });
+        asked.unwrap_or_else(|reason| {
+            h.turn_off(reason);
+            None
+        })
+    })
+}
+
 /// Whether a helper was turned off and the message saying so is not taken
 /// yet.
 pub fn has_notices() -> bool {
@@ -330,18 +390,20 @@ impl Helper {
         let State::Starting(process) = &mut self.state else {
             return Ok(());
         };
-        if read_version(process)? {
+        if let Some(features) = read_version(process)? {
             let State::Starting(process) = std::mem::replace(&mut self.state, State::NotStarted)
             else {
                 unreachable!("the helper is starting");
             };
             self.state = State::Running(Running {
                 process,
+                indent: features.iter().any(|f| f == "indent"),
                 last_id: 0,
                 in_flight: None,
                 kept: Vec::new(),
                 reply_seen: 0,
                 forgotten: 0,
+                indent_answer: None,
             });
         }
         Ok(())
@@ -424,20 +486,35 @@ impl Running {
     }
 
     /// Takes the reply to the request in flight if the buffer holds all of
-    /// it: keeps it, or drops it if it is forgotten. Whether one came, or
-    /// the reason the helper must be turned off.
+    /// it: keeps a colour reply, or drops it if it is forgotten; notes an
+    /// indent reply in `indent_answer`. Whether one came, or the reason the
+    /// helper must be turned off.
     fn take_reply(&mut self) -> Result<bool, String> {
-        let Some((id, request)) = &self.in_flight else {
+        let Some((id, asked)) = &self.in_flight else {
             return Ok(false);
         };
-        let lens: Vec<usize> = request.1.iter().map(|(_, text)| text.len()).collect();
-        match protocol::reply(self.process.buffer(), *id, &lens, &mut self.reply_seen) {
+        let id = *id;
+        let read = match asked {
+            Asked::Colors(request) => {
+                let lens: Vec<usize> = request.1.iter().map(|(_, text)| text.len()).collect();
+                protocol::reply(self.process.buffer(), id, &lens, &mut self.reply_seen).map(Some)
+            }
+            Asked::Indent => {
+                protocol::indent_reply(self.process.buffer(), id, &mut self.reply_seen).map(
+                    |depths| {
+                        self.indent_answer = depths;
+                        None
+                    },
+                )
+            }
+        };
+        match read {
             Read::Done(reply, used) => {
-                let wanted = *id > self.forgotten;
                 self.process.buffer().drain(..used);
                 self.reply_seen = 0;
-                if let Some((_, request)) = self.in_flight.take()
-                    && wanted
+                if let (Some((_, Asked::Colors(request))), Some(reply)) =
+                    (self.in_flight.take(), reply)
+                    && id > self.forgotten
                 {
                     self.keep(request, reply);
                 }
@@ -448,13 +525,65 @@ impl Running {
         }
     }
 
+    /// See `indent`: the depths, `None` when none came by `deadline`, or
+    /// the reason the helper must be turned off.
+    fn ask_indent(
+        &mut self,
+        request: &Request,
+        at: (usize, usize),
+        deadline: Instant,
+        interrupted: fn() -> bool,
+    ) -> Result<Option<Depths>, String> {
+        // One request at a time: the reply to one in flight comes first.
+        self.take_reply()?;
+        while self.in_flight.is_some() {
+            if !self.wait_more(deadline, interrupted)? {
+                return Ok(None);
+            }
+            self.take_reply()?;
+        }
+        // Once the wait is over, or after a C-c, the answer could not be
+        // used: nothing is sent.
+        if interrupted() || Instant::now() >= deadline {
+            return Ok(None);
+        }
+        let id = self.last_id + 1;
+        let bytes = protocol::indent_request(id, &request.0, &request.1, at);
+        self.process.send(&bytes, interrupted)?;
+        self.last_id = id;
+        self.in_flight = Some((id, Asked::Indent));
+        loop {
+            if self.take_reply()? {
+                return Ok(self.indent_answer.take());
+            }
+            if !self.wait_more(deadline, interrupted)? {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Waits until the helper writes more, `deadline` passes, or a signal
+    /// comes for which `interrupted` holds. Whether more came, or the
+    /// reason the helper must be turned off.
+    fn wait_more(&mut self, deadline: Instant, interrupted: fn() -> bool) -> Result<bool, String> {
+        loop {
+            if interrupted() || Instant::now() >= deadline {
+                return Ok(false);
+            }
+            let until = deadline.min(Instant::now() + process::SIGNAL_CHECK);
+            if self.process.fill(Some(until))? {
+                return Ok(true);
+            }
+        }
+    }
+
     /// Sends `request` (see `Process::send` for `interrupted`).
     fn send(&mut self, request: &Request, interrupted: fn() -> bool) -> Result<(), String> {
         let id = self.last_id + 1;
         self.process
             .send(&protocol::request(id, &request.0, &request.1), interrupted)?;
         self.last_id = id;
-        self.in_flight = Some((id, request.clone()));
+        self.in_flight = Some((id, Asked::Colors(request.clone())));
         Ok(())
     }
 
@@ -475,22 +604,21 @@ impl Running {
     }
 }
 
-/// Reads what has come of the helper's first line, without waiting.
-/// Whether the line has all come and is good, or the reason to turn the
-/// helper off. The extra requests the line may name are not used: this
-/// version of inkline sends none of them.
-fn read_version(process: &mut Process) -> Result<bool, String> {
+/// Reads what has come of the helper's first line, without waiting. The
+/// extra requests the line names once it has all come and is good, `None`
+/// while it has not all come, or the reason to turn the helper off.
+fn read_version(process: &mut Process) -> Result<Option<Vec<String>>, String> {
     loop {
         match protocol::version(process.buffer()) {
-            Read::Done(_, used) => {
+            Read::Done(features, used) => {
                 process.buffer().drain(..used);
-                return Ok(true);
+                return Ok(Some(features));
             }
             Read::Bad(reason) => return Err(reason),
             Read::Incomplete => check_unread(process)?,
         }
         if !process.fill(None)? {
-            return Ok(false);
+            return Ok(None);
         }
     }
 }
@@ -809,6 +937,198 @@ mod tests {
         prepare(&["a".to_owned()], &path(), || None);
         stop_all();
         assert!(!has_notices());
+    }
+
+    /// Asks the helper for `csvm` for the depths at `(1, at)` in `script`.
+    fn depths(
+        script: &str,
+        at: usize,
+        wait: Duration,
+        interrupted: fn() -> bool,
+    ) -> Option<Depths> {
+        indent("csvm", &request(script), (1, at), wait, interrupted)
+    }
+
+    /// A helper that names `indent`, then runs the shell code `then` once
+    /// it has read a line.
+    fn indenting_sh(then: &str) -> Option<Vec<String>> {
+        Some(vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            format!("echo 'inkline-highlight 1 indent'; read x; {then}"),
+        ])
+    }
+
+    #[test]
+    fn depths_come_from_a_helper_that_names_indent() {
+        register("csvm", fake("indent"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        let wait = Duration::from_secs(2);
+        assert_eq!(
+            depths("fn f {\n  a", 10, wait, || false),
+            Some(Depths { new: 1, current: 1 })
+        );
+        assert_eq!(
+            depths("fn f {\n  }", 10, wait, || false),
+            Some(Depths { new: 0, current: 0 })
+        );
+        assert_eq!(
+            depths("a {\n  b }", 8, wait, || false),
+            Some(Depths { new: 0, current: 1 }),
+            "the `}}` after the cursor goes to the new line"
+        );
+        assert!(waiting_fds().is_empty(), "nothing in flight");
+        assert!(take_notices().is_empty());
+    }
+
+    #[test]
+    fn a_helper_without_indent_is_not_asked() {
+        register("csvm", fake("words"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        let began = Instant::now();
+        assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
+        assert!(began.elapsed() < Duration::from_millis(50));
+        assert!(waiting_fds().is_empty(), "no request was sent");
+    }
+
+    #[test]
+    fn a_helper_that_is_not_running_is_not_asked() {
+        register("csvm", fake("indent"), None);
+        assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
+        assert_eq!(status_lines(), ["highlight csvm: not started"]);
+    }
+
+    #[test]
+    fn a_reply_with_only_end_gives_no_depths() {
+        register("csvm", fake("indent"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        assert_eq!(
+            depths("nodepth {", 9, Duration::from_secs(2), || false),
+            None
+        );
+        assert!(take_notices().is_empty());
+        assert_eq!(status_lines(), ["highlight csvm: running"]);
+    }
+
+    /// A colour request in flight is answered first, and its reply kept.
+    #[test]
+    fn a_colour_reply_in_flight_comes_first() {
+        register("csvm", fake("indent"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        ask(&["a 1"], Duration::ZERO);
+        assert_eq!(
+            depths("a {", 3, Duration::from_secs(2), || false),
+            Some(Depths { new: 1, current: 0 })
+        );
+        assert!(
+            ask(&["a 1"], Duration::ZERO)[0].is_some(),
+            "the colour reply was kept"
+        );
+    }
+
+    /// Depths that come too late are read and dropped, not taken for
+    /// colours, and do not turn the helper off.
+    #[test]
+    fn a_late_indent_reply_is_dropped() {
+        register("csvm", fake("slow-indent"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        let began = Instant::now();
+        assert_eq!(depths("a {", 3, INDENT_WAIT, || false), None);
+        assert!(began.elapsed() < Duration::from_millis(300));
+        let got = ask(&["b"], Duration::from_secs(3));
+        assert!(got[0].is_some(), "colours after the late depths");
+        assert!(take_notices().is_empty());
+        assert_eq!(status_lines(), ["highlight csvm: running"]);
+    }
+
+    #[test]
+    fn an_interrupt_ends_the_indent_wait() {
+        register("csvm", fake("slow-indent"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        let began = Instant::now();
+        assert_eq!(depths("a {", 3, Duration::from_secs(2), || true), None);
+        assert!(began.elapsed() < Duration::from_millis(100));
+        assert!(take_notices().is_empty());
+        assert!(!asked_anything("csvm"), "nothing is sent after a C-c");
+    }
+
+    /// Set by `c_c_during_the_indent_wait`, for its `interrupted`.
+    static C_C: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// A C-c that comes while inkline waits for the depths ends the wait.
+    #[test]
+    fn c_c_during_the_indent_wait() {
+        use std::sync::atomic::Ordering::Relaxed;
+        register("csvm", fake("slow-indent"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        let c_c = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            C_C.store(true, Relaxed);
+        });
+        let began = Instant::now();
+        let got = depths("a {", 3, Duration::from_secs(2), || C_C.load(Relaxed));
+        let took = began.elapsed();
+        c_c.join().unwrap();
+        assert_eq!(got, None);
+        assert!(asked_anything("csvm"), "the C-c came during the wait");
+        assert!(took < Duration::from_millis(300), "took {took:?}");
+        assert!(take_notices().is_empty());
+        assert_eq!(status_lines(), ["highlight csvm: running"]);
+    }
+
+    /// Whether a request to `name` is in flight.
+    fn asked_anything(name: &str) -> bool {
+        HELPERS.with_borrow(|helpers| {
+            helpers.iter().any(|h| {
+                h.name == name && matches!(&h.state, State::Running(r) if r.in_flight.is_some())
+            })
+        })
+    }
+
+    /// Once the wait is over, the indent request is not sent: its answer
+    /// could not be used.
+    #[test]
+    fn nothing_is_sent_after_the_indent_wait() {
+        register("csvm", fake("indent"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        assert_eq!(depths("a {", 3, Duration::ZERO, || false), None);
+        assert!(!asked_anything("csvm"));
+        assert!(take_notices().is_empty());
+    }
+
+    #[test]
+    fn a_broken_depth_line_turns_the_helper_off() {
+        register(
+            "csvm",
+            indenting_sh("printf ':depth x 1\\n:end 1\\n'; cat >/dev/null"),
+            None,
+        );
+        assert!(prepare_until_started("csvm").is_empty());
+        assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
+        assert_eq!(
+            take_notices(),
+            ["inkline: highlight csvm: off (bad reply: \":depth x 1\")"]
+        );
+    }
+
+    #[test]
+    fn a_helper_that_exits_while_asked_for_depths_is_off() {
+        register("csvm", indenting_sh("exit 0"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        assert_eq!(depths("a {", 3, Duration::from_secs(2), || false), None);
+        assert_eq!(take_notices(), ["inkline: highlight csvm: off (exited)"]);
+    }
+
+    /// A helper that writes lines without end, and never its depths, does
+    /// not hold up the new line past the wait.
+    #[test]
+    fn a_helper_that_keeps_writing_does_not_hold_up_the_indent_wait() {
+        register("csvm", indenting_sh("while :; do echo :x; done"), None);
+        assert!(prepare_until_started("csvm").is_empty());
+        let began = Instant::now();
+        assert_eq!(depths("a {", 3, INDENT_WAIT, || false), None);
+        let took = began.elapsed();
+        assert!(took < Duration::from_millis(200), "took {took:?}");
     }
 
     fn set(command: &str) -> ColorSet {

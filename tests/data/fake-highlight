@@ -10,13 +10,19 @@
 #   split    as words, sending the first span after 0.1 s and the rest of
 #            the reply 2 s later
 #   slow     as words, printing its first line after 0.3 s
+#   indent   as words, and names `indent`: answers an `:indent` request
+#            with depths counted from the `{`, `(`, `}` and `)` of the
+#            argument `:at` names; a script holding `nodepth` gets only
+#            `:end`
+#   slow-indent  as indent, answering every request after 0.5 s
 #   garbage  answer every request with a line that breaks the protocol
 #   exit     exit when the first request is complete
 #   version  print a wrong first line
 #   spew     after the first line, write `:x` lines without end
 # When $FAKE_LOG is set, it writes there, as it starts, `CSVM_X:` and the
 # value of that variable (`unset` when it is not set), then each request's
-# arguments, and `end` when its input ends.
+# arguments, `at:ARG OFFSET` for each `:indent` request, and `end` when its
+# input ends.
 export LC_ALL=C
 mode=$1
 [[ -n ${FAKE_LOG-} ]] && printf 'CSVM_X:%s\n' "${CSVM_X-unset}" >>"$FAKE_LOG"
@@ -25,7 +31,11 @@ if [[ $mode == version ]]; then
     exec cat >/dev/null
 fi
 [[ $mode == slow ]] && sleep 0.3
-echo "inkline-highlight 1"
+if [[ $mode == indent || $mode == slow-indent ]]; then
+    echo "inkline-highlight 1 indent"
+else
+    echo "inkline-highlight 1"
+fi
 if [[ $mode == spew ]]; then
     # Fifty lines a write: about 20 MB/s, without pause.
     lines=$(printf ':x\n%.0s' {1..50})
@@ -38,7 +48,7 @@ answer() {
         echo nonsense
         return
     fi
-    [[ $mode == late ]] && sleep 0.5
+    [[ $mode == late || $mode == slow-indent ]] && sleep 0.5
     [[ $mode == split ]] && sleep 0.1
     local s=${args[1]-} i=0 j n=${#args[1]} tok kind stage_start=1 spans=0
     while ((i < n)); do
@@ -71,10 +81,50 @@ answer() {
     echo ":end $id"
 }
 
+# The depth of the brackets in $1 before byte $2: each `{` or `(` adds
+# one, each `}` or `)` takes one off, never going below 0.
+depth_at() {
+    local s=$1 end=$2 i d=0
+    for ((i = 0; i < end; i++)); do
+        case ${s:i:1} in
+            '{' | '(') ((d += 1)) ;;
+            '}' | ')') ((d > 0)) && ((d -= 1)) ;;
+        esac
+    done
+    echo "$d"
+}
+
+# Whether $1, blanks skipped, starts with `}` or `)`.
+closes() {
+    local rest=${1#"${1%%[![:blank:]]*}"}
+    [[ $rest == '}'* || $rest == ')'* ]]
+}
+
+answer_indent() {
+    [[ $mode == slow-indent ]] && sleep 0.5
+    local s=${args[at_arg]-} off=$at_off
+    if [[ $s == *nodepth* ]]; then
+        echo ":end $id"
+        return
+    fi
+    local before=${s:0:off} after=${s:off}
+    local last=${before##*$'\n'}
+    local start=$((off - ${#last}))
+    local line=${s:start}
+    local new cur
+    new=$(depth_at "$s" "$off")
+    cur=$(depth_at "$s" "$start")
+    closes "${after%%$'\n'*}" && ((new > 0)) && ((new -= 1))
+    closes "${line%%$'\n'*}" && ((cur > 0)) && ((cur -= 1))
+    echo ":depth $new $cur"
+    echo ":end $id"
+}
+
 while IFS= read -r line; do
     set -- $line
     case $1 in
-        :request) id=$2 args=() ;;
+        :request) kind=colours id=$2 args=() ;;
+        :indent) kind=indent id=$2 args=() ;;
         :cwd) IFS= read -r -N "$2" cwd; IFS= read -r _ ;;
         :arg)
             IFS= read -r -N "$3" a
@@ -82,7 +132,13 @@ while IFS= read -r line; do
             args+=("$a")
             [[ -n ${FAKE_LOG-} ]] && printf '%s:%s\n' "$2" "$a" >>"$FAKE_LOG"
             ;;
-        :done) answer ;;
+        :at)
+            at_arg=$2 at_off=$3
+            [[ -n ${FAKE_LOG-} ]] && printf 'at:%s %s\n' "$2" "$3" >>"$FAKE_LOG"
+            ;;
+        :done)
+            if [[ $kind == indent ]]; then answer_indent; else answer; fi
+            ;;
     esac
 done
 [[ -n ${FAKE_LOG-} ]] && echo end >>"$FAKE_LOG"

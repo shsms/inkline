@@ -60,6 +60,17 @@ pub enum Read<T> {
     Bad(String),
 }
 
+impl<T> Read<T> {
+    /// The same read, with the message made into another by `f`.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Read<U> {
+        match self {
+            Read::Incomplete => Read::Incomplete,
+            Read::Done(message, used) => Read::Done(f(message), used),
+            Read::Bad(reason) => Read::Bad(reason),
+        }
+    }
+}
+
 /// Reads the helper's first line: `Done` with the feature words after
 /// `inkline-highlight 1` (empty for the bare line, and consuming that many
 /// bytes); `Bad("not a highlight helper")` for any other first line.
