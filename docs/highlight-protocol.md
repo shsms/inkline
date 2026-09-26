@@ -27,13 +27,14 @@ single spaces.
   runs in a session of its own, so `C-c` at the prompt does not reach it.
 - The helper keeps running while the shell does, and answers one request
   after another. When bash exits, or the helper is stopped (`inkline
-  reload`, `enable -d inkline`, the command registered again or its helper
-  removed with `nil`, or the helper turned off for one of the reasons
-  below), inkline closes its end of the socket, and the helper reads the
-  end of its input. There is no signal: the end of input is the only sign
-  to exit. A subshell that bash forked while the helper ran, such as
-  `while :; do sleep 100; done &`, holds a copy of inkline's end, so the
-  helper then sees the end of its input only once that subshell ends too.
+  reload`, `enable -d inkline`, the command registered again with another
+  program or its helper removed with `nil`, or the helper turned off for one
+  of the reasons below), inkline closes its end of the socket, and the
+  helper reads the end of its input. There is no signal: the end of input
+  is the only sign to exit. A subshell that bash forked while the helper
+  ran, such as `while :; do sleep 100; done &`, holds a copy of inkline's
+  end, so the helper then sees the end of its input only once that subshell
+  ends too.
 - The helper starts in `/`, so it never keeps a directory in use. Run the
   program's own parser on the text the program would get, and use the
   directory in each request (`:cwd`) to find files: that is the shell's
@@ -50,9 +51,10 @@ inkline-highlight 1
 The line may name extra requests the helper can answer, as words after the
 `1`, each after a single space: `inkline-highlight 1 indent`. inkline accepts
 the words, and only ever sends a helper the kinds of request it named.
-Version 1 defines no extra requests, so a helper should send the line with
-no words. Any other first line turns the helper off (`not a highlight
-helper`).
+Version 1 defines one extra request, `indent` (see "Indenting a new line"
+below). A helper that does not answer it sends the line with no words;
+inkline ignores words it does not know. Any other first line turns the
+helper off (`not a highlight helper`).
 
 ## A request
 
@@ -68,7 +70,8 @@ BYTES
 :done
 ```
 
-- `ID` counts up from 1, for each helper process.
+- `ID` counts up from 1, for each helper process. Colour requests and
+  indent requests share the count.
 - `:cwd` gives the shell's current directory (bash's `PWD`); it is empty
   when `PWD` is unset.
 - There is one `:arg` for each word of the command, in order. Argument 0 is
@@ -90,8 +93,8 @@ BYTES
 
 Redirections, such as `>out` or `2>&1`, and `VAR=x` words before the command
 name are not arguments. inkline sends a request only when it has none in
-flight to that helper, so a helper never has more than one request to
-answer at a time.
+flight to that helper, colour or indent, so a helper never has more than
+one request to answer at a time.
 
 ## A reply
 
@@ -214,6 +217,111 @@ and `$n` keeps bash's own colour, so the helper can colour the rest.
   reads, such as a CSV file's header, may show only once the arguments
   change, or on the next line: each new line at the prompt asks again.
 
+## Indenting a new line (`indent`)
+
+A helper that names `indent` on its first line (`inkline-highlight 1
+indent`) can also say how far in a new line goes inside an argument, such as
+a script. inkline asks it when C-j, or Enter on an unfinished command, adds
+a line with the cursor inside a quoted `final` argument of the helper's
+command, the helper is running, `inkline-indent` is above 0, no text is
+being pasted, and the line is not added from Lisp (by a Lisp command or a
+hook). It never sends this request to a helper that did not name `indent`.
+
+The request:
+
+```
+:indent ID
+:cwd LEN
+BYTES
+:arg KIND LEN
+BYTES
+…one :arg for each argument, as in a colour request…
+:at ARG OFFSET
+:done
+```
+
+- `:cwd` and the `:arg` blocks are as in a colour request.
+- `:at` is where the new line breaks: `ARG` is the argument's index, and
+  `OFFSET` a byte offset in that argument's `BYTES`, with
+  `0 <= OFFSET <= LEN`. The text after `OFFSET` goes to the new line.
+
+The reply:
+
+```
+:depth NEW CURRENT
+:end ID
+```
+
+- `NEW` is the nesting depth of the line that starts at `OFFSET`, the new
+  line; `CURRENT` is the depth of the line the cursor is on, the one being
+  split. Both are plain decimal numbers; 0 is the argument's top level.
+- A helper that cannot tell, for example because `OFFSET` is not in a part
+  it indents, sends only `:end ID`.
+- A `:depth` whose fields are not two plain decimal numbers, or hold a
+  number too large to read, a second `:depth`, a line that does not start
+  with `:`, or `:end` with the wrong `ID` turns the helper off
+  (`bad reply: "LINE"`). Other lines starting with `:` are ignored.
+
+What inkline does with it, with `step` the value of `inkline-indent` and
+`base` the indentation of the line the command's name is on:
+
+- A line at depth `d` starts with `base`, then `(1 + d) × step` spaces. A
+  depth above 20 counts as 20.
+- The new line gets `NEW`'s indentation, and the spaces and tabs around
+  the cursor go. The request still holds them: `OFFSET` counts them.
+- The cursor's line gets `CURRENT`'s indentation when the cursor is past
+  its first non-blank character, it is not the line the argument starts on,
+  and `CURRENT`'s indentation is less far in than the line's own: a line
+  that starts by closing a group moves back out. A line is never moved
+  further in.
+- inkline waits at most 100 ms for the answer: first for the reply to a
+  request already in flight, then for the depths. A reply that comes later
+  is read and dropped, and is not a failure. Without depths in time, with
+  only `:end`, or in a `raw` argument (inkline does not ask then), nothing
+  moves, and the new line gets the indentation of the cursor's line; when
+  the cursor is on the line the argument starts on, it gets depth 0's.
+- Between an empty pair of quotes, as pairing leaves them after `csvm "`,
+  inkline does not ask: the new line gets depth 0's indentation, and, when
+  the screen has room for both lines, the closing quote goes on a line of
+  its own below it, with `base`.
+
+For example, with `(setq inkline-indent 2)` in `/home/me/sales`, the user
+has typed this, and the cursor is at the end of the second line, before the
+closing quote:
+
+```
+csvm 'fn f(n) {
+    rename a=n'
+```
+
+The user presses C-j. Argument 1 is 24 bytes, and the cursor is at its end.
+inkline sends:
+
+```
+:indent 7
+:cwd 14
+/home/me/sales
+:arg final 4
+csvm
+:arg final 24
+fn f(n) {
+    rename a=n
+:at 1 24
+:done
+```
+
+The helper answers that both lines are inside one group:
+
+```
+:depth 1 1
+:end 7
+```
+
+and the new line starts with `(1 + 1) × 2` = 4 spaces. When the user then
+types `}` and presses C-j, the helper answers `:depth 0 0` (the `}` closes
+the group), so the `}` line moves out to 2 spaces, and the new line starts
+there too.
+
 ## What inkline ignores
 
 So that later versions can add to a reply, inkline ignores, without turning
@@ -240,8 +348,9 @@ off (REASON)`. The reasons:
   alone or followed by words.
 - `bad reply: "LINE"`: this line of the reply, cut to 40 bytes, breaks the
   protocol. That is a line that does not start with `:` (an empty line
-  too); `:span`, `:error` or `:end` with fields that do not parse; a second
-  `:error` in one reply; or `:end` with the wrong `ID`.
+  too); `:span`, `:error`, `:depth` or `:end` with fields that do not
+  parse; a second `:error` or `:depth` in one reply; or `:end` with the
+  wrong `ID`.
 - `bad reply: too much output`: the helper wrote more than 1 MiB without
   finishing its first line or a reply.
 - `bad reply: request not read`: the helper stopped reading its input, and
@@ -255,7 +364,8 @@ off (REASON)`. The reasons:
 ## The rules a helper must keep
 
 - Write the first line as soon as it starts, before reading anything.
-- Answer every request, in order, with exactly one reply ending in `:end ID`.
+- Answer every request, `:indent` ones too, in order, with exactly one
+  reply ending in `:end ID`.
 - Flush the output after each `:end` line, and after the first line. The
   output is a socket, not a terminal, so most languages buffer it until
   told to flush; a reply stuck in the buffer never reaches inkline.
@@ -273,7 +383,8 @@ line, reading `:cwd` and each `:arg` by its length with `read -N` (under
 `LC_ALL=C`, so that bash counts bytes, not characters), and writing the
 `:span`, `:error` and `:end` lines. Its first argument picks what it does,
 so that it can also break the protocol for tests; `words` is the plain
-case. Try it by hand:
+case. `indent` also names `indent` and answers `:indent` requests, counting
+the brackets `{`, `(`, `}` and `)`. Try it by hand:
 
 ```bash
 printf ':request 1\n:cwd 1\n/\n:arg final 4\ncsvm\n:arg final 16\nsort id | head 5\n:done\n' |
