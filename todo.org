@@ -161,6 +161,14 @@ When C-j adds a line inside a script, a blank right after a backslash is
 kept (it may be an escaped space), so it stays at the end of the line
 above.
 
+** TODO Esc Esc after Tab no longer lists the choices
+
+In readline's emacs keymap, =M-ESC= (Esc Esc) is also ~complete~: after
+a Tab that completed nothing more, it lists the choices, as a second Tab
+does. Tab now runs ~menu-take~, so readline records ~menu-take~ as the
+last command, and the ~complete~ that Esc Esc runs next does not see a
+completion just before it: it does not list. Tab Tab still lists.
+
 * Code
 
 ** TODO Write the "single function" check for hooks once
