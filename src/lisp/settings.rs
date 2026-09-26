@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use tulisp::{TulispContext, TulispObject};
 
-use crate::colors::Colors;
+use crate::colors::{ColorSet, Colors};
 
 const DEFINITIONS: &str = "
 (defvar inkline-indent 4)
@@ -89,6 +89,25 @@ pub fn parse_colors(v: &TulispObject) -> Result<Colors, String> {
     if !v.consp() {
         return Err(BAD_COLORS.to_owned());
     }
+    Colors::from_entries(&color_pairs(v)?)
+}
+
+/// A command's own colours (`inkline-highlight-arguments`' third
+/// argument), in the forms `inkline-colors` takes. Unlike `inkline-colors`,
+/// a string with an entry that cannot be read is an error.
+pub fn parse_color_set(v: &TulispObject) -> Result<ColorSet, String> {
+    if v.stringp() {
+        return ColorSet::parse(&v.as_string().map_err(|e| e.desc())?);
+    }
+    if !v.consp() {
+        return Err(BAD_COLORS.to_owned());
+    }
+    ColorSet::from_entries(&color_pairs(v)?)
+}
+
+/// The `(NAME . VALUE)` pairs of the list `v`, a name being a symbol or a
+/// string and a value a string.
+fn color_pairs(v: &TulispObject) -> Result<Vec<(String, String)>, String> {
     let mut entries = Vec::new();
     let mut pairs = v.base_iter();
     for pair in pairs.by_ref() {
@@ -108,7 +127,7 @@ pub fn parse_colors(v: &TulispObject) -> Result<Colors, String> {
         entries.push((name, codes));
     }
     pairs.take_error().map_err(|_| BAD_COLORS.to_owned())?;
-    Colors::from_entries(&entries)
+    Ok(entries)
 }
 
 /// The value of the variable `pick` names, if it is set.
@@ -356,5 +375,39 @@ mod tests {
         assert_eq!(colors().sgr(Kind::Command), "35");
         crate::lisp::eval(r#"(setcdr (car inkline-colors) "36")"#).unwrap();
         assert_eq!(colors().sgr(Kind::Command), "36");
+    }
+
+    #[test]
+    fn command_colour_values() {
+        let mut ctx = TulispContext::new();
+        let set = parse_color_set(&value(
+            &mut ctx,
+            r#"'((command . "bold magenta") ("script" . "on grey23"))"#,
+        ))
+        .unwrap();
+        let c = Colors::default().layered(&set);
+        assert_eq!((c.sgr(Kind::Command), c.script()), ("1;35", "48;5;255"));
+        let set = parse_color_set(&value(&mut ctx, r#""number=yellow""#)).unwrap();
+        assert_eq!(Colors::default().layered(&set).sgr(Kind::Number), "33");
+        assert_eq!(
+            parse_color_set(&value(&mut ctx, r#"'((suggestion . "1"))"#)),
+            Err("unknown colour name suggestion".to_owned())
+        );
+        assert_eq!(
+            parse_color_set(&value(&mut ctx, r#""command=1:bogus=2""#)),
+            Err("unknown colour name bogus".to_owned())
+        );
+        assert_eq!(
+            parse_color_set(&value(&mut ctx, "5")),
+            Err(BAD_COLORS.to_owned())
+        );
+        assert_eq!(
+            parse_color_set(&value(&mut ctx, r#"'((command . 32))"#)),
+            Err("command: expected a string".to_owned())
+        );
+        assert_eq!(
+            parse_color_set(&value(&mut ctx, r#"'((command . "1") . 5)"#)),
+            Err(BAD_COLORS.to_owned())
+        );
     }
 }

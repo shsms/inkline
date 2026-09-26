@@ -86,6 +86,20 @@ impl Colors {
         &self.error
     }
 
+    /// These colours with `set`'s on top.
+    pub fn layered(&self, set: &ColorSet) -> Colors {
+        let mut colors = self.clone();
+        for (slot, codes) in colors.kinds.iter_mut().zip(&set.kinds) {
+            if let Some(codes) = codes {
+                slot.clone_from(codes);
+            }
+        }
+        if let Some(script) = &set.script {
+            colors.script.clone_from(script);
+        }
+        colors
+    }
+
     /// The default colours with `entries` (name, value in codes or words)
     /// applied on top. The first entry for a name wins; an empty value means
     /// no colour, and turns the underline off for `error`.
@@ -121,6 +135,59 @@ impl Colors {
 impl Default for Colors {
     fn default() -> Colors {
         Colors::parse("")
+    }
+}
+
+/// A command's own colours (`inkline-highlight-arguments`' third
+/// argument): SGR codes for some of the nine kinds a helper sends and for
+/// `script`. The ones left out come from `inkline-colors`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ColorSet {
+    /// By `Kind as usize`; `Unknown` is never set.
+    kinds: [Option<String>; 10],
+    script: Option<String>,
+}
+
+impl ColorSet {
+    /// A set from `entries` (name, value in codes or words). The first
+    /// entry for a name wins. A name other than the nine a helper sends
+    /// and `script`, or a value that cannot be read, is an error, in a
+    /// later entry for a name too.
+    pub fn from_entries(entries: &[(String, String)]) -> Result<ColorSet, String> {
+        let mut set = ColorSet::default();
+        let mut seen: Vec<&str> = Vec::new();
+        for (name, value) in entries {
+            let kind = crate::helper::protocol::kind_named(name);
+            if kind.is_none() && name != "script" {
+                return Err(format!("unknown colour name {name}"));
+            }
+            let codes = codes_for(value).map_err(|e| format!("{name}: {e}"))?;
+            if seen.contains(&name.as_str()) {
+                continue;
+            }
+            seen.push(name);
+            match kind {
+                Some(kind) => set.kinds[kind as usize] = Some(codes),
+                None => set.script = Some(codes),
+            }
+        }
+        Ok(set)
+    }
+
+    /// A set from `spec`, in `LS_COLORS`'s format as `Colors::parse` reads
+    /// it, except that every entry must be right.
+    pub fn parse(spec: &str) -> Result<ColorSet, String> {
+        let mut list = Vec::new();
+        for entry in entries(spec) {
+            if entry.is_empty() {
+                continue;
+            }
+            let Some((name, value)) = entry.split_once('=') else {
+                return Err(format!("{entry:?} is not NAME=VALUE"));
+            };
+            list.push((name.to_owned(), value.to_owned()));
+        }
+        ColorSet::from_entries(&list)
     }
 }
 
@@ -491,5 +558,93 @@ mod tests {
         let colors = Colors::parse("command=bold magenta:script=on grey3");
         assert_eq!(colors.sgr(Kind::Command), "1;35");
         assert_eq!(colors.script(), "48;5;235");
+    }
+
+    #[test]
+    fn a_command_set_goes_over_the_colours() {
+        let base = Colors::parse("variable=34:script=2");
+        let set = ColorSet::from_entries(&entries(&[
+            ("command", "bold magenta"),
+            ("script", "on grey3"),
+            ("command", "1"),
+        ]))
+        .unwrap();
+        let colors = base.layered(&set);
+        assert_eq!(colors.sgr(Kind::Command), "1;35", "the first entry wins");
+        assert_eq!(colors.script(), "48;5;235");
+        assert_eq!(
+            colors.sgr(Kind::Variable),
+            "34",
+            "left out: the colours below"
+        );
+        assert_eq!(colors.suggestion(), base.suggestion());
+        assert_eq!(colors.error(), base.error());
+        let off = ColorSet::from_entries(&entries(&[("script", "")])).unwrap();
+        assert_eq!(
+            base.layered(&off).script(),
+            "",
+            "an empty value is no style"
+        );
+    }
+
+    #[test]
+    fn a_command_set_takes_only_the_helper_names() {
+        for name in [
+            "command", "keyword", "option", "operator", "string", "number", "variable", "function",
+            "comment", "script",
+        ] {
+            assert!(
+                ColorSet::from_entries(&entries(&[(name, "1")])).is_ok(),
+                "{name}"
+            );
+        }
+        for name in ["unknown", "suggestion", "error", "comand"] {
+            assert_eq!(
+                ColorSet::from_entries(&entries(&[(name, "1")])),
+                Err(format!("unknown colour name {name}"))
+            );
+        }
+        assert_eq!(
+            ColorSet::from_entries(&entries(&[("number", "on")])),
+            Err("number: \"on\" needs a colour after it".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_command_set_string_must_be_right() {
+        let set = ColorSet::parse("command=bold magenta:number=38:5:208").unwrap();
+        let colors = Colors::default().layered(&set);
+        assert_eq!(
+            (colors.sgr(Kind::Command), colors.sgr(Kind::Number)),
+            ("1;35", "38:5:208")
+        );
+        assert_eq!(ColorSet::parse(""), Ok(ColorSet::default()));
+        assert_eq!(
+            ColorSet::parse("command=magneta"),
+            Err("command: unknown colour word \"magneta\"".to_owned())
+        );
+        assert_eq!(
+            ColorSet::parse("bogus=1"),
+            Err("unknown colour name bogus".to_owned())
+        );
+        assert_eq!(
+            ColorSet::parse("command"),
+            Err("\"command\" is not NAME=VALUE".to_owned())
+        );
+    }
+
+    /// The first entry for a name wins, but a later one is checked too.
+    #[test]
+    fn a_command_sets_later_entries_must_be_right() {
+        let set = ColorSet::parse("command=31:command=32").unwrap();
+        assert_eq!(Colors::default().layered(&set).sgr(Kind::Command), "31");
+        assert_eq!(
+            ColorSet::parse("command=31:command=magneta"),
+            Err("command: unknown colour word \"magneta\"".to_owned())
+        );
+        assert_eq!(
+            ColorSet::from_entries(&entries(&[("number", "1"), ("number", "on")])),
+            Err("number: \"on\" needs a colour after it".to_owned())
+        );
     }
 }
