@@ -1231,8 +1231,12 @@ fn repaint_line() -> bool {
     let show_menu = crate::lisp::settings::show_menu();
     let show_suggestion = crate::lisp::settings::show_suggestion();
     // With both the menu and the grey text off, nothing is gathered.
-    let menu = (editing && !line.is_empty() && (show_menu || show_suggestion) && !is_hidden(&line))
-        .then(|| menu_for(&line, point));
+    let menu = (editing
+        && !line.is_empty()
+        && (show_menu || show_suggestion)
+        && !is_hidden(&line)
+        && !recalled(&line))
+    .then(|| menu_for(&line, point));
     let suggestion = menu
         .as_ref()
         .filter(|_| show_suggestion)
@@ -1343,6 +1347,14 @@ fn menu_for(line: &str, point: usize) -> Menu {
 /// Whether `C-g` hid the menu on this text of the line.
 fn is_hidden(line: &str) -> bool {
     STATE.with_borrow(|s| s.hidden_on.as_deref() == Some(line))
+}
+
+/// Whether `line` is a history entry brought back as it was: readline's
+/// history position is on an entry and the line's text is that entry's. Such
+/// a line has no menu and no grey text, so `C-p` and `C-n` keep walking
+/// history; changing its text ends this.
+fn recalled(line: &str) -> bool {
+    ffi::history_entry_here_is(line)
 }
 
 /// Whether the last draw in plain editing showed the menu, and it is for

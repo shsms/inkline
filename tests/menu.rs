@@ -570,3 +570,39 @@ fn ctrl_g_without_a_menu_aborts_and_the_shell_goes_on() {
     sh.send("\x15echo ok\r");
     sh.wait_for("the output", |s| has_row(s, "ok"));
 }
+
+/// A line brought back from history shows no menu, so `C-p` and `C-n` keep
+/// walking history even where each line starts an older entry.
+#[test]
+fn ctrl_p_and_ctrl_n_walk_history_past_lines_that_start_older_ones() {
+    let mut sh = Shell::start(with_history(vec!["ls -la -h", "ls -la", "ls"]));
+    sh.settle();
+    for (row, col) in [("$ ls", 4), ("$ ls -la", 8), ("$ ls -la -h", 11)] {
+        sh.send(C_P);
+        let s = sh.wait_for(row, |s| {
+            cursor_row(s) == row && s.cursor_position() == (0, col)
+        });
+        assert_eq!(row_text(&s, 1), "", "no menu: {}", dump(&s));
+    }
+    sh.send(C_N);
+    sh.wait_for("the newer entry", |s| {
+        cursor_row(s) == "$ ls -la" && s.cursor_position() == (0, 8)
+    });
+}
+
+#[test]
+fn a_recalled_line_shows_no_menu_until_it_changes() {
+    let mut sh = Shell::start(with_history(vec!["git status", "git st"]));
+    sh.settle();
+    sh.send(C_P);
+    sh.wait_for("the entry", |s| {
+        cursor_row(s) == "$ git st" && s.cursor_position() == (0, 8)
+    });
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git st", "no grey text: {}", dump(&s));
+    assert_eq!(row_text(&s, 1), "", "no menu: {}", dump(&s));
+    sh.send("a");
+    sh.wait_for("the menu again", |s| {
+        cursor_row(s) == "$ git status" && row_text(s, 1) == "h  git status"
+    });
+}

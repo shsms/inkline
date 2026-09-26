@@ -399,6 +399,7 @@ unsafe extern "C" {
     static mut history_base: c_int;
     static mut history_length: c_int;
     fn history_get(offset: c_int) -> *mut HistEntry;
+    fn current_history() -> *mut HistEntry;
 }
 
 /// Whether readline is doing plain editing: not searching, reading a count,
@@ -454,6 +455,19 @@ pub fn history_find_map<T>(mut f: impl FnMut(&str) -> Option<T>) -> Option<T> {
         }
     }
     None
+}
+
+/// Whether readline's history position is on an entry, not past the newest
+/// one, and that entry's text is `text`. Readline moves the position as it
+/// puts history entries in the line; a new line starts past the newest
+/// entry.
+pub fn history_entry_here_is(text: &str) -> bool {
+    // SAFETY: current_history gives NULL past the newest entry, else a valid
+    // entry whose line is NULL or a C string.
+    unsafe {
+        let entry = current_history();
+        !entry.is_null() && c_str((*entry).line).is_some_and(|l| l.to_bytes() == text.as_bytes())
+    }
 }
 
 unsafe extern "C" {
