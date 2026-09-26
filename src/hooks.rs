@@ -45,6 +45,9 @@ struct State {
     /// How many rows below the cursor the message on screen is, if one is
     /// showing.
     message_rows: Option<usize>,
+    /// How many rows below the cursor the menu on screen starts, if one is
+    /// showing.
+    menu_rows: Option<usize>,
     /// Set when bash may have printed while the line was being edited: the
     /// cursor may not be where readline thinks it is, so readline draws the
     /// rest of the line on its own. Cleared when the next line starts.
@@ -66,6 +69,16 @@ struct State {
     /// Whether the last vertical command that deferred to history did a
     /// search, so a further one continues it instead of starting fresh.
     search_continues: bool,
+}
+
+impl State {
+    /// Forgets what the last draw left after the line: the suggestion's
+    /// column, and how many rows below the cursor the message starts, or the
+    /// menu when there is no message. Both row counts are cleared.
+    fn take_drawn(&mut self) -> (Option<usize>, Option<usize>) {
+        let menu_rows = self.menu_rows.take();
+        (self.shown_at.take(), self.message_rows.take().or(menu_rows))
+    }
 }
 
 static REGISTER: Once = Once::new();
@@ -134,6 +147,7 @@ thread_local! {
         suggestion: None,
         shown_at: None,
         message_rows: None,
+        menu_rows: None,
         displaced: false,
         unloaded: false,
         checker: Checker::new(),
@@ -322,7 +336,7 @@ fn enable() {
 /// Puts readline's functions back. Also the recovery after a panic, so it must
 /// not depend on `STATE` being borrowable.
 fn disable() {
-    let _ = catch_unwind(erase_suggestion_and_message);
+    let _ = catch_unwind(erase_below);
     let _ = MESSAGE.try_with(|m| m.replace(None));
     let _ = ACCEPT_ERRORS.try_with(|e| e.try_borrow_mut().map(|mut e| e.clear()));
     crate::lisp::hooks::forget_line();
@@ -658,9 +672,9 @@ fn guard<R>(f: impl FnOnce() -> R, on_panic: impl FnOnce() -> R) -> R {
 
 /// Readline's key reader. inkline waits for the key itself, so that:
 ///
-/// - once the key arrives, the suggestion is erased before readline runs the
-///   key's command, so Enter, `C-o`, a completion listing or `C-c` never leave
-///   grey text behind;
+/// - once the key arrives, the suggestion, the message and the menu are
+///   erased before readline runs the key's command, so Enter, `C-o`, a
+///   completion listing or `C-c` never leave them behind;
 /// - after a signal interrupts the wait and bash returns to it (a window
 ///   resize, a background job ending), inkline repaints the line straight away;
 ///   for a resize, readline has redrawn it first. If bash may have printed
@@ -788,7 +802,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             ffi::Wait::Signal(libc::SIGHUP | libc::SIGTERM) => {
                 guard(
                     || {
-                        erase_suggestion_and_message();
+                        erase_below();
                         ffi::flush_out();
                     },
                     || (),
@@ -833,10 +847,12 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             // when readline redraws. The key's command may run a `bind -x`
             // command, whose output a terminal would hold back while the
             // update is open.
-            if STATE.with_borrow(|s| s.shown_at.is_some() || s.message_rows.is_some()) {
+            if STATE.with_borrow(|s| {
+                s.shown_at.is_some() || s.message_rows.is_some() || s.menu_rows.is_some()
+            }) {
                 begin_update();
             }
-            erase_suggestion_and_message();
+            erase_below();
             clear_message();
         },
         || (),
@@ -887,7 +903,7 @@ fn before_signal(signal: c_int) {
             s.suggestion = None;
         });
     }
-    erase_suggestion_and_message();
+    erase_below();
     if may_print {
         // What bash prints must not wait behind an open update.
         end_update();
@@ -959,8 +975,8 @@ extern "C" fn pre_input() -> c_int {
 /// cursor at the start of the row below the line, so the suggestion is erased
 /// there: one row up, or on the cursor's own row when the line exactly filled
 /// its last row and the suggestion started at column 0 of the next. Clearing to
-/// the end of the screen also clears the suggestion's other rows and the
-/// message, which is on the cursor's row or the row below it. The errors of
+/// the end of the screen also clears the suggestion's other rows, the message
+/// and the menu, which are on the cursor's row or below it. The errors of
 /// accept functions that let the line run then go there, each on a row of its
 /// own, above the command's output. Readline's own drawing function goes back
 /// in place, so a later terminal setup (such as after `TERM` changes) sees it.
@@ -973,12 +989,12 @@ extern "C" fn deprep_terminal() {
                 crate::lisp::hooks::forget_line();
             }
             clear_message();
-            let (shown_at, message_rows) = STATE.with_borrow_mut(|s| {
+            let (shown_at, below) = STATE.with_borrow_mut(|s| {
                 // A pause asked for belongs to the line that ends.
                 s.wants_pause = false;
-                (s.shown_at.take(), s.message_rows.take())
+                s.take_drawn()
             });
-            if (shown_at.is_some() || message_rows.is_some()) && ffi::line_done() {
+            if (shown_at.is_some() || below.is_some()) && ffi::line_done() {
                 let erase = match shown_at {
                     Some(col) if col > 0 => format!("\x1b[A\x1b[{}G\x1b[J\x1b[B\r", col + 1),
                     _ => "\r\x1b[J".to_string(),
@@ -1001,19 +1017,18 @@ extern "C" fn deprep_terminal() {
     ffi::call_deprep(originals().deprep);
 }
 
-/// Erases the suggestion and the message the last draw left on screen, with
-/// the cursor where that draw left it. A suggestion starts at the cursor, at
-/// the end of the line, with the message and any other suggestion rows below:
-/// clearing from the cursor to the end of the screen erases them all. A
-/// message alone is erased from the start of its row down, and the cursor
-/// comes back: the line may go on after the cursor, and readline would not
-/// draw it again.
-fn erase_suggestion_and_message() {
-    let (shown, message_rows) =
-        STATE.with_borrow_mut(|s| (s.shown_at.take(), s.message_rows.take()));
+/// Erases what the last draw left after the line: the suggestion, the
+/// message and the menu, with the cursor where that draw left it. A
+/// suggestion starts at the cursor, at the end of the line, with the message
+/// and the menu below it: clearing from the cursor to the end of the screen
+/// erases them all. Otherwise what is under the line is erased from the
+/// start of its first row down, and the cursor comes back: the line may go
+/// on after the cursor, and readline would not draw it again.
+fn erase_below() {
+    let (shown, below) = STATE.with_borrow_mut(State::take_drawn);
     if shown.is_some() {
         ffi::write_queued(b"\x1b[J");
-    } else if let Some(rows) = message_rows {
+    } else if let Some(rows) = below {
         ffi::write_queued(format!("\x1b7\x1b[{rows}B\r\x1b[J\x1b8").as_bytes());
     }
 }
@@ -1052,7 +1067,7 @@ extern "C" fn redisplay() {
             }
             let lisp_ran = after_key && crate::lisp::hooks::after_key();
             begin_update();
-            erase_suggestion_and_message();
+            erase_below();
             lisp_ran
         },
         // The panic's notice ended on a new row: readline's draw below starts
@@ -1082,7 +1097,7 @@ extern "C" fn redisplay() {
 /// key.
 fn redraw() {
     begin_update();
-    erase_suggestion_and_message();
+    erase_below();
     draw();
     end_update();
     ffi::flush_out();
@@ -1222,6 +1237,7 @@ fn repaint_line() -> bool {
         ffi::write_queued(&out.bytes);
         s.shown_at = out.suggestion_col;
         s.message_rows = out.message_rows;
+        s.menu_rows = out.menu_rows;
         s.underlined = error;
         if let (Some(_), Some(rest)) = (out.suggestion_col, suggestion) {
             s.suggestion = Some((line.clone(), rest));
