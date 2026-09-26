@@ -6,8 +6,8 @@ use std::ffi::{c_char, c_int};
 use std::io::Write;
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Once;
 use std::sync::atomic::Ordering;
+use std::sync::{Once, OnceLock};
 use std::time::Instant;
 
 use crate::args::{self, CommandArgs};
@@ -54,6 +54,11 @@ struct State {
     /// The line text `C-g` hid the menu on: no menu and no grey text show
     /// until a draw in plain editing finds another text.
     hidden_on: Option<String>,
+    /// The line text a history search left, while it stays unchanged: such
+    /// a line counts as brought back from history. Readline before 8.3 puts
+    /// its history place back after a search, so `recalled` cannot tell it
+    /// from that place alone.
+    searched: Option<String>,
     /// Set when bash may have printed while the line was being edited: the
     /// cursor may not be where readline thinks it is, so readline draws the
     /// rest of the line on its own. Cleared when the next line starts.
@@ -159,6 +164,7 @@ thread_local! {
         menu_rows: None,
         menu: None,
         hidden_on: None,
+        searched: None,
         displaced: false,
         unloaded: false,
         checker: Checker::new(),
@@ -962,6 +968,7 @@ extern "C" fn pre_input() -> c_int {
                 s.search_continues = false;
                 s.menu = None;
                 s.hidden_on = None;
+                s.searched = None;
             });
             // A new line at the main prompt drops the mode servers' replies;
             // a line read while Lisp runs is part of the line Lisp runs in.
@@ -1188,6 +1195,13 @@ fn repaint_line() -> bool {
     let editing = ffi::normal_editing();
     let line = ffi::line();
     let point = ffi::point();
+    // A search that found nothing leaves the line as it was, which is then
+    // no history entry.
+    let searched = editing
+        && ran_history_search()
+        && line
+            .as_deref()
+            .is_some_and(|l| ffi::history_find_map(|entry| (entry == l).then_some(())).is_some());
     STATE.with_borrow_mut(|s| {
         if editing {
             // The menu counts as shown only once this draw puts it on
@@ -1196,6 +1210,11 @@ fn repaint_line() -> bool {
             // the count.
             if let Some(m) = &mut s.menu {
                 m.shown = false;
+            }
+            if searched {
+                s.searched.clone_from(&line);
+            } else if s.searched != line {
+                s.searched = None;
             }
             s.suggestion = None;
             // A kept menu, and its pick, belong to one text of the line and
@@ -1350,11 +1369,44 @@ fn is_hidden(line: &str) -> bool {
 }
 
 /// Whether `line` is a history entry brought back as it was: readline's
-/// history position is on an entry and the line's text is that entry's. Such
-/// a line has no menu and no grey text, so `C-p` and `C-n` keep walking
-/// history; changing its text ends this.
+/// history position is on an entry and the line's text is that entry's, or
+/// the line is the text a history search left (`searched`). Such a line has
+/// no menu and no grey text, so `C-p` and `C-n` keep walking history;
+/// changing its text ends this.
 fn recalled(line: &str) -> bool {
-    ffi::history_entry_here_is(line)
+    ffi::history_entry_here_is(line) || STATE.with_borrow(|s| s.searched.as_deref() == Some(line))
+}
+
+/// Whether the key just handled ran a history search that puts a history
+/// entry in the line: readline's prefix, substring and non-incremental
+/// searches, or an Up or Down command that went on to a search.
+fn ran_history_search() -> bool {
+    static SEARCHES: OnceLock<Vec<ffi::CommandFn>> = OnceLock::new();
+    let last = ffi::last_command();
+    if multiline::is_vertical(last) {
+        return STATE.with_borrow(|s| s.search_continues);
+    }
+    let Some(last) = last else {
+        return false;
+    };
+    SEARCHES
+        .get_or_init(|| {
+            [
+                "history-search-backward",
+                "history-search-forward",
+                "history-substring-search-backward",
+                "history-substring-search-forward",
+                "non-incremental-reverse-search-history",
+                "non-incremental-forward-search-history",
+                "non-incremental-reverse-search-history-again",
+                "non-incremental-forward-search-history-again",
+            ]
+            .into_iter()
+            .filter_map(ffi::named_command)
+            .collect()
+        })
+        .iter()
+        .any(|&f| std::ptr::fn_addr_eq(f, last))
 }
 
 /// Whether the last draw in plain editing showed the menu, and it is for

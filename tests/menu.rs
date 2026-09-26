@@ -606,3 +606,76 @@ fn a_recalled_line_shows_no_menu_until_it_changes() {
         cursor_row(s) == "$ git status" && row_text(s, 1) == "h  git status"
     });
 }
+
+/// Whether `C-p` walked history from `git st`, the line a search left: to
+/// the entry before it or, where readline puts its history place back after
+/// a search (before 8.3), to the newest entry. No menu row is picked.
+fn walked_back_from_the_search(s: &vt100::Screen) -> bool {
+    let row = cursor_row(s);
+    (row == "$ ls" || row == "$ git status")
+        && s.cursor_position() == (0, row.len() as u16)
+        && !picked(s, 1)
+}
+
+/// A line that Up found with `previous-line-or-search` counts as brought
+/// back from history: after `C-e` it shows no menu and no grey text, and
+/// `C-p` walks history. inkline binds Up to `previous-line-or-search` where
+/// inputrc binds it to `history-search-backward`.
+#[test]
+fn a_line_found_with_previous_line_or_search_shows_no_menu() {
+    let mut sh = Shell::start(Options {
+        inputrc: Some("\"\\e[A\": history-search-backward\n".into()),
+        history: vec!["git status", "git st", "ls"],
+        ..Options::default()
+    });
+    sh.send("git s");
+    sh.wait_for("the menu", |s| row_text(s, 1) == "h  git st");
+    sh.send("\x1b[A");
+    sh.wait_for("the found entry", |s| {
+        cursor_row(s) == "$ git st" && row_text(s, 1).is_empty()
+    });
+    sh.send("\x05");
+    sh.wait_for("the cursor at the end", |s| s.cursor_position() == (0, 8));
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git st", "no grey text: {}", dump(&s));
+    assert_eq!(row_text(&s, 1), "", "no menu: {}", dump(&s));
+    sh.send(C_P);
+    sh.wait_for("an older entry", walked_back_from_the_search);
+}
+
+/// The same for a line that `M-p` (`non-incremental-reverse-search-history`)
+/// found.
+#[test]
+fn a_line_found_with_a_non_incremental_search_shows_no_menu() {
+    let mut sh = Shell::start(with_history(vec!["git status", "git st", "ls"]));
+    sh.settle();
+    sh.send("\x1bp");
+    sh.settle();
+    sh.send("git st\r");
+    sh.wait_for("the found entry", |s| {
+        cursor_row(s) == "$ git st" && s.cursor_position() == (0, 2)
+    });
+    sh.send("\x05");
+    sh.wait_for("the cursor at the end", |s| s.cursor_position() == (0, 8));
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git st", "no grey text: {}", dump(&s));
+    assert_eq!(row_text(&s, 1), "", "no menu: {}", dump(&s));
+    sh.send(C_P);
+    sh.wait_for("an older entry", walked_back_from_the_search);
+}
+
+/// A search with Up (`previous-line-or-search`, as above) that finds nothing
+/// leaves the typed line, and its menu, as they were.
+#[test]
+fn a_search_that_finds_nothing_keeps_the_menu() {
+    let mut sh = Shell::start(Options {
+        inputrc: Some("\"\\e[A\": history-search-backward\n".into()),
+        ..with_init(WORDS, vec!["ls"])
+    });
+    sh.send("echo s");
+    sh.wait_for("the menu", |s| row_text(s, 1) == "l  switch");
+    sh.send("\x1b[A");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ echo switch", "{}", dump(&s));
+    assert_eq!(row_text(&s, 1), "l  switch", "{}", dump(&s));
+}
