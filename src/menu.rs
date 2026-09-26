@@ -235,6 +235,63 @@ pub fn grey<'a>(line: &str, point: usize, item: &'a Item) -> Option<&'a str> {
     (!rest.is_empty()).then_some(rest)
 }
 
+/// The menu for one line and cursor: its items, the picked row, and
+/// whether the last draw showed it.
+#[derive(Clone, Debug)]
+pub struct Menu {
+    pub line: String,
+    pub point: usize,
+    pub items: Vec<Item>,
+    /// The picked item's index; None until `C-n` or `C-p`.
+    pub picked: Option<usize>,
+    /// Whether the last draw put the menu on screen.
+    pub shown: bool,
+}
+
+impl Menu {
+    pub fn new(line: &str, point: usize, items: Vec<Item>) -> Menu {
+        Menu {
+            line: line.to_owned(),
+            point,
+            items,
+            picked: None,
+            shown: false,
+        }
+    }
+
+    /// Whether this menu was made for `line` with the cursor at `point`.
+    pub fn is_for(&self, line: &str, point: usize) -> bool {
+        self.point == point && self.line == line
+    }
+
+    /// Moves the pick `count` rows down, or up when `down` is false (a
+    /// negative count goes the other way), wrapping at either end. With no
+    /// pick yet, the first step down picks the top item and the first step
+    /// up the bottom one.
+    pub fn step(&mut self, down: bool, count: i64) {
+        let total = self.items.len() as i64;
+        if total == 0 {
+            return;
+        }
+        let delta = if down { count } else { -count };
+        let from = match self.picked {
+            Some(i) => i as i64,
+            None if delta >= 0 => -1,
+            None => total,
+        };
+        self.picked = Some((from + delta).rem_euclid(total) as usize);
+    }
+
+    pub fn picked_item(&self) -> Option<&Item> {
+        self.items.get(self.picked?)
+    }
+
+    /// The item the grey text comes from: the picked one, else the top one.
+    pub fn grey_item(&self) -> Option<&Item> {
+        self.picked_item().or(self.items.first())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +494,61 @@ mod tests {
         // A fuzzy match has no grey text; nothing left to add has none.
         assert_eq!(grey("git st", 6, &word("sxt", 4, 6)), None);
         assert_eq!(grey("git st", 6, &word("st", 4, 6)), None);
+    }
+
+    fn menu_of(n: usize) -> Menu {
+        let items = (0..n).map(|i| word(&format!("w{i}"), 0, 0)).collect();
+        Menu::new("", 0, items)
+    }
+
+    #[test]
+    fn stepping_down_starts_at_the_top_and_wraps() {
+        let mut m = menu_of(3);
+        assert_eq!(m.picked, None);
+        m.step(true, 1);
+        assert_eq!(m.picked, Some(0));
+        m.step(true, 2);
+        assert_eq!(m.picked, Some(2));
+        m.step(true, 1);
+        assert_eq!(m.picked, Some(0));
+    }
+
+    #[test]
+    fn stepping_up_starts_at_the_bottom_and_wraps() {
+        let mut m = menu_of(3);
+        m.step(false, 1);
+        assert_eq!(m.picked, Some(2));
+        m.step(false, 3);
+        assert_eq!(m.picked, Some(2));
+        m.step(false, 2);
+        assert_eq!(m.picked, Some(0));
+        // A negative count goes the other way.
+        m.step(false, -1);
+        assert_eq!(m.picked, Some(1));
+    }
+
+    #[test]
+    fn stepping_an_empty_menu_picks_nothing() {
+        let mut m = menu_of(0);
+        m.step(true, 1);
+        assert_eq!(m.picked, None);
+    }
+
+    #[test]
+    fn the_grey_item_is_the_pick_or_the_top() {
+        let mut m = menu_of(2);
+        assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w0"));
+        assert!(m.picked_item().is_none());
+        m.step(false, 1);
+        assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w1"));
+        assert_eq!(m.picked_item().map(|i| i.text.as_str()), Some("w1"));
+    }
+
+    #[test]
+    fn a_menu_is_for_one_line_and_cursor() {
+        let m = Menu::new("ab", 2, vec![]);
+        assert!(m.is_for("ab", 2));
+        assert!(!m.is_for("ab", 1));
+        assert!(!m.is_for("abc", 2));
     }
 }
