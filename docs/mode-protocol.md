@@ -51,12 +51,13 @@ inkline-mode 1
 ```
 
 The line may name extra requests the server can answer, as words after the
-`1`, each after a single space: `inkline-mode 1 indent`. inkline accepts
-the words, and only ever sends a server the kinds of request it named.
-Version 1 defines one extra request, `indent` (see "Indenting a new line"
-below). A server that does not answer it sends the line with no words;
-inkline ignores words it does not know. Any other first line turns the
-server off (`not a mode server`).
+`1`, each after a single space: `inkline-mode 1 indent complete`. inkline
+accepts the words, and only ever sends a server the kinds of request it
+named. Version 1 defines two extra requests, `indent` (see "Indenting a
+new line" below) and `complete` (see "Completing a word" below). A server
+that answers neither sends the line with no words; inkline ignores words
+it does not know. Any other first line turns the server off (`not a mode
+server`).
 
 ## A request
 
@@ -72,8 +73,8 @@ BYTES
 :done
 ```
 
-- `ID` counts up from 1, for each server process. Colour requests and
-  indent requests share the count.
+- `ID` counts up from 1, for each server process. Colour, indent and
+  completion requests share the count.
 - `:cwd` gives the shell's current directory (bash's `PWD`); it is empty
   when `PWD` is unset.
 - There is one `:arg` for each word of the command, in order. Argument 0 is
@@ -97,8 +98,8 @@ BYTES
 
 Redirections, such as `>out` or `2>&1`, and `VAR=x` words before the command
 name are not arguments. inkline sends a request only when it has none in
-flight to that server, colour or indent, so a server never has more than
-one request to answer at a time.
+flight to that server, of any kind (colour, indent or completion), so a
+server never has more than one request to answer at a time.
 
 ## A reply
 
@@ -340,6 +341,163 @@ server answers `:depth 0 0`: the `}` closes the group and starts its line,
 so the server gives that line's depth. The `}` line moves out to 2
 spaces, and the new line starts there too.
 
+## Completing a word (`complete`)
+
+A server that names `complete` on its first line (`inkline-mode 1 indent
+complete`) can also offer items for inkline's completion menu, the small
+menu of possible completions that shows under the line as you type: whole
+texts that could go where the cursor is, such as a column name in a
+script. inkline asks it while the menu is being gathered, at the main
+prompt while no Lisp runs, when the cursor is in an argument after the
+name of a command that uses the server's mode; with one such command
+inside another's argument, as in `csvm "$(csvm 'sort am')"`, the inner
+one's server is asked. It sends the request only once typing has paused on
+that line and cursor for as long as a new error waits before it shows. A
+server answers one request at a time, and waiting for the pause means a
+run of keys never waits behind a completion request. The `m` rows show
+once you stop typing. It never sends this request to a server that did not
+name `complete`, and never while the line is one brought back from history
+unchanged, while `C-g` has hidden the menu, during a history search, or
+while `inkline-show-menu` and `inkline-show-suggestion` are both off. It
+asks again only when the arguments, the directory or the cursor's place
+differ from the last completion request to that server for this line.
+
+The request:
+
+```
+:complete ID
+:cwd LEN
+BYTES
+:arg KIND LEN
+BYTES
+…one :arg for each argument, as in a colour request…
+:at ARG OFFSET
+:done
+```
+
+- `:cwd` and the `:arg` blocks are as in a colour request.
+- `:at` is where the cursor is: `ARG` is the argument's index, and `OFFSET`
+  a byte offset in that argument's `BYTES`, with `0 <= OFFSET <= LEN`. For
+  a `final` argument, `OFFSET` counts the bytes the program gets (quote
+  marks and removed backslashes not counted); for a `raw` one, the bytes
+  as typed. inkline asks only for an argument after the command's name
+  (`ARG >= 1`).
+
+The reply:
+
+```
+:item START END TEXT
+:note TEXT
+…
+:end ID
+```
+
+- Zero or more `:item` lines, in the order the server prefers. Each item
+  replaces bytes `START..END` of the `:at` argument, with
+  `START <= OFFSET <= END <= LEN`. `TEXT` is the rest of the line after the
+  space that follows `END`: it may hold spaces, and it is what the program
+  should get there — for a `final` argument, without any shell quoting;
+  inkline adds that quoting itself as it gathers the item.
+- An optional `:note TEXT` line right after an `:item` is that item's note:
+  a few words saying what it is. `TEXT` is the rest of the line after the
+  space.
+- The server sends every item that fits at the cursor; it does not need to
+  match them against the text already typed, and it may send items for an
+  empty word.
+- `:end ID` ends the reply, as for the other requests.
+
+What inkline does with a reply:
+
+- Each item becomes a row of the completion menu, marked `m`, after the
+  rows from history and the suggestion hook and before the ones from
+  `inkline-completion-functions`. It is matched, under
+  `inkline-completion-style`, against the typed text from the item's
+  `START` to the cursor, the same as any other menu item; its note does
+  not take part in the matching. When an item's text starts with a quote
+  mark (`` ` ``, `'` or `"`) that goes on the line as it is — in a `raw`
+  argument, or inside quotes of the other kind (`` ` `` or `"` inside
+  single quotes, `'` inside double quotes) — the item also matches against
+  the text after that mark, so inside single quotes `fi` finds `` `first
+  name` ``: under `prefix` when that text starts with the typed text,
+  which ranks the item with the items that start with it, and under
+  `fuzzy` also when the typed letters appear in it in order. The grey text
+  shows only for an item that starts with the typed text itself, quote
+  mark and all.
+- inkline keeps the first 1000 items of a reply and drops the rest; the
+  reply's 1 MiB limit still holds.
+- An item's text is quoted, as soon as it is gathered, for the quoting at
+  that place on the line, so that taking it still gives the program
+  exactly that text: as it is inside single quotes, with a backslash
+  before each `"`, `\`, `$` and `` ` `` inside double quotes, and with a
+  backslash before a space, a tab and the other characters bash treats
+  specially outside quotes. The menu row shows the item already quoted
+  this way, so outside quotes it reads, say, `first\ name`. An item that
+  cannot be quoted there — one that holds `'` while inside single quotes,
+  one that holds `!` while inside double quotes (history expansion would
+  change it, and no quoting inside double quotes keeps a `!` safe), or one
+  whose range crosses a quote mark — is left out of the menu. So is one
+  that the text around it would change: one that would start a history
+  expansion right after a `!` typed before it, or one that would make bash
+  expand what is typed around it, as `a,b` between a typed `{` and `}`,
+  or `a=` before a typed `~`, or read it as part of a redirection, as `2`
+  before a typed `>`. In a `raw` argument the text goes in as it is.
+- inkline waits at most 15 ms for a reply each time it draws the line:
+  for colours, and for items too once typing has paused. A server still
+  starting is waited for too: once it is running and names `complete`, its
+  items are asked for, and shown once they come. A reply that comes later
+  is not a failure: once it answers the line and cursor now on screen, the
+  menu is gathered again and drawn; otherwise it is not drawn, and inkline
+  asks again for the line and cursor now on screen once typing pauses
+  there. A picked item stays picked when an item with the same text and
+  range is in the new menu.
+- inkline keeps a reply and uses it again, without asking, while the same
+  arguments, directory and cursor's place are still on the line.
+
+For example, the user has typed, in `/home/me/sales`:
+
+```bash
+csvm 'sort am' data.csv
+```
+
+with the cursor right after `am`, inside the quotes. Argument 1 is `sort
+am`, 7 bytes, and the cursor is at its end. inkline sends:
+
+```
+:complete 3
+:cwd 14
+/home/me/sales
+:arg final 4
+csvm
+:arg final 7
+sort am
+:arg final 8
+data.csv
+:at 1 7
+:done
+```
+
+`data.csv` has the columns `id`, `amount` and `amended_at`. The server
+answers with every column, each replacing bytes 5 to 7 of argument 1
+(`am`), and leaves the matching to inkline:
+
+```
+:item 5 7 id
+:note column
+:item 5 7 amount
+:note column
+:item 5 7 amended_at
+:note column
+:end 3
+```
+
+inkline keeps the two that start with `am`, and the menu shows two rows,
+the item texts padded to line up their notes:
+
+```
+m  amount      column
+m  amended_at  column
+```
+
 ## What inkline ignores
 
 So that later versions can add to a reply, inkline ignores, without turning
@@ -349,8 +507,17 @@ the server off:
 - a `:span` that overlaps a span kept before it in the same argument;
 - a `:span` whose `ARG` or offsets are outside the arguments, or whose
   `START` is not below its `END`;
-- any other line starting with `:` whose keyword it does not know, such as
-  `:hint something`.
+- an `:item` whose `START` and `END` break `START <= OFFSET <= END <= LEN`,
+  `OFFSET` being the request's `:at` offset;
+- an `:item` with an empty `TEXT`, or a `TEXT` that is not UTF-8 or has a
+  control character other than a tab;
+- a `:note` that does not follow a kept `:item`, or a second one for the
+  same item;
+- a `:note` that is empty, is not UTF-8, or has a control character other
+  than a tab (the item stays, without a note);
+- any other line starting with `:` whose keyword the reply's kind of
+  request does not use, such as `:hint something`, or a `:span` in the
+  reply to a completion request.
 
 ## What turns a mode server off
 
@@ -366,9 +533,12 @@ under the line once they pause typing, and `inkline status` shows `mode MODE
   followed by words.
 - `bad reply: "LINE"`: this line of the reply, cut to 40 bytes, breaks the
   protocol. That is a line that does not start with `:` (an empty line
-  too); `:span`, `:error`, `:depth` or `:end` with fields that do not
-  parse; a second `:error` or `:depth` in one reply; or `:end` with the
-  wrong `ID`.
+  too); in the reply to a colour request, `:span` or `:error` with fields
+  that do not parse, or a second `:error`; in the reply to an indent
+  request, `:depth` with fields that do not parse, or a second `:depth`;
+  in the reply to a completion request, `:item` with fields that do not
+  parse; or, in any reply, `:end` with fields that do not parse or with
+  the wrong `ID`.
 - `bad reply: too much output`: the server wrote more than 1 MiB without
   finishing its first line or a reply.
 - `bad reply: request not read`: the server stopped reading its input, and
@@ -382,8 +552,8 @@ under the line once they pause typing, and `inkline status` shows `mode MODE
 ## The rules a mode server must keep
 
 - Write the first line as soon as it starts, before reading anything.
-- Answer every request, `:indent` ones too, in order, with exactly one
-  reply ending in `:end ID`.
+- Answer every request, `:indent` and `:complete` ones too, in order,
+  with exactly one reply ending in `:end ID`.
 - Flush the output after each `:end` line, and after the first line. The
   output is a socket, not a terminal, so most languages buffer it until
   told to flush; a reply stuck in the buffer never reaches inkline.
@@ -404,7 +574,12 @@ does, so that it can also break the protocol for tests; `words` is the plain
 case, and `separator` is the same but sends `separator` for `|`. `indent`
 also names `indent` and answers `:indent` requests, counting the brackets
 `{`, `(`, `}` and `)`; `dash-indent` does the same, but sends `-` for the
-cursor's line unless it starts with `}` or `)`. Try it by hand:
+cursor's line unless it starts with `}` or `)`. `complete` also names
+`complete` and answers `:complete` requests, each with a few fixed items
+that replace the word around the cursor: `sort`, `amount` and `first name`,
+each with a note, and `it's`, with none; `late-complete` does the same but
+answers half a second late; `bad-complete` answers with an `:item` line
+that breaks the protocol. Try it by hand:
 
 ```bash
 printf ':request 1\n:cwd 1\n/\n:arg final 4\ncsvm\n:arg final 16\nsort id | head 5\n:done\n' |
