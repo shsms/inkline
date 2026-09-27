@@ -3,6 +3,8 @@
 
 use std::collections::HashSet;
 
+pub mod mode;
+
 /// Where an item came from, shown as a letter at the start of its row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
