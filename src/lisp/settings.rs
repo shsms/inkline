@@ -21,6 +21,7 @@ const DEFINITIONS: &str = "
 (defvar inkline-completion-style 'prefix)
 (defvar inkline-completion-ignore-case nil)
 (defvar inkline-menu-sources '(history lisp mode))
+(defvar inkline-menu-min-chars 0)
 ";
 
 struct Symbols {
@@ -35,6 +36,7 @@ struct Symbols {
     completion_style: TulispObject,
     completion_ignore_case: TulispObject,
     menu_sources: TulispObject,
+    menu_min_chars: TulispObject,
 }
 
 #[derive(Default)]
@@ -109,6 +111,7 @@ pub fn register(ctx: &mut TulispContext) {
         completion_style: ctx.intern("inkline-completion-style"),
         completion_ignore_case: ctx.intern("inkline-completion-ignore-case"),
         menu_sources: ctx.intern("inkline-menu-sources"),
+        menu_min_chars: ctx.intern("inkline-menu-min-chars"),
     };
     SYMBOLS.with_borrow_mut(|s| *s = Some(symbols));
     CACHE.with_borrow_mut(|c| *c = Cache::default());
@@ -178,6 +181,12 @@ pub fn parse_sources(v: &TulispObject) -> Result<Vec<Source>, String> {
         return Err(BAD_SOURCES.to_owned());
     }
     Ok(sources)
+}
+
+pub fn parse_min_chars(v: &TulispObject) -> Result<usize, String> {
+    read_int(v)
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(|| "expected a number of at least 0".to_owned())
 }
 
 const BAD_COLORS: &str = "expected a list of (NAME . \"VALUE\") pairs or a string";
@@ -472,7 +481,8 @@ pub fn completion_matching() -> Matching {
     }
 }
 
-/// Which items the menu lists: `inkline-menu-sources`.
+/// Which items the menu lists: `inkline-menu-sources` and
+/// `inkline-menu-min-chars`.
 pub fn menu_listed() -> Listed {
     Listed {
         sources: read(
@@ -480,6 +490,12 @@ pub fn menu_listed() -> Listed {
             |s| &s.menu_sources,
             parse_sources,
             Source::ALL.to_vec(),
+        ),
+        min_chars: read(
+            "inkline-menu-min-chars",
+            |s| &s.menu_min_chars,
+            parse_min_chars,
+            0,
         ),
     }
 }
@@ -689,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn menu_source_values() {
+    fn menu_source_and_min_chars_values() {
         use crate::menu::Source;
         let mut ctx = TulispContext::new();
         assert_eq!(parse_sources(&value(&mut ctx, "nil")), Ok(vec![]));
@@ -701,6 +717,12 @@ mod tests {
         for text in ["'history", "'(bash)", r#"'("lisp")"#, "'(lisp . mode)"] {
             assert_eq!(parse_sources(&value(&mut ctx, text)), bad, "{text}");
         }
+        assert_eq!(parse_min_chars(&value(&mut ctx, "0")), Ok(0));
+        assert_eq!(parse_min_chars(&value(&mut ctx, "3")), Ok(3));
+        assert_eq!(
+            parse_min_chars(&value(&mut ctx, "-1")),
+            Err("expected a number of at least 0".to_owned())
+        );
     }
 
     #[test]
@@ -716,13 +738,14 @@ mod tests {
             menu_listed(),
             Listed {
                 sources: vec![Source::History, Source::Lisp, Source::Mode],
+                min_chars: 0
             }
         );
         crate::lisp::eval(
             "(progn (setq inkline-show-menu nil inkline-show-suggestion nil
                           inkline-menu-lines 3 inkline-completion-style 'fuzzy
                           inkline-completion-ignore-case t
-                          inkline-menu-sources '(mode)) nil)",
+                          inkline-menu-sources '(mode) inkline-menu-min-chars 2) nil)",
         )
         .unwrap();
         assert_eq!(
@@ -736,6 +759,7 @@ mod tests {
             menu_listed(),
             Listed {
                 sources: vec![Source::Mode],
+                min_chars: 2
             }
         );
         assert!(!show_menu());

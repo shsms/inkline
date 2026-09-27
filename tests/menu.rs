@@ -858,3 +858,14 @@ fn menu_sources_limit_the_menu_but_not_the_grey_text() {
     assert_eq!(row_text(&s, 2), "l  show");
     assert_eq!(row_text(&s, 3), "");
 }
+
+#[test]
+fn the_menu_waits_for_enough_typed_characters() {
+    let init = format!("{WORDS}\n(setq inkline-menu-min-chars 2)");
+    let mut sh = Shell::start(with_init(&init, vec![]));
+    sh.send("git s");
+    let s = sh.settle();
+    assert_eq!(row_text(&s, 1), "", "{}", dump(&s));
+    sh.send("w");
+    sh.wait_for("the menu", |s| row_text(s, 1) == "l  switch");
+}

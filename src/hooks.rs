@@ -1419,7 +1419,7 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
         .unwrap_or_default();
     let history = history.into_items();
     let listed = crate::lisp::settings::menu_listed();
-    let lists = |item: &Item| listed.lists(item);
+    let lists = |item: &Item| listed.lists(line, point, item);
     let every_item_listed = history
         .iter()
         .chain(&whole)

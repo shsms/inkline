@@ -316,17 +316,22 @@ pub fn assemble(
     items
 }
 
-/// Which items the menu lists: those from `sources`
-/// (`inkline-menu-sources`).
+/// Which items the menu lists: those from `sources` of which at least
+/// `min_chars` characters are typed (`inkline-menu-sources` and
+/// `inkline-menu-min-chars`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Listed {
     pub sources: Vec<Source>,
+    pub min_chars: usize,
 }
 
 impl Listed {
-    /// Whether the menu lists `item`.
-    pub fn lists(&self, item: &Item) -> bool {
+    /// Whether the menu for `line` with the cursor at `point` lists `item`.
+    pub fn lists(&self, line: &str, point: usize, item: &Item) -> bool {
         self.sources.contains(&item.source)
+            && line
+                .get(item.start..point)
+                .is_some_and(|typed| typed.chars().count() >= self.min_chars)
     }
 }
 
@@ -937,16 +942,20 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_lists_items_from_its_sources() {
+    fn the_menu_lists_items_from_its_sources_with_enough_typed() {
         let listed = Listed {
             sources: vec![Source::Lisp],
+            min_chars: 2,
         };
         let history = Item {
             source: Source::History,
             ..word("git status", 0, 6)
         };
-        assert!(!listed.lists(&history));
-        assert!(listed.lists(&word("stash", 4, 6)));
+        assert!(!listed.lists("git st", 6, &history));
+        assert!(listed.lists("git st", 6, &word("stash", 4, 6)));
+        assert!(!listed.lists("git s", 5, &word("stash", 4, 5)));
+        // Characters, not bytes.
+        assert!(!listed.lists("git é", 6, &word("été", 4, 6)));
     }
 
     #[test]
