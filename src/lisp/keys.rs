@@ -145,25 +145,43 @@ pub enum Fallback {
 /// comes as a copy for `ffi::push_macro_input`. A saved Lisp command's
 /// function would only lead back here, so it gives `Nothing`.
 pub fn saved_binding(slot: Option<usize>) -> Fallback {
+    saved_where(
+        |b| match (&b.lisp, slot) {
+            (Some(LispKey::Slot(n)), Some(slot)) => *n == slot,
+            (Some(LispKey::Shared(_)), None) => true,
+            _ => false,
+        },
+        commands::is_lisp_key_function,
+    )
+}
+
+/// What the key being run had before inkline first bound it to the readline
+/// function `function`, as for `saved_binding`: a saved Lisp command's
+/// function gives `Nothing`, and so does a saved `function`, which would only
+/// lead back here.
+pub fn saved_binding_of(function: ffi::CommandFn) -> Fallback {
+    saved_where(
+        |b| b.lisp.is_none() && std::ptr::fn_addr_eq(b.function, function),
+        |f| std::ptr::fn_addr_eq(f, function) || commands::is_lisp_key_function(f),
+    )
+}
+
+/// What the key being run had before inkline first bound it, when `pick`
+/// chooses its entry. A saved command that `leads_back` gives `Nothing`.
+fn saved_where(
+    pick: impl Fn(&Bound) -> bool,
+    leads_back: impl Fn(ffi::CommandFn) -> bool,
+) -> Fallback {
     let Some(running) = ffi::running_key() else {
         return Fallback::Nothing;
     };
     let saved = TABLE.with_borrow(|t| {
         t.iter()
-            .find(|b| {
-                let lisp = match (&b.lisp, slot) {
-                    (Some(LispKey::Slot(n)), Some(slot)) => *n == slot,
-                    (Some(LispKey::Shared(_)), None) => true,
-                    _ => false,
-                };
-                lisp && runs_at(b, running)
-            })
+            .find(|b| pick(b) && runs_at(b, running))
             .map(|b| b.saved.binding.clone())
     });
     match saved {
-        Some(ffi::Binding::Command(f)) if !commands::is_lisp_key_function(f) => {
-            Fallback::Command(f)
-        }
+        Some(ffi::Binding::Command(f)) if !leads_back(f) => Fallback::Command(f),
         Some(ffi::Binding::Macro(text)) => {
             ffi::macro_text(&text).map_or(Fallback::Nothing, Fallback::Macro)
         }
