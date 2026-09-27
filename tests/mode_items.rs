@@ -40,13 +40,18 @@ fn shell(does: &str) -> Shell {
 
 /// As `shell_with`, with the server logging each request's arguments and
 /// each `:at` to `log` (see `tests/data/fake-mode-server`).
-fn shell_logging(does: &str, log: &std::path::Path, history: Vec<&'static str>) -> Shell {
+fn shell_logging(
+    does: &str,
+    log: &std::path::Path,
+    more: &str,
+    history: Vec<&'static str>,
+) -> Shell {
     let program = format!(
         "\"/usr/bin/env\" \"FAKE_LOG={}\" {}",
         log.display(),
         server(does)
     );
-    start(&program, "", history)
+    start(&program, more, history)
 }
 
 /// Waits until the fake mode server has logged a line that `wanted` takes;
@@ -134,7 +139,7 @@ fn a_pick_stays_when_late_items_come() {
 fn a_server_that_did_not_name_complete_gives_no_items() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    let mut sh = shell_logging("words", &log, Vec::new());
+    let mut sh = shell_logging("words", &log, "", Vec::new());
     sh.send("csvm 'sort am");
     let s = sh.settle();
     assert!(find(&s, "m  amount").is_none(), "{}", dump(&s));
@@ -149,7 +154,7 @@ fn a_server_that_did_not_name_complete_gives_no_items() {
 fn a_server_that_named_complete_is_asked_where_the_cursor_is() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    let mut sh = shell_logging("complete", &log, Vec::new());
+    let mut sh = shell_logging("complete", &log, "", Vec::new());
     // The cursor on the command's name: no items are asked for, even once
     // typing pauses.
     sh.send("csvm");
@@ -167,7 +172,7 @@ fn a_server_that_named_complete_is_asked_where_the_cursor_is() {
 fn a_line_brought_back_from_history_is_not_asked_for_items() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    let mut sh = shell_logging("complete", &log, vec!["csvm 'sort am'"]);
+    let mut sh = shell_logging("complete", &log, "", vec!["csvm 'sort am'"]);
     sh.settle();
     sh.send("\x10");
     sh.wait_for("the entry", |s| cursor_row(s) == "$ csvm 'sort am'");
@@ -184,7 +189,7 @@ fn a_line_brought_back_from_history_is_not_asked_for_items() {
 fn items_are_asked_for_once_typing_pauses() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    let mut sh = shell_logging("complete", &log, Vec::new());
+    let mut sh = shell_logging("complete", &log, "", Vec::new());
     sh.send("csvm 'sort am");
     wait_for_log(&log, "the colours", |l| l == "final:sort am");
     // Well within the pause after the last key, the colours have been
@@ -200,7 +205,7 @@ fn items_are_asked_for_once_typing_pauses() {
 fn a_moved_cursor_waits_for_a_new_pause() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    let mut sh = shell_logging("complete", &log, Vec::new());
+    let mut sh = shell_logging("complete", &log, "", Vec::new());
     sh.send("csvm 'sort am");
     wait_for_log(&log, "the :at", |l| l == "at:1 7");
     // C-b moves the cursor before `m`; `z` comes before any pause there.
@@ -213,7 +218,7 @@ fn a_moved_cursor_waits_for_a_new_pause() {
 fn the_innermost_command_is_asked() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    let mut sh = shell_logging("complete", &log, Vec::new());
+    let mut sh = shell_logging("complete", &log, "", Vec::new());
     // Both commands use the mode; the cursor goes back into the inner
     // one's argument, at offset 7 of `sort am` and 16 of the outer one's.
     sh.send("csvm \"$(csvm 'sort am')\"\x02\x02\x02");
