@@ -228,17 +228,17 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   text can be undone with `C-_`.
 - **Completion menu.** As you type, a menu of possible completions shows under
   the command, each row marked `h` for a past command or `l` for one your own
-  Lisp function offers; the grey text after the cursor is the rest of the
-  picked item, or of the top item when none is picked.
-  `C-n` and `C-p` pick an item in the menu; Tab or Enter (while Enter runs
-  the multi-line layout's `accept-or-newline`) take the picked item, and with
-  no item picked they do what they always did. `C-g` hides the menu
-  until the line changes, and moving the cursor without typing hides it
-  until you type again. A line brought back from history (`C-p`, `<up>`, a
-  search) shows no menu and no grey text until you change it. With no menu,
-  `C-n` and `C-p` move between lines and through history, as `<down>` and
-  `<up>` do. `inkline-show-menu` and `inkline-show-suggestion` turn the menu
-  and the grey text off on their own. See "Completion menu" below.
+  Lisp function offers, and the grey text after the cursor shows the rest of
+  one possible completion, most often the highlighted one. The top row starts
+  highlighted; `C-n` and `C-p` move the highlight, and Tab takes the
+  highlighted item. Enter does what it does without a menu. `C-g` hides the
+  menu until the line changes (Tab then completes as bash does), and moving
+  the cursor without typing hides it until you type again. A line brought back
+  from history (`C-p`, `<up>`, a search) shows no menu and no grey text until
+  you change it. With no menu, `C-n` and `C-p` move between lines and through
+  history, as `<down>` and `<up>` do. `inkline-show-menu` and
+  `inkline-show-suggestion` turn the menu and the grey text off on their own.
+  See "Completion menu" below.
 - **Pairing.** `(`, `[`, `{` and quotes insert their closing character; typing
   the closer moves over it; Backspace between an empty pair deletes both. It
   stays out of the way after letters and digits (`don't`), after a backslash,
@@ -314,18 +314,26 @@ m  amended_at  column
 The menu takes at most `inkline-menu-lines` rows; when there are more
 items, the last row says how many more.
 
-- `C-n` and `C-p` pick the next or the previous item; `C-p` with nothing
-  picked starts at the bottom. The grey text is the rest of the picked item,
-  or of the top item when none is picked. Inside a quoted script the grey
-  text does not show, since the closing quote there follows the cursor and
-  the grey text is only drawn at the end of the line; pick an item with
-  `C-n` and take it with Tab or Enter instead.
-- Tab or Enter take the picked item into the line, as one step that `C-_`
-  undoes; a second Enter runs the line. With no item picked, Tab completes as
-  bash does and Enter does what it always did. Enter takes an item only while
-  it runs `accept-or-newline`, from the multi-line group of the layout.
-- `C-g` hides the menu and the grey text until the line's text changes. With
-  no menu, `C-g` is readline's `abort`.
+- The top row starts highlighted. `C-n` and `C-p` move the highlight to the
+  next or the previous item, wrapping at either end. The grey text is the
+  rest of the highlighted item, with one exception: when
+  `inkline-menu-sources` or `inkline-menu-min-chars` leaves the top item of
+  all the sources out of the menu, the grey text shows the rest of that item
+  until you press `C-n` or `C-p`, while Tab takes the menu's top row, or
+  completes as bash does when no menu is left. Inside a quoted script the
+  grey text does not show, since the closing quote there follows the cursor
+  and the grey text is only drawn at the end of the line; Tab still takes
+  the item.
+- Tab takes the highlighted item into the line, as one step that `C-_`
+  undoes. With no menu, Tab completes as bash does, and so does a Tab right
+  after another Tab, even with a menu showing: after a Tab that took an
+  item, a second Tab completes and a third lists the choices, as bash's
+  second Tab does.
+- Enter does what it does without a menu, whatever row is highlighted: it
+  runs a finished command and adds a line to an unfinished one.
+- `C-g` hides the menu and the grey text until the line's text changes, so
+  `C-g` then Tab completes as bash does. With no menu, `C-g` is readline's
+  `abort`.
 - Moving the cursor without changing the text (`<left>`, `<up>`, `C-a`, …) hides
   the menu until you type again, so `C-n` and `C-p` then move between the lines
   of a command. Set `inkline-menu-on-move` to keep the menu wherever the cursor

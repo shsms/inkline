@@ -8,10 +8,10 @@
 As you type, a menu of possible completions shows under the command, and
 the grey text after the cursor shows the rest of one of them. One list
 holds items from every source, each row marked with a letter for where it
-came from. ~C-n~ / ~C-p~ move through it, Tab takes an item, Enter takes it
-once a row is picked, and ~C-g~ hides it. Items match by how they start,
-or fuzzily by a setting; the menu and the grey text can each be turned
-off. Built in three pieces, each adding sources to the same list:
+came from. The top row starts highlighted, ~C-n~ / ~C-p~ move the highlight,
+Tab takes the highlighted item, and ~C-g~ hides it. Items match by how they
+start, or fuzzily by a setting; the menu and the grey text can each be
+turned off. Built in three pieces, each adding sources to the same list:
 
 1. Done: the menu, its keys and drawing, with history (~h~) and Lisp
    (~l~, ~inkline-completion-functions~) as sources.

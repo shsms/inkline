@@ -71,7 +71,7 @@ change takes effect on the next key.
   (default `32`) and `script` (default `2`), the style added on top of
   every colour inside an argument a mode server coloured; and four for the
   completion menu: `menu`, for its rows (no colour by default),
-  `menu-selected` (default `7`), for the picked row, `menu-source`
+  `menu-selected` (default `7`), for the highlighted row, `menu-source`
   (default `2`), for the source letter and the `… N more` row, and
   `menu-note` (default `2`), for an item's note. See the README's
   "Colours" section for the colour words.
