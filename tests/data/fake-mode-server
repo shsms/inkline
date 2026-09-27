@@ -18,14 +18,21 @@
 #   slow-indent  as indent, answering every request after 0.5 s
 #   dash-indent  as indent, but sends `-` for the cursor's line unless the
 #            line, blanks skipped, starts with `}` or `)`
+#   complete  as words, and names `complete`: answers a `:complete` request
+#            for the word around the `:at` offset of that argument (split at
+#            spaces and double quotes) with the items `sort` (note `sort the
+#            rows`), `amount` (note `column`), `first name` (note `column`)
+#            and `it's` (no note), each replacing that word
+#   late-complete  as complete, answering `:complete` after 0.5 s
+#   bad-complete   as complete, answering `:complete` with `:item x 0 a`
 #   garbage  answer every request with a line that breaks the protocol
 #   exit     exit when the first request is complete
 #   version  print a wrong first line
 #   spew     after the first line, write `:x` lines without end
 # When $FAKE_LOG is set, it writes there, as it starts, `CSVM_X:` and the
 # value of that variable (`unset` when it is not set), then each request's
-# arguments, `at:ARG OFFSET` for each `:indent` request, and `end` when its
-# input ends.
+# arguments, `at:ARG OFFSET` for each `:indent` and `:complete` request, and
+# `end` when its input ends.
 export LC_ALL=C
 does=$1
 [[ -n ${FAKE_LOG-} ]] && printf 'CSVM_X:%s\n' "${CSVM_X-unset}" >>"$FAKE_LOG"
@@ -36,6 +43,8 @@ fi
 [[ $does == slow ]] && sleep 0.3
 if [[ $does == indent || $does == slow-indent || $does == dash-indent ]]; then
     echo "inkline-mode 1 indent"
+elif [[ $does == complete || $does == late-complete || $does == bad-complete ]]; then
+    echo "inkline-mode 1 complete"
 else
     echo "inkline-mode 1"
 fi
@@ -128,11 +137,31 @@ answer_indent() {
     echo ":end $id"
 }
 
+answer_complete() {
+    [[ $does == late-complete ]] && sleep 0.5
+    if [[ $does == bad-complete ]]; then
+        echo ":item x 0 a"
+        echo ":end $id"
+        return
+    fi
+    local s=${args[at_arg]-} off=$at_off start end
+    start=$off
+    while ((start > 0)) && [[ ${s:start-1:1} != [[:space:]\"] ]]; do ((start--)); done
+    end=$off
+    while ((end < ${#s})) && [[ ${s:end:1} != [[:space:]\"] ]]; do ((end++)); done
+    printf ':item %d %d sort\n:note sort the rows\n' "$start" "$end"
+    printf ':item %d %d amount\n:note column\n' "$start" "$end"
+    printf ':item %d %d first name\n:note column\n' "$start" "$end"
+    printf ":item %d %d it's\n" "$start" "$end"
+    echo ":end $id"
+}
+
 while IFS= read -r line; do
     set -- $line
     case $1 in
         :request) kind=colours id=$2 args=() ;;
         :indent) kind=indent id=$2 args=() ;;
+        :complete) kind=complete id=$2 args=() ;;
         :cwd) IFS= read -r -N "$2" cwd; IFS= read -r _ ;;
         :arg)
             IFS= read -r -N "$3" a
@@ -145,7 +174,11 @@ while IFS= read -r line; do
             [[ -n ${FAKE_LOG-} ]] && printf 'at:%s %s\n' "$2" "$3" >>"$FAKE_LOG"
             ;;
         :done)
-            if [[ $kind == indent ]]; then answer_indent; else answer; fi
+            case $kind in
+                indent) answer_indent ;;
+                complete) answer_complete ;;
+                *) answer ;;
+            esac
             ;;
     esac
 done

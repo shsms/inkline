@@ -1463,7 +1463,7 @@ fn ask_mode_servers(line: &str, path: &str) -> Vec<(String, CommandArgs, Reply)>
         .map(|(mode, c)| (mode.clone(), mode_server::request(cwd.clone(), c)))
         .collect();
     let wait = mode_server::WAIT.saturating_sub(began.elapsed());
-    let replies = mode_server::replies(&asks, wait, ffi::signal_to_act_on);
+    let replies = mode_server::replies(&asks, None, wait, ffi::signal_to_act_on).0;
     found
         .into_iter()
         .zip(replies)

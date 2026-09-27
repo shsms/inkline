@@ -5,12 +5,13 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::os::fd::RawFd;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::args::CommandArgs;
 use crate::colors::ColorSet;
 use process::Process;
-use protocol::{Depths, Read, Reply};
+use protocol::{Depths, Read, Reply, ReplyItem};
 
 pub mod process;
 pub mod protocol;
@@ -31,6 +32,29 @@ const MOST_UNREAD: usize = 1 << 20;
 /// directory (bash's `PWD`), then each argument's `raw` flag and bytes,
 /// the command name first.
 pub type Request = (Vec<u8>, Vec<(bool, String)>);
+
+/// A request for completion items: the mode, the command's arguments, and
+/// where the cursor is (an argument's index and a byte offset in it).
+pub struct ItemsAsk {
+    pub mode: String,
+    pub request: Request,
+    pub at: (usize, usize),
+    /// Whether the request may be sent; when not, only a kept reply
+    /// answers it.
+    pub send: bool,
+}
+
+/// What became of an `ItemsAsk`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Items {
+    /// No server was asked: none is running or starting for the mode, or
+    /// it did not name `complete`.
+    NotAsked,
+    /// No reply yet: asked, or still to be asked (its server may still be
+    /// starting, or the ask may not have been sent).
+    Waiting,
+    Came(Rc<[ReplyItem]>),
+}
 
 /// The extra requests a mode server may name in its first line, as
 /// `inkline status` shows them.
@@ -65,24 +89,35 @@ struct Running {
     /// The words of its first line after `inkline-mode 1`, in order: the
     /// extra requests it answers.
     features: Vec<String>,
-    /// The ID of the last request sent, 0 before the first. Colour and
-    /// indent requests share it.
+    /// The ID of the last request sent, 0 before the first. Requests of
+    /// every kind share it.
     last_id: u64,
     /// The request sent and not answered yet, with its ID. There is at
-    /// most one at a time, of either kind.
+    /// most one at a time, of any kind.
     in_flight: Option<(u64, Asked)>,
     /// The replies kept, each with the request it answers; at most one per
     /// request.
     kept: Vec<(Request, Reply)>,
-    /// How far `protocol::reply` or `protocol::indent_reply` has looked
-    /// into the process's buffer for the reply in flight.
+    /// The last completion reply kept.
+    kept_items: Option<Box<KeptItems>>,
+    /// How far `protocol::reply`, `protocol::indent_reply` or
+    /// `protocol::items_reply` has looked into the process's buffer for the
+    /// reply in flight.
     reply_seen: usize,
-    /// The replies to colour requests with this ID or a lower one are
-    /// dropped when they come (see `forget_replies`).
+    /// The replies to colour and completion requests with this ID or a
+    /// lower one are dropped when they come (see `forget_replies`).
     forgotten: u64,
     /// The depths of the last indent reply read: `ask_indent` takes them
     /// once the reply to its own request comes.
     indent_answer: Option<Depths>,
+}
+
+/// A completion reply kept, with the request and the cursor's place it
+/// answers.
+struct KeptItems {
+    request: Request,
+    at: (usize, usize),
+    items: Rc<[ReplyItem]>,
 }
 
 /// What a request in flight asked.
@@ -91,6 +126,16 @@ enum Asked {
     Colors(Request),
     /// Depths for a new line.
     Indent,
+    /// Completion items for these arguments, with the cursor at this place
+    /// (an argument's index and a byte offset in it).
+    Items(Request, (usize, usize)),
+}
+
+/// The next request `Running::advance` sends: colours, or completion
+/// items with the cursor at a place.
+enum Next<'a> {
+    Colors(&'a Request),
+    Items(&'a Request, (usize, usize)),
 }
 
 thread_local! {
@@ -169,6 +214,7 @@ pub fn forget_replies() {
         for s in servers.iter_mut() {
             if let State::Running(running) = &mut s.state {
                 running.kept.clear();
+                running.kept_items = None;
                 running.forgotten = running.last_id;
             }
         }
@@ -284,7 +330,7 @@ pub fn prepare(modes: &[String], path: &str, environment: fn() -> Option<Vec<Vec
 }
 
 /// The reply to each of `asks` (a mode and a request), or `None` when it has
-/// not come in time.
+/// not come in time; and what became of `items`.
 ///
 /// A kept reply to the same request answers at once. For the rest, each mode
 /// server is sent one request at a time, in the order of `asks`, and replies
@@ -297,11 +343,18 @@ pub fn prepare(modes: &[String], path: &str, environment: fn() -> Option<Vec<Vec
 /// than `MOST_UNREAD` bytes without finishing a reply, or exits is turned
 /// off, with a message for `take_notices`. A signal ends the wait early;
 /// `interrupted` is for `Process::send`.
+///
+/// `items` goes to the server of its mode only when its `send` is set, that
+/// server is running and named `complete`, and none of its colour requests
+/// is left unanswered or in flight, all within the same `wait`. Each
+/// server keeps its last completion reply, which answers the same request
+/// and place again without asking until `forget_replies`.
 pub fn replies(
     asks: &[(String, Request)],
+    items: Option<&ItemsAsk>,
     wait: Duration,
     interrupted: fn() -> bool,
-) -> Vec<Option<Reply>> {
+) -> (Vec<Option<Reply>>, Items) {
     let deadline = Instant::now() + wait;
     SERVERS.with_borrow_mut(|servers| {
         let requests: Vec<Vec<&Request>> = servers
@@ -318,10 +371,13 @@ pub fn replies(
         loop {
             let mut waiting = Vec::new();
             for (s, requests) in servers.iter_mut().zip(&requests) {
-                if requests.is_empty() {
+                let items = items
+                    .filter(|ask| ask.send && ask.mode == s.mode)
+                    .map(|ask| (&ask.request, ask.at));
+                if requests.is_empty() && items.is_none() {
                     continue;
                 }
-                match s.advance(requests, deadline, interrupted) {
+                match s.advance(requests, items, deadline, interrupted) {
                     Ok(fd) => waiting.extend(fd),
                     Err(reason) => s.turn_off(reason),
                 }
@@ -333,7 +389,8 @@ pub fn replies(
                 break;
             }
         }
-        asks.iter()
+        let colours = asks
+            .iter()
             .map(|(mode, request)| {
                 let s = servers.iter().find(|s| s.mode == *mode)?;
                 match &s.state {
@@ -341,7 +398,21 @@ pub fn replies(
                     State::NotStarted | State::Starting(_) | State::Off(_) => None,
                 }
             })
-            .collect()
+            .collect();
+        let items = items.map_or(Items::NotAsked, |ask| {
+            let Some(s) = servers.iter().find(|s| s.mode == ask.mode) else {
+                return Items::NotAsked;
+            };
+            match &s.state {
+                State::Running(running) if running.names("complete") => running
+                    .kept_items(&ask.request, ask.at)
+                    .map_or(Items::Waiting, |items| Items::Came(Rc::clone(items))),
+                // Its first line may yet name `complete`.
+                State::Starting(_) => Items::Waiting,
+                State::NotStarted | State::Running(_) | State::Off(_) => Items::NotAsked,
+            }
+        });
+        (colours, items)
     })
 }
 
@@ -499,6 +570,7 @@ impl Server {
                 last_id: 0,
                 in_flight: None,
                 kept: Vec::new(),
+                kept_items: None,
                 reply_seen: 0,
                 forgotten: 0,
                 indent_answer: None,
@@ -508,22 +580,24 @@ impl Server {
     }
 
     /// Does what can be done without waiting towards a reply for each of
-    /// `requests`, stopping at `deadline` if the mode server keeps writing:
-    /// reads the first line or replies that have come, and sends the next
-    /// request when none is in flight (see `Process::send` for
-    /// `interrupted`). The socket to wait on when some request is still
-    /// unanswered and the server owes inkline something, or the reason it
-    /// must be turned off.
+    /// `requests`, then for `items` (a request and the cursor's place),
+    /// stopping at `deadline` if the mode server keeps writing: reads the
+    /// first line or replies that have come, and sends the next request
+    /// when none is in flight (see `Process::send` for `interrupted`).
+    /// `items` is sent only to a server that named `complete`. The socket
+    /// to wait on when some request is still unanswered and the server owes
+    /// inkline something, or the reason it must be turned off.
     fn advance(
         &mut self,
         requests: &[&Request],
+        items: Option<(&Request, (usize, usize))>,
         deadline: Instant,
         interrupted: fn() -> bool,
     ) -> Result<Option<RawFd>, String> {
         self.read_first_line()?;
         match &mut self.state {
             State::Starting(process) => Ok(Some(process.fd())),
-            State::Running(running) => running.advance(requests, deadline, interrupted),
+            State::Running(running) => running.advance(requests, items, deadline, interrupted),
             State::NotStarted | State::Off(_) => Ok(None),
         }
     }
@@ -544,14 +618,24 @@ impl Running {
     fn advance(
         &mut self,
         requests: &[&Request],
+        items: Option<(&Request, (usize, usize))>,
         deadline: Instant,
         interrupted: fn() -> bool,
     ) -> Result<Option<RawFd>, String> {
+        let items = items.filter(|_| self.names("complete"));
         let mut read_some = false;
         loop {
             self.take_reply()?;
-            let Some(&unanswered) = requests.iter().find(|request| self.kept(request).is_none())
-            else {
+            let colours = requests
+                .iter()
+                .find(|request| self.kept(request).is_none())
+                .map(|&request| Next::Colors(request));
+            let unanswered = colours.or_else(|| {
+                items
+                    .filter(|&(request, at)| self.kept_items(request, at).is_none())
+                    .map(|(request, at)| Next::Items(request, at))
+            });
+            let Some(unanswered) = unanswered else {
                 return Ok(None);
             };
             if self.in_flight.is_none() {
@@ -585,9 +669,9 @@ impl Running {
     }
 
     /// Takes the reply to the request in flight if the buffer holds all of
-    /// it: keeps a colour reply, or drops it if it is forgotten; notes an
-    /// indent reply in `indent_answer`. Whether one came, or the reason the
-    /// mode server must be turned off.
+    /// it: keeps a colour or completion reply, or drops it if it is
+    /// forgotten; notes an indent reply in `indent_answer`. Whether one
+    /// came, or the reason the mode server must be turned off.
     fn take_reply(&mut self) -> Result<bool, String> {
         let Some((id, asked)) = &self.in_flight else {
             return Ok(false);
@@ -596,26 +680,42 @@ impl Running {
         let read = match asked {
             Asked::Colors(request) => {
                 let lens: Vec<usize> = request.1.iter().map(|(_, text)| text.len()).collect();
-                protocol::reply(self.process.buffer(), id, &lens, &mut self.reply_seen).map(Some)
+                protocol::reply(self.process.buffer(), id, &lens, &mut self.reply_seen)
+                    .map(Answer::Colors)
             }
             Asked::Indent => {
                 protocol::indent_reply(self.process.buffer(), id, &mut self.reply_seen).map(
                     |depths| {
                         self.indent_answer = depths;
-                        None
+                        Answer::Indent
                     },
                 )
             }
+            Asked::Items(request, at) => {
+                let len = request.1.get(at.0).map_or(0, |(_, text)| text.len());
+                protocol::items_reply(self.process.buffer(), id, len, at.1, &mut self.reply_seen)
+                    .map(Answer::Items)
+            }
         };
         match read {
-            Read::Done(reply, used) => {
+            Read::Done(answer, used) => {
                 self.process.buffer().drain(..used);
                 self.reply_seen = 0;
-                if let (Some((_, Asked::Colors(request))), Some(reply)) =
-                    (self.in_flight.take(), reply)
-                    && id > self.forgotten
-                {
-                    self.keep(request, reply);
+                let asked = self.in_flight.take().map(|(_, asked)| asked);
+                if id > self.forgotten {
+                    match (asked, answer) {
+                        (Some(Asked::Colors(request)), Answer::Colors(reply)) => {
+                            self.keep(request, reply);
+                        }
+                        (Some(Asked::Items(request, at)), Answer::Items(items)) => {
+                            self.kept_items = Some(Box::new(KeptItems {
+                                request,
+                                at,
+                                items: items.into(),
+                            }));
+                        }
+                        _ => {}
+                    }
                 }
                 Ok(true)
             }
@@ -676,13 +776,22 @@ impl Running {
         }
     }
 
-    /// Sends `request` (see `Process::send` for `interrupted`).
-    fn send(&mut self, request: &Request, interrupted: fn() -> bool) -> Result<(), String> {
+    /// Sends `next` (see `Process::send` for `interrupted`).
+    fn send(&mut self, next: Next, interrupted: fn() -> bool) -> Result<(), String> {
         let id = self.last_id + 1;
-        self.process
-            .send(&protocol::request(id, &request.0, &request.1), interrupted)?;
+        let (bytes, asked) = match next {
+            Next::Colors(request) => (
+                protocol::request(id, &request.0, &request.1),
+                Asked::Colors(request.clone()),
+            ),
+            Next::Items(request, at) => (
+                protocol::complete_request(id, &request.0, &request.1, at),
+                Asked::Items(request.clone(), at),
+            ),
+        };
+        self.process.send(&bytes, interrupted)?;
         self.last_id = id;
-        self.in_flight = Some((id, Asked::Colors(request.clone())));
+        self.in_flight = Some((id, asked));
         Ok(())
     }
 
@@ -708,6 +817,14 @@ impl Running {
         }
     }
 
+    /// The completion items kept for `request` with the cursor at `at`.
+    fn kept_items(&self, request: &Request, at: (usize, usize)) -> Option<&Rc<[ReplyItem]>> {
+        self.kept_items
+            .as_deref()
+            .filter(|kept| kept.request == *request && kept.at == at)
+            .map(|kept| &kept.items)
+    }
+
     /// Keeps `reply` as the reply for `request`, in place of any before it.
     fn keep(&mut self, request: Request, reply: Reply) {
         match self.kept.iter_mut().find(|(k, _)| *k == request) {
@@ -723,6 +840,14 @@ impl Running {
             .find(|(k, _)| k == request)
             .map(|(_, reply)| reply)
     }
+}
+
+/// A whole reply read by `Running::take_reply`, of the kind asked.
+enum Answer {
+    Colors(Reply),
+    /// The depths are in `Running::indent_answer`.
+    Indent,
+    Items(Vec<ReplyItem>),
 }
 
 /// Reads what has come of the mode server's first line, without waiting. The
@@ -768,6 +893,23 @@ mod tests {
         std::env::var("PATH").unwrap_or_default()
     }
 
+    /// As `fake`, with the server logging each request's arguments and each
+    /// `:at` to `log` (see `tests/data/fake-mode-server`).
+    fn fake_logging(mode: &str, log: &std::path::Path) -> Option<Vec<String>> {
+        let mut program = vec![
+            "/usr/bin/env".to_owned(),
+            format!("FAKE_LOG={}", log.display()),
+        ];
+        program.extend(fake(mode)?);
+        Some(program)
+    }
+
+    /// The lines the fake server has logged to `log`.
+    fn logged(log: &std::path::Path) -> Vec<String> {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        text.lines().map(str::to_owned).collect()
+    }
+
     /// Prepares the mode `mode` until its server is no longer starting, or
     /// two seconds have passed; the messages it gave.
     fn prepare_until_started(mode: &str) -> Vec<String> {
@@ -803,7 +945,7 @@ mod tests {
             .iter()
             .map(|s| ("csvm".to_owned(), request(s)))
             .collect();
-        replies(&asks, wait, || false)
+        replies(&asks, None, wait, || false).0
     }
 
     /// The kinds of a reply's spans.
@@ -1506,7 +1648,7 @@ mod tests {
             ("csvm-mode".to_owned(), request_named("csvm", "a 1")),
             ("csvm-mode".to_owned(), request_named("c", "a 1")),
         ];
-        let got = replies(&asks, Duration::from_secs(2), || false);
+        let got = replies(&asks, None, Duration::from_secs(2), || false).0;
         assert_eq!(kinds(&got[0]), [Command, Number]);
         assert_eq!(kinds(&got[1]), [Command, Number]);
         let sent = SERVERS.with_borrow(|s| {
@@ -1528,14 +1670,154 @@ mod tests {
         ];
         prepare(&["csvm-mode".to_owned()], &path(), || None);
         assert_eq!(
-            replies(&asks, Duration::from_secs(2), || false),
+            replies(&asks, None, Duration::from_secs(2), || false).0,
             [None, None]
         );
         assert_eq!(take_notices(), ["inkline: mode csvm-mode: off (exited)"]);
         assert_eq!(
-            replies(&asks, Duration::from_secs(2), || false),
+            replies(&asks, None, Duration::from_secs(2), || false).0,
             [None, None]
         );
         assert!(take_notices().is_empty());
+    }
+
+    fn items_ask(mode: &str, text: &str, offset: usize) -> ItemsAsk {
+        ItemsAsk {
+            mode: mode.into(),
+            request: (
+                b"/".to_vec(),
+                vec![(false, "csvm".into()), (false, text.into())],
+            ),
+            at: (1, offset),
+            send: true,
+        }
+    }
+
+    #[test]
+    fn a_server_that_named_complete_gives_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        define("items-mode", fake_logging("complete", &log), None);
+        prepare_until_started("items-mode");
+        let ask = items_ask("items-mode", "sort am", 7);
+        let (_, items) = replies(&[], Some(&ask), Duration::from_secs(2), || false);
+        let Items::Came(items) = items else {
+            panic!("{items:?}")
+        };
+        assert_eq!(items.len(), 4);
+        assert_eq!(
+            (items[1].start, items[1].end, items[1].text.as_str()),
+            (5, 7, "amount")
+        );
+        assert_eq!(items[0].note.as_deref(), Some("sort the rows"));
+        // Kept: asked again, it answers at once.
+        let (_, again) = replies(&[], Some(&ask), Duration::ZERO, || false);
+        assert!(matches!(again, Items::Came(_)));
+        assert_eq!(
+            logged(&log).iter().filter(|l| l.starts_with("at:")).count(),
+            1,
+            "{:?}",
+            logged(&log)
+        );
+        define("items-mode", None, None);
+    }
+
+    #[test]
+    fn an_ask_that_may_not_be_sent_is_answered_only_by_a_kept_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        define("held-items", fake_logging("complete", &log), None);
+        prepare_until_started("held-items");
+        let held = ItemsAsk {
+            send: false,
+            ..items_ask("held-items", "sort am", 7)
+        };
+        let (_, items) = replies(&[], Some(&held), Duration::from_millis(200), || false);
+        assert_eq!(items, Items::Waiting);
+        // The server reads its requests in order: once it has answered a
+        // colour request sent after, it has logged any `:complete` before.
+        let colours = [("held-items".to_owned(), held.request.clone())];
+        let (reply, _) = replies(&colours, None, Duration::from_secs(2), || false);
+        assert!(reply[0].is_some());
+        assert!(!logged(&log).iter().any(|l| l.starts_with("at:")));
+        let ask = items_ask("held-items", "sort am", 7);
+        let (_, items) = replies(&[], Some(&ask), Duration::from_secs(2), || false);
+        assert!(matches!(items, Items::Came(_)), "{items:?}");
+        // Kept: it answers the ask that may not be sent too.
+        let (_, items) = replies(&[], Some(&held), Duration::ZERO, || false);
+        assert!(matches!(items, Items::Came(_)), "{items:?}");
+        define("held-items", None, None);
+    }
+
+    #[test]
+    fn a_server_that_did_not_name_complete_is_not_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        define("words-mode", fake_logging("words", &log), None);
+        prepare_until_started("words-mode");
+        let ask = items_ask("words-mode", "sort am", 7);
+        let (_, items) = replies(&[], Some(&ask), Duration::from_millis(200), || false);
+        assert_eq!(items, Items::NotAsked);
+        // The server reads its requests in order: once it has answered a
+        // colour request sent after, it has logged any `:complete` before.
+        let colours = [(
+            "words-mode".to_owned(),
+            items_ask("words-mode", "x", 1).request,
+        )];
+        let (reply, _) = replies(&colours, None, Duration::from_secs(2), || false);
+        assert!(reply[0].is_some());
+        let lines = logged(&log);
+        assert!(lines.iter().any(|l| l == "final:x"), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.starts_with("at:")), "{lines:?}");
+        define("words-mode", None, None);
+    }
+
+    #[test]
+    fn items_wait_behind_colours_within_the_wait() {
+        define("late-items", fake("late-complete"), None);
+        prepare_until_started("late-items");
+        let ask = items_ask("late-items", "sort am", 7);
+        let colours = [("late-items".to_owned(), ask.request.clone())];
+        let began = Instant::now();
+        // The items come 0.5 s after they are asked for, so a wait long
+        // enough for the colours ends before them.
+        let (reply, items) = replies(&colours, Some(&ask), Duration::from_millis(300), || false);
+        assert!(
+            began.elapsed() < Duration::from_millis(500),
+            "waited {:?}",
+            began.elapsed()
+        );
+        assert!(reply[0].is_some(), "the colours came first");
+        assert_eq!(items, Items::Waiting);
+        // The late reply is read while waiting for a key.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !read_waiting() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (_, items) = replies(&colours, Some(&ask), Duration::ZERO, || false);
+        assert!(matches!(items, Items::Came(_)));
+        define("late-items", None, None);
+    }
+
+    #[test]
+    fn a_bad_item_turns_the_server_off() {
+        define("bad-items", fake("bad-complete"), None);
+        prepare_until_started("bad-items");
+        let ask = items_ask("bad-items", "x", 1);
+        replies(&[], Some(&ask), Duration::from_secs(2), || false);
+        assert_eq!(
+            take_notices(),
+            [r#"inkline: mode bad-items: off (bad reply: ":item x 0 a")"#]
+        );
+        define("bad-items", None, None);
+    }
+
+    #[test]
+    fn status_shows_the_extra_requests() {
+        define("both", fake("complete"), None);
+        prepare_until_started("both");
+        let table = [("c".to_owned(), "both".to_owned())];
+        assert_eq!(status_lines(&table), ["mode both (c): running (complete)"]);
+        define("both", None, None);
     }
 }
