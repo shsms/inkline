@@ -80,8 +80,8 @@ fn new_context() -> TulispContext {
     keys::register(&mut ctx);
     #[cfg(not(test))]
     ctx.defun("getenv", |name: String| crate::ffi::shell_variable(&name));
-    // Lets the end-to-end tests check what a panic in Lisp does.
-    #[cfg(debug_assertions)]
+    // Lets the tests check what a panic in Lisp does.
+    #[cfg(any(test, debug_assertions))]
     ctx.defun("inkline--panic", || -> tulisp::TulispObject {
         panic!("inkline--panic")
     });
