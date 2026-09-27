@@ -844,3 +844,17 @@ fn ignoring_case_lists_items_of_another_case() {
     sh.send(&format!("{C_N}\t"));
     sh.wait_for("the item taken", |s| cursor_row(s) == "$ Echo Hello");
 }
+
+/// With history left out of the menu, the grey text still shows the newest
+/// history match, and a history entry does not hide a Lisp item that gives
+/// the same line.
+#[test]
+fn menu_sources_limit_the_menu_but_not_the_grey_text() {
+    let init = format!("{WORDS}\n(setq inkline-menu-sources '(lisp))");
+    let history = vec!["git switch", "git status"];
+    let sh = menu_showing(with_init(&init, history), "git s", "l  switch");
+    let s = sh.screen();
+    assert_eq!(cursor_row(&s), "$ git status");
+    assert_eq!(row_text(&s, 2), "l  show");
+    assert_eq!(row_text(&s, 3), "");
+}

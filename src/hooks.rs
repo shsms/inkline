@@ -1377,13 +1377,14 @@ fn repaint_line() -> bool {
     })
 }
 
-/// The menu for `line` with the cursor at `point`: the one kept in `STATE`
-/// when it was made for the same line and cursor (so a pick stays), else a
-/// new one gathered from the sources: history and the suggestion hook when
-/// the cursor is at the end of the line, then the mode server's items
-/// (`mode`), then the completion hook. A new menu for the same line and
-/// cursor keeps the pick on the item with the same text and range, if it is
-/// still there.
+/// The menu for `line` with the cursor at `point`: the one kept in `STATE` when
+/// it was made for the same line and cursor (so a pick stays), else a new one
+/// gathered from the sources: history and the suggestion hook when the cursor
+/// is at the end of the line, then the mode server's items (`mode`), then the
+/// completion hook. It lists only the items `settings::menu_listed` allows; its
+/// grey text comes from all of them. A new menu for the same line and cursor
+/// keeps the pick on the item with the same text and range, if it is still
+/// listed.
 fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
     let lisp_runs = crate::lisp::RUNNING.load(Ordering::Relaxed);
     let waiting = mode.waiting;
@@ -1416,12 +1417,48 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
         .came
         .map(|(items, arg)| menu::mode::place(line, point, &arg, &items))
         .unwrap_or_default();
-    let items = menu::assemble(line, point, how, history.into_items(), whole, mode, words);
+    let history = history.into_items();
+    let listed = crate::lisp::settings::menu_listed();
+    let lists = |item: &Item| listed.lists(item);
+    let every_item_listed = history
+        .iter()
+        .chain(&whole)
+        .chain(&mode)
+        .chain(&words)
+        .all(lists);
+    let menu = if every_item_listed {
+        Menu::new(
+            line,
+            point,
+            menu::assemble(line, point, how, history, whole, mode, words),
+        )
+    } else {
+        // The listed items are assembled on their own, so that an item the
+        // menu does not list cannot hide one it lists as a duplicate.
+        let keep =
+            |items: &[Item]| -> Vec<Item> { items.iter().filter(|i| lists(i)).cloned().collect() };
+        let items = menu::assemble(
+            line,
+            point,
+            how,
+            keep(&history),
+            whole.as_ref().filter(|i| lists(i)).cloned(),
+            keep(&mode),
+            keep(&words),
+        );
+        let top = menu::assemble(line, point, how, history, whole, mode, words)
+            .into_iter()
+            .next();
+        Menu {
+            top,
+            ..Menu::new(line, point, items)
+        }
+    };
     let picked = kept
         .as_ref()
         .and_then(|m| m.items.get(m.picked?))
         .and_then(|was| {
-            items
+            menu.items
                 .iter()
                 .position(|i| i.text == was.text && i.start == was.start && i.end == was.end)
         });
@@ -1429,7 +1466,7 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
         picked,
         lisp_ran: lisp_runs,
         mode_waiting: waiting,
-        ..Menu::new(line, point, items)
+        ..menu
     }
 }
 

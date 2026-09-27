@@ -14,12 +14,27 @@ pub enum Source {
 }
 
 impl Source {
+    pub const ALL: [Source; 3] = [Source::History, Source::Lisp, Source::Mode];
+
     pub fn letter(self) -> char {
         match self {
             Source::History => 'h',
             Source::Lisp => 'l',
             Source::Mode => 'm',
         }
+    }
+
+    /// Its name in `inkline-menu-sources`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::History => "history",
+            Source::Lisp => "lisp",
+            Source::Mode => "mode",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Source> {
+        Source::ALL.into_iter().find(|s| s.name() == name)
     }
 }
 
@@ -301,6 +316,20 @@ pub fn assemble(
     items
 }
 
+/// Which items the menu lists: those from `sources`
+/// (`inkline-menu-sources`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Listed {
+    pub sources: Vec<Source>,
+}
+
+impl Listed {
+    /// Whether the menu lists `item`.
+    pub fn lists(&self, item: &Item) -> bool {
+        self.sources.contains(&item.source)
+    }
+}
+
 /// The grey text for `item`: the rest of it after the typed text. Only when
 /// the cursor is at the end of the line, the item ends at the cursor, and it
 /// starts with the typed text and is longer.
@@ -318,7 +347,11 @@ pub fn grey<'a>(line: &str, point: usize, item: &'a Item) -> Option<&'a str> {
 pub struct Menu {
     pub line: String,
     pub point: usize,
+    /// The items the menu lists.
     pub items: Vec<Item>,
+    /// The top item of all those it was made from, listed or not: the grey
+    /// text's item when none is picked.
+    pub top: Option<Item>,
     /// The picked item's index; None until `C-n` or `C-p`.
     pub picked: Option<usize>,
     /// Whether the last draw in plain editing put the menu on screen.
@@ -336,6 +369,7 @@ impl Menu {
         Menu {
             line: line.to_owned(),
             point,
+            top: items.first().cloned(),
             items,
             picked: None,
             shown: false,
@@ -371,9 +405,9 @@ impl Menu {
         self.items.get(self.picked?)
     }
 
-    /// The item the grey text comes from: the picked one, else the top one.
+    /// The item the grey text comes from: the picked one, else `top`.
     pub fn grey_item(&self) -> Option<&Item> {
-        self.picked_item().or(self.items.first())
+        self.picked_item().or(self.top.as_ref())
     }
 }
 
@@ -881,6 +915,38 @@ mod tests {
         m.step(false, 1);
         assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w1"));
         assert_eq!(m.picked_item().map(|i| i.text.as_str()), Some("w1"));
+    }
+
+    /// The menu may list fewer items than it was made from; with no pick, the
+    /// grey text still comes from the top item of them all.
+    #[test]
+    fn the_grey_item_comes_from_every_item() {
+        let mut m = menu_of(3);
+        m.items.retain(|i| i.text != "w0");
+        assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w0"));
+        m.step(true, 1);
+        assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w1"));
+    }
+
+    #[test]
+    fn sources_have_names() {
+        for source in [Source::History, Source::Lisp, Source::Mode] {
+            assert_eq!(Source::named(source.name()), Some(source));
+        }
+        assert_eq!(Source::named("bash"), None);
+    }
+
+    #[test]
+    fn the_menu_lists_items_from_its_sources() {
+        let listed = Listed {
+            sources: vec![Source::Lisp],
+        };
+        let history = Item {
+            source: Source::History,
+            ..word("git status", 0, 6)
+        };
+        assert!(!listed.lists(&history));
+        assert!(listed.lists(&word("stash", 4, 6)));
     }
 
     #[test]

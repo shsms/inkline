@@ -7,7 +7,7 @@ use tulisp::{TulispContext, TulispObject};
 
 use super::values::{items, read_int, read_str};
 use crate::colors::{ColorSet, Colors};
-use crate::menu::{Matching, Style};
+use crate::menu::{Listed, Matching, Source, Style};
 
 const DEFINITIONS: &str = "
 (defvar inkline-indent 4)
@@ -20,6 +20,7 @@ const DEFINITIONS: &str = "
 (defvar inkline-menu-lines 8)
 (defvar inkline-completion-style 'prefix)
 (defvar inkline-completion-ignore-case nil)
+(defvar inkline-menu-sources '(history lisp mode))
 ";
 
 struct Symbols {
@@ -33,6 +34,7 @@ struct Symbols {
     menu_lines: TulispObject,
     completion_style: TulispObject,
     completion_ignore_case: TulispObject,
+    menu_sources: TulispObject,
 }
 
 #[derive(Default)]
@@ -106,6 +108,7 @@ pub fn register(ctx: &mut TulispContext) {
         menu_lines: ctx.intern("inkline-menu-lines"),
         completion_style: ctx.intern("inkline-completion-style"),
         completion_ignore_case: ctx.intern("inkline-completion-ignore-case"),
+        menu_sources: ctx.intern("inkline-menu-sources"),
     };
     SYMBOLS.with_borrow_mut(|s| *s = Some(symbols));
     CACHE.with_borrow_mut(|c| *c = Cache::default());
@@ -154,6 +157,27 @@ pub fn parse_style(v: &TulispObject) -> Result<Style, String> {
         "fuzzy" => Ok(Style::Fuzzy),
         _ => bad(),
     }
+}
+
+const BAD_SOURCES: &str = "expected a list of history, lisp and mode";
+
+/// A list of the menu's source names.
+pub fn parse_sources(v: &TulispObject) -> Result<Vec<Source>, String> {
+    if !v.listp() {
+        return Err(BAD_SOURCES.to_owned());
+    }
+    let mut sources = Vec::new();
+    let mut entries = items(v);
+    for entry in entries.by_ref() {
+        let Some(source) = Source::named(&entry.to_string()).filter(|_| entry.symbolp()) else {
+            return Err(BAD_SOURCES.to_owned());
+        };
+        sources.push(source);
+    }
+    if !entries.proper() {
+        return Err(BAD_SOURCES.to_owned());
+    }
+    Ok(sources)
 }
 
 const BAD_COLORS: &str = "expected a list of (NAME . \"VALUE\") pairs or a string";
@@ -448,6 +472,18 @@ pub fn completion_matching() -> Matching {
     }
 }
 
+/// Which items the menu lists: `inkline-menu-sources`.
+pub fn menu_listed() -> Listed {
+    Listed {
+        sources: read(
+            "inkline-menu-sources",
+            |s| &s.menu_sources,
+            parse_sources,
+            Source::ALL.to_vec(),
+        ),
+    }
+}
+
 /// Reads every setting and returns the bad values not reported before, as
 /// `NAME: why` lines.
 pub fn problems() -> Vec<String> {
@@ -460,6 +496,7 @@ pub fn problems() -> Vec<String> {
     show_suggestion();
     menu_lines();
     completion_matching();
+    menu_listed();
     CACHE.with_borrow_mut(|c| std::mem::take(&mut c.pending))
 }
 
@@ -652,18 +689,40 @@ mod tests {
     }
 
     #[test]
+    fn menu_source_values() {
+        use crate::menu::Source;
+        let mut ctx = TulispContext::new();
+        assert_eq!(parse_sources(&value(&mut ctx, "nil")), Ok(vec![]));
+        assert_eq!(
+            parse_sources(&value(&mut ctx, "'(mode history)")),
+            Ok(vec![Source::Mode, Source::History])
+        );
+        let bad = Err(BAD_SOURCES.to_owned());
+        for text in ["'history", "'(bash)", r#"'("lisp")"#, "'(lisp . mode)"] {
+            assert_eq!(parse_sources(&value(&mut ctx, text)), bad, "{text}");
+        }
+    }
+
+    #[test]
     fn menu_settings_have_their_defaults_and_follow_the_variables() {
-        use crate::menu::{Matching, Style};
+        use crate::menu::{Listed, Matching, Source, Style};
         crate::lisp::start();
         assert!(show_menu());
         assert!(show_suggestion());
         assert_eq!(menu_lines(), 8);
         assert_eq!(completion_style(), Style::Prefix);
         assert!(!completion_matching().ignore_case);
+        assert_eq!(
+            menu_listed(),
+            Listed {
+                sources: vec![Source::History, Source::Lisp, Source::Mode],
+            }
+        );
         crate::lisp::eval(
             "(progn (setq inkline-show-menu nil inkline-show-suggestion nil
                           inkline-menu-lines 3 inkline-completion-style 'fuzzy
-                          inkline-completion-ignore-case t) nil)",
+                          inkline-completion-ignore-case t
+                          inkline-menu-sources '(mode)) nil)",
         )
         .unwrap();
         assert_eq!(
@@ -671,6 +730,12 @@ mod tests {
             Matching {
                 style: Style::Fuzzy,
                 ignore_case: true
+            }
+        );
+        assert_eq!(
+            menu_listed(),
+            Listed {
+                sources: vec![Source::Mode],
             }
         );
         assert!(!show_menu());
