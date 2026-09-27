@@ -359,6 +359,109 @@ fn parse_depths(rest: &[u8]) -> Result<Depths, ()> {
     })
 }
 
+/// The most items of one reply that are kept; the rest are dropped.
+pub const MOST_ITEMS: usize = 1000;
+
+/// An `:item` line kept from a reply, with the `:note` after it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplyItem {
+    /// The byte range of the `:at` argument the item replaces:
+    /// `start <= offset <= end <= len`.
+    pub start: usize,
+    pub end: usize,
+    /// What the program should get there.
+    pub text: String,
+    pub note: Option<String>,
+}
+
+/// Whether `text` has no control character other than a tab.
+fn one_line_text(text: &str) -> bool {
+    !text.chars().any(|c| c.is_control() && c != '\t')
+}
+
+/// Reads a whole completion reply: `:item START END TEXT` lines, each
+/// perhaps followed by `:note TEXT`, then `:end ID`. `len` is the byte
+/// length of the `:at` argument and `offset` the `:at` offset. An `:item`
+/// whose fields do not parse is `Bad`. Skipped, without failing: an item
+/// with offsets breaking `START <= offset <= END <= len`, an empty text, or
+/// a text that is not UTF-8 or holds a control character other than a tab;
+/// a `:note` that does not follow a kept item, a second one, or one that is
+/// not UTF-8, empty, or holds such a control character. Items past
+/// `MOST_ITEMS` are dropped. `seen` is as for `reply`.
+pub fn items_reply(
+    buf: &[u8],
+    id: u64,
+    len: usize,
+    offset: usize,
+    seen: &mut usize,
+) -> Read<Vec<ReplyItem>> {
+    if !settled(buf, seen) {
+        return Read::Incomplete;
+    }
+    let mut items: Vec<ReplyItem> = Vec::new();
+    // Whether the line before was an `:item` that was kept, with no note yet.
+    let mut may_note = false;
+    let mut pos = 0;
+    loop {
+        let Some((line, keyword, rest)) = next_line(buf, &mut pos) else {
+            return Read::Incomplete;
+        };
+        match keyword {
+            b":item" => match parse_item(rest, len, offset) {
+                Ok(Some(item)) if items.len() < MOST_ITEMS => {
+                    items.push(item);
+                    may_note = true;
+                }
+                Ok(_) => may_note = false,
+                Err(()) => return Read::Bad(bad_reply(line)),
+            },
+            b":note" => {
+                if may_note
+                    && let Ok(note) = std::str::from_utf8(rest)
+                    && !note.is_empty()
+                    && one_line_text(note)
+                    && let Some(last) = items.last_mut()
+                {
+                    last.note = Some(note.to_owned());
+                }
+                may_note = false;
+            }
+            b":end" => {
+                return match parse_number::<u64>(rest) {
+                    Ok(got) if got == id => Read::Done(items, pos),
+                    _ => Read::Bad(bad_reply(line)),
+                };
+            }
+            _ if keyword.starts_with(b":") => may_note = false,
+            _ => return Read::Bad(bad_reply(line)),
+        }
+    }
+}
+
+/// `START END TEXT`: `Err` when `START` or `END` is missing or not a
+/// number, or there is no space after `END`; `Ok(None)` for an item that is
+/// skipped (see `items_reply`).
+fn parse_item(rest: &[u8], len: usize, offset: usize) -> Result<Option<ReplyItem>, ()> {
+    let mut parts = rest.splitn(3, |&b| b == b' ');
+    let (Some(start), Some(end), Some(text)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(());
+    };
+    let start: usize = parse_number(start)?;
+    let end: usize = parse_number(end)?;
+    let Ok(text) = std::str::from_utf8(text) else {
+        return Ok(None);
+    };
+    let fits = start <= offset && offset <= end && end <= len;
+    Ok(
+        (fits && !text.is_empty() && one_line_text(text)).then(|| ReplyItem {
+            start,
+            end,
+            text: text.to_owned(),
+            note: None,
+        }),
+    )
+}
+
 /// A number written only in decimal digits, without a sign.
 fn parse_number<T: std::str::FromStr>(bytes: &[u8]) -> Result<T, ()> {
     if bytes.is_empty() || !bytes.iter().all(u8::is_ascii_digit) {
@@ -712,5 +815,88 @@ mod tests {
             String::from_utf8(bytes).unwrap(),
             ":complete 3\n:cwd 2\n/d\n:arg final 4\ncsvm\n:arg final 2\nso\n:at 1 2\n:done\n"
         );
+    }
+
+    fn items(text: &str, len: usize, offset: usize) -> Read<Vec<ReplyItem>> {
+        items_reply(text.as_bytes(), 7, len, offset, &mut 0)
+    }
+
+    fn item(start: usize, end: usize, text: &str, note: Option<&str>) -> ReplyItem {
+        ReplyItem {
+            start,
+            end,
+            text: text.into(),
+            note: note.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn an_items_reply_is_read_with_notes() {
+        let Read::Done(got, used) = items(
+            ":item 0 2 sort\n:note sort the rows\n:item 0 2 first name\n:end 7\nmore",
+            2,
+            2,
+        ) else {
+            panic!("not done")
+        };
+        assert_eq!(
+            got,
+            [
+                item(0, 2, "sort", Some("sort the rows")),
+                item(0, 2, "first name", None)
+            ]
+        );
+        assert_eq!(
+            used,
+            ":item 0 2 sort\n:note sort the rows\n:item 0 2 first name\n:end 7\n".len()
+        );
+    }
+
+    #[test]
+    fn items_that_break_the_rules_are_skipped() {
+        let reply = ":item 1 2 a\n:item 0 5 b\n:item 3 3 c\n:item 0 2 \n:item 0 2 d\x07\n\
+                     :note stray-after-skipped\n:item 0 2 e\n:note one\n:note two\n\
+                     :item 0 2 f\n:note bad\x1b\n:note\n:x ignored\n:end 7\n";
+        // offset 2, len 4: START <= 2 <= END <= 4. "a" fits (1 <= 2 <= 2 <= 4)
+        // and is kept along with "e" and "f".
+        let Read::Done(got, _) = items(reply, 4, 2) else {
+            panic!("not done")
+        };
+        assert_eq!(
+            got,
+            [
+                item(1, 2, "a", None),
+                item(0, 2, "e", Some("one")),
+                item(0, 2, "f", None)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bad_item_line_breaks_the_protocol() {
+        for line in [":item 0 x a", ":item 0 2", ":item a", "plain"] {
+            let reply = format!("{line}\n:end 7\n");
+            assert!(matches!(items(&reply, 2, 2), Read::Bad(_)), "{line}");
+        }
+        assert!(matches!(items(":end 8\n", 2, 2), Read::Bad(_)));
+    }
+
+    #[test]
+    fn only_the_first_thousand_items_are_kept() {
+        let mut reply = String::new();
+        for i in 0..1200 {
+            reply.push_str(&format!(":item 0 0 w{i}\n"));
+        }
+        reply.push_str(":end 7\n");
+        let Read::Done(got, _) = items(&reply, 0, 0) else {
+            panic!("not done")
+        };
+        assert_eq!(got.len(), MOST_ITEMS);
+        assert_eq!(got[999].text, "w999");
+    }
+
+    #[test]
+    fn an_items_reply_waits_for_its_end() {
+        assert!(matches!(items(":item 0 0 a\n", 0, 0), Read::Incomplete));
     }
 }
