@@ -408,8 +408,9 @@ pub(super) extern "C" fn next_line_or_search(count: c_int, key: c_int) -> c_int 
 }
 
 /// Whether `f` is one of the Up and Down commands, so a run of them keeps
-/// its column; `menu-next` and `menu-previous` count too, as they fall back
-/// to these commands with no menu.
+/// its column. `menu-next` and `menu-previous` count too, since with no menu
+/// they may run these commands. Before they run any other command, they end
+/// the run.
 pub(super) fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
     let ours: [ffi::CommandFn; 6] = [
         previous_line_or_history,

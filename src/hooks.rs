@@ -100,6 +100,13 @@ impl State {
         let menu_rows = self.menu_rows.take();
         (self.shown_at.take(), self.message_rows.take().or(menu_rows))
     }
+
+    /// Ends a run of Up and Down: the next one starts from the cursor's own
+    /// column and a new history search.
+    fn end_vertical_run(&mut self) {
+        self.goal_column = None;
+        self.search_continues = false;
+    }
 }
 
 static REGISTER: Once = Once::new();
@@ -1683,27 +1690,22 @@ extern "C" fn accept_suggestion(count: c_int, key: c_int) -> c_int {
 }
 
 /// `C-n`: picks the next item of the menu the last draw in plain editing
-/// showed; with no menu, moves down a line or through history.
+/// showed; with no menu, runs the key's own command (see `menu_fallback`).
 pub(super) extern "C" fn menu_next(count: c_int, key: c_int) -> c_int {
-    move_pick(count, key, true, multiline::next_line_or_history)
+    move_pick(count, key, true)
 }
 
 /// `C-p`: picks the item above in the menu the last draw in plain editing
-/// showed; with no menu, moves up a line or through history.
+/// showed; with no menu, runs the key's own command (see `menu_fallback`).
 pub(super) extern "C" fn menu_previous(count: c_int, key: c_int) -> c_int {
-    move_pick(count, key, false, multiline::previous_line_or_history)
+    move_pick(count, key, false)
 }
 
-/// Moves the menu's pick `count` rows, or runs `fallback` when no menu
+/// Moves the menu's pick `count` rows, or runs `menu_fallback` when no menu
 /// shows for the line and cursor as they are. A pick move ends a run of Up
 /// and Down: the next one starts from the cursor's own column and a new
 /// history search.
-fn move_pick(
-    count: c_int,
-    key: c_int,
-    down: bool,
-    fallback: extern "C" fn(c_int, c_int) -> c_int,
-) -> c_int {
+fn move_pick(count: c_int, key: c_int, down: bool) -> c_int {
     let moved = guard(
         || {
             showing_menu()
@@ -1712,14 +1714,47 @@ fn move_pick(
                         return false;
                     };
                     menu.step(down, i64::from(count));
-                    s.goal_column = None;
-                    s.search_continues = false;
+                    s.end_vertical_run();
                     true
                 })
         },
         || false,
     );
-    if moved { 0 } else { fallback(count, key) }
+    if moved {
+        0
+    } else {
+        menu_fallback(count, key, down)
+    }
+}
+
+/// What `menu-next` (`down`) or `menu-previous` runs with no menu: what the key
+/// had before inkline bound it. Readline's `next-history` and
+/// `previous-history` become `next-line-or-history` and
+/// `previous-line-or-history`, as on Down and Up; a key that had nothing, or a
+/// run from Lisp, moves a line or through history too. Another command ends a
+/// run of Up and Down, and runs last, as readline may jump from it back to its
+/// top level.
+fn menu_fallback(count: c_int, key: c_int, down: bool) -> c_int {
+    use crate::lisp::keys::{self, Fallback};
+    let own: ffi::CommandFn = if down { menu_next } else { menu_previous };
+    match guard(|| keys::saved_binding_of(own), || Fallback::Nothing) {
+        Fallback::Command(f) if ffi::is_next_history(f) => {
+            multiline::next_line_or_history(count, key)
+        }
+        Fallback::Command(f) if ffi::is_previous_history(f) => {
+            multiline::previous_line_or_history(count, key)
+        }
+        Fallback::Command(f) => {
+            guard(|| STATE.with_borrow_mut(State::end_vertical_run), || ());
+            ffi::run_command(f, count, key)
+        }
+        Fallback::Macro(text) => {
+            ffi::push_macro_input(text);
+            0
+        }
+        Fallback::Nothing if down => multiline::next_line_or_history(count, key),
+        Fallback::Nothing => multiline::previous_line_or_history(count, key),
+    }
 }
 
 /// Tab: takes the picked item into the line; with no pick, readline's

@@ -137,10 +137,10 @@ pub const LAYOUT: &[Entry] = &[
     e(Menu, "C-g", "menu-hide", &["abort"]),
 ];
 
-/// What `menu-next` and `menu-previous` run with no menu. When the menu
-/// group is unbound and the multi-line group is not, a key that still runs
-/// one of these menu commands runs its fallback instead, as a multi-line
-/// key.
+/// What `menu-next` and `menu-previous` run on `C-n` and `C-p` with no menu.
+/// When the menu group is unbound and the multi-line group is not, a key that
+/// still runs one of these menu commands runs its fallback instead, as a
+/// multi-line key.
 pub const MENU_FALLBACKS: [(&str, &str); 2] = [
     ("menu-next", "next-line-or-history"),
     ("menu-previous", "previous-line-or-history"),

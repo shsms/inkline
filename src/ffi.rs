@@ -1249,6 +1249,16 @@ pub fn undo_command(f: CommandFn) -> Option<Undo> {
     }
 }
 
+/// Whether `f` is readline's `next-history`.
+pub fn is_next_history(f: CommandFn) -> bool {
+    std::ptr::fn_addr_eq(f, rl_get_next_history as CommandFn)
+}
+
+/// Whether `f` is readline's `previous-history`.
+pub fn is_previous_history(f: CommandFn) -> bool {
+    std::ptr::fn_addr_eq(f, rl_get_previous_history as CommandFn)
+}
+
 /// Sets whether the running command counts as given a count by the user,
 /// and returns the old setting.
 pub fn replace_explicit_count(explicit: bool) -> bool {

@@ -679,3 +679,68 @@ fn a_search_that_finds_nothing_keeps_the_menu() {
     assert_eq!(cursor_row(&s), "$ echo switch", "{}", dump(&s));
     assert_eq!(row_text(&s, 1), "l  switch", "{}", dump(&s));
 }
+
+/// `menu-next` works on any key: with a menu it moves the pick, and with none
+/// the key does what it did before (`C-t` swaps two characters).
+#[test]
+fn menu_next_on_another_key_keeps_that_keys_own_job() {
+    let mut sh = menu_showing(
+        with_init(
+            "(keymap-global-set \"C-t\" 'menu-next)",
+            vec!["git stash", "git status"],
+        ),
+        "git st",
+        "h  git status",
+    );
+    sh.send("\x14");
+    sh.wait_for("the top picked", |s| picked(s, 1));
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("xy\x14");
+    sh.wait_for("the two characters swapped", |s| cursor_row(s) == "$ yx");
+}
+
+/// With no menu, a key that had macro text types it.
+#[test]
+fn menu_next_on_a_macro_key_types_the_macro() {
+    let mut sh = Shell::start(Options {
+        inputrc: Some("\"\\C-t\": \"MAC\"\n".into()),
+        ..with_init("(keymap-global-set \"C-t\" 'menu-next)", vec![])
+    });
+    sh.send("xy\x14");
+    sh.wait_for("the macro typed", |s| cursor_row(s) == "$ xyMAC");
+}
+
+/// With no menu, a key that had nothing moves between the lines of a
+/// command.
+#[test]
+fn menu_keys_that_had_nothing_move_between_lines() {
+    let mut sh = Shell::start(with_init(
+        "(keymap-global-set \"C-x n\" 'menu-next)
+         (keymap-global-set \"C-x p\" 'menu-previous)",
+        vec![],
+    ));
+    // `\x0a` is C-j: it adds a line to the command.
+    sh.send("echo a\x0aecho b");
+    sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
+    sh.send("\x18p");
+    sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
+    sh.send("\x18n");
+    sh.wait_for("the second line again", |s| s.cursor_position().0 == 1);
+}
+
+/// A key that already ran `menu-next` before inkline bound it to
+/// `menu-next` moves a line or through history with no menu, as a key that
+/// had nothing.
+#[test]
+fn menu_next_on_a_key_that_already_ran_it_does_not_loop() {
+    let mut sh = Shell::start(Options {
+        rc: "bind '\"\\C-t\": menu-next'
+inkline eval \"(keymap-global-set \\\"C-t\\\" 'menu-next)\"
+"
+        .into(),
+        ..Options::default()
+    });
+    sh.send("xy\x14z");
+    sh.wait_for("the shell still up", |s| cursor_row(s) == "$ xyz");
+}
