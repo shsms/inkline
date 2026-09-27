@@ -53,12 +53,15 @@ fn a_group_writable_init_el_is_not_read() {
         "inkline: {}: not read: writable by group or others",
         file.display()
     );
-    sh.wait_for("the refusal", |s| {
-        (0..s.size().0).any(|r| row_text(s, r) == refused)
-    });
+    // The file's path under the temporary directory can make these lines
+    // wrap; `contents` joins a wrapped row to the next.
+    sh.wait_for("the refusal", |s| s.contents().contains(&refused));
     sh.send("inkline status\r");
     sh.wait_for("the status", |s| {
-        (0..s.size().0).any(|r| row_text(s, r).ends_with("(skipped: writable by group or others)"))
+        s.contents().contains(&format!(
+            "{} (skipped: writable by group or others)",
+            file.display()
+        ))
     });
 }
 
