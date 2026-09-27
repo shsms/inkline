@@ -130,6 +130,23 @@ fn rank(style: Style, typed: &str, text: &str) -> Option<Rank> {
     }
 }
 
+/// How `typed` matches `item` under `style`, or None for no match. A mode
+/// server's item whose text starts with a quote mark (`` ` ``, `'` or `"`)
+/// also matches against the text after that mark, so `fi` finds
+/// `` `first name` ``: starting with the typed text there ranks as starting
+/// with it, and in the fuzzy style a match with gaps there ranks by where it
+/// falls after the mark. The better of the two ranks counts.
+fn item_rank(style: Style, typed: &str, item: &Item) -> Option<Rank> {
+    let whole = rank(style, typed, &item.text);
+    if item.source != Source::Mode || whole == Some(Rank::Prefix) {
+        return whole;
+    }
+    let Some(after) = item.text.strip_prefix(['`', '\'', '"']) else {
+        return whole;
+    };
+    whole.into_iter().chain(rank(style, typed, after)).min()
+}
+
 /// Gathers history items for `line`: offered entries come newest first.
 pub struct HistoryGather {
     line: String,
@@ -192,12 +209,13 @@ fn applied(line: &str, item: &Item) -> String {
 }
 
 /// The items of one source that match, in the order `style` gives: those
-/// that start with the typed text in list order, then the others.
+/// that start with the typed text in list order, then the others. See
+/// [`item_rank`] for a mode server's quoted items.
 fn ordered(line: &str, point: usize, style: Style, items: Vec<Item>) -> Vec<Item> {
     let mut ranked: Vec<(Rank, Item)> = items
         .into_iter()
         .filter(|i| i.start <= point && point <= i.end && i.end <= line.len())
-        .filter_map(|i| Some((rank(style, &line[i.start..point], &i.text)?, i)))
+        .filter_map(|i| Some((item_rank(style, &line[i.start..point], &i)?, i)))
         .collect();
     // A stable sort keeps list order among equal ranks.
     ranked.sort_by_key(|(rank, _)| *rank);
@@ -593,6 +611,85 @@ mod tests {
             .map(|i| (i.text.as_str(), i.note.as_deref()))
             .collect();
         assert_eq!(got, [("stash", Some("a"))]);
+    }
+
+    fn mode(text: &str, start: usize, end: usize) -> Item {
+        Item {
+            source: Source::Mode,
+            ..word(text, start, end)
+        }
+    }
+
+    #[test]
+    fn a_quoted_mode_item_matches_after_its_quote_mark() {
+        let texts = |line: &str, style, mode: Vec<Item>, words: Vec<Item>| -> Vec<String> {
+            let point = line.len();
+            let items = assemble(line, point, style, vec![], None, mode, words);
+            items.into_iter().map(|i| i.text).collect()
+        };
+        // `fi` finds each quoted name, and ranks it with the plain ones that
+        // start with `fi`, in list order.
+        let mode_items = vec![
+            mode("`first name`", 5, 7),
+            mode("file", 5, 7),
+            mode("'fig'", 5, 7),
+            mode("\"fin\"", 5, 7),
+            mode("`other`", 5, 7),
+        ];
+        assert_eq!(
+            texts("sort fi", Style::Prefix, mode_items.clone(), vec![]),
+            ["`first name`", "file", "'fig'", "\"fin\""]
+        );
+        // The typed quote mark still matches as it is.
+        assert_eq!(
+            texts(
+                "sort `fi",
+                Style::Prefix,
+                vec![mode("`first name`", 5, 8)],
+                vec![]
+            ),
+            ["`first name`"]
+        );
+        // In the fuzzy style the text after the mark counts too: a prefix
+        // there comes before a gapped match.
+        assert_eq!(
+            texts(
+                "sort fi",
+                Style::Fuzzy,
+                vec![mode("xfxi", 5, 7), mode("`first name`", 5, 7)],
+                vec![]
+            ),
+            ["`first name`", "xfxi"]
+        );
+        assert_eq!(
+            texts(
+                "sort fn",
+                Style::Fuzzy,
+                vec![mode("`first name`", 5, 7)],
+                vec![]
+            ),
+            ["`first name`"]
+        );
+        // Only a mode server's items: a quoted Lisp word must start with the
+        // typed text.
+        assert!(
+            texts(
+                "sort fi",
+                Style::Prefix,
+                vec![],
+                vec![word("`first`", 5, 7)]
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_quoted_match_has_no_grey_text() {
+        assert_eq!(grey("sort fi", 7, &mode("`first name`", 5, 7)), None);
+        assert_eq!(
+            grey("sort `fi", 8, &mode("`first name`", 5, 8)),
+            Some("rst name`")
+        );
     }
 
     #[test]
