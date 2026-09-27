@@ -260,6 +260,9 @@ pub struct Menu {
     /// Whether it was made while Lisp ran; the Lisp hooks give no items
     /// then.
     pub lisp_ran: bool,
+    /// Whether a mode server was asked for items for this line and cursor
+    /// and had not answered when the menu was made.
+    pub mode_waiting: bool,
 }
 
 impl Menu {
@@ -271,6 +274,7 @@ impl Menu {
             picked: None,
             shown: false,
             lisp_ran: false,
+            mode_waiting: false,
         }
     }
 

@@ -6,17 +6,18 @@ use std::ffi::{c_char, c_int};
 use std::io::Write;
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::{Once, OnceLock};
 use std::time::Instant;
 
-use crate::args::{self, CommandArgs};
+use crate::args::{self, Arg, CommandArgs};
 use crate::commands::{self, PathCache};
 use crate::ffi;
 use crate::highlight;
 use crate::lexer::{Kind, Lexer};
 use crate::menu::{self, Item, Menu, Source};
-use crate::mode_server::{self, protocol::Reply};
+use crate::mode_server::{self, protocol::Reply, protocol::ReplyItem};
 use crate::pairs::{self, Action};
 use crate::render::{self, MenuView, Repaint};
 use crate::suggest;
@@ -75,6 +76,12 @@ struct State {
     paused_on: Option<String>,
     /// Set when a new error waits for a pause before it is underlined.
     wants_pause: bool,
+    /// The line and cursor typing paused on while a mode server's
+    /// completion items waited for a pause: they are asked for there.
+    items_paused_on: Option<(String, usize)>,
+    /// Set when a mode server's completion items wait for a pause before
+    /// they are asked for.
+    items_want_pause: bool,
     /// The column a run of Up and Down keeps to.
     goal_column: Option<usize>,
     /// Whether the last vertical command that deferred to history did a
@@ -172,6 +179,8 @@ thread_local! {
         underlined: None,
         paused_on: None,
         wants_pause: false,
+        items_paused_on: None,
+        items_want_pause: false,
         goal_column: None,
         search_continues: false,
         completing: false,
@@ -756,11 +765,24 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             || ffi::reading_command_key() && ffi::normal_editing(),
             || false,
         );
-        let pause = guard(
-            || plain_key && STATE.with_borrow_mut(|s| std::mem::take(&mut s.wants_pause)),
-            || false,
-        )
-        .then(|| {
+        // What the pause is for: a new error or notice, or a mode server's
+        // completion items.
+        let (for_errors, for_items) = guard(
+            || {
+                if plain_key {
+                    STATE.with_borrow_mut(|s| {
+                        (
+                            std::mem::take(&mut s.wants_pause),
+                            std::mem::take(&mut s.items_want_pause),
+                        )
+                    })
+                } else {
+                    (false, false)
+                }
+            },
+            || (false, false),
+        );
+        let pause = (for_errors || for_items).then(|| {
             let began: &Instant = pause_began.get_or_insert_with(Instant::now);
             let waited = c_int::try_from(began.elapsed().as_millis()).unwrap_or(c_int::MAX);
             (PAUSE_MS - waited).max(0)
@@ -794,12 +816,21 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             .flatten();
         match signal.unwrap_or_else(|| ffi::wait_for_input(stream, pause, &servers)) {
             ffi::Wait::Ready | ffi::Wait::Error => break None,
-            // Typing paused with a new error or notice on the line: show it.
+            // Typing paused with a new error or notice on the line, or with
+            // a mode server's completion items still to ask for: show the
+            // error or notice, and ask for the items.
             ffi::Wait::Paused => {
                 pause_began = None;
                 guard(
                     || {
-                        STATE.with_borrow_mut(|s| s.paused_on = ffi::line());
+                        STATE.with_borrow_mut(|s| {
+                            if for_errors {
+                                s.paused_on = ffi::line();
+                            }
+                            if for_items {
+                                s.items_paused_on = ffi::line().map(|line| (line, ffi::point()));
+                            }
+                        });
                         redraw();
                     },
                     draw_below_notice,
@@ -809,14 +840,18 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
             // turned off once typing pauses. The redraw asks the servers
             // again: a reply kept for the line's arguments now answers,
             // one for arguments no longer on the line is dropped, and a
-            // request for the line as it is now is sent. Without a
-            // redraw, a pause asked for is still waited for.
+            // request for the line as it is now is sent (for completion
+            // items, once typing pauses there). Without a redraw, a pause
+            // asked for is still waited for.
             ffi::Wait::Other => guard(
                 || {
                     if mode_server::read_waiting() {
                         redraw();
-                    } else if pause.is_some() {
-                        STATE.with_borrow_mut(|s| s.wants_pause = true);
+                    } else {
+                        STATE.with_borrow_mut(|s| {
+                            s.wants_pause |= for_errors;
+                            s.items_want_pause |= for_items;
+                        });
                     }
                 },
                 draw_below_notice,
@@ -964,6 +999,8 @@ extern "C" fn pre_input() -> c_int {
                 s.underlined = None;
                 s.paused_on = None;
                 s.wants_pause = false;
+                s.items_paused_on = None;
+                s.items_want_pause = false;
                 s.goal_column = None;
                 s.search_continues = false;
                 s.menu = None;
@@ -1019,6 +1056,7 @@ extern "C" fn deprep_terminal() {
             let (shown_at, below) = STATE.with_borrow_mut(|s| {
                 // A pause asked for belongs to the line that ends.
                 s.wants_pause = false;
+                s.items_want_pause = false;
                 s.take_drawn()
             });
             if (shown_at.is_some() || below.is_some()) && ffi::line_done() {
@@ -1250,12 +1288,14 @@ fn repaint_line() -> bool {
     let show_menu = crate::lisp::settings::show_menu();
     let show_suggestion = crate::lisp::settings::show_suggestion();
     // With both the menu and the grey text off, nothing is gathered.
-    let menu = (editing
+    let gather = editing
         && !line.is_empty()
         && (show_menu || show_suggestion)
         && !is_hidden(&line)
-        && !recalled(&line))
-    .then(|| menu_for(&line, point));
+        && !recalled(&line);
+    // Mode server items are asked for only when a menu is gathered.
+    let (found, mode_items) = ask_mode_servers(&line, &path, gather.then_some(point));
+    let menu = gather.then(|| menu_for(&line, point, mode_items));
     let suggestion = menu
         .as_ref()
         .filter(|_| show_suggestion)
@@ -1263,7 +1303,6 @@ fn repaint_line() -> bool {
         .and_then(|item| menu::grey(&line, point, item))
         .map(str::to_owned);
     let menu_lines = crate::lisp::settings::menu_lines();
-    let found = ask_mode_servers(&line, &path);
     let (found, sets) = highlight::with_sets(found, &colors, mode_server::colors);
     show_mode_server_notices(&line);
     // Read after the suggestion hook and the mode server notices, which may
@@ -1328,16 +1367,19 @@ fn repaint_line() -> bool {
 /// The menu for `line` with the cursor at `point`: the one kept in `STATE`
 /// when it was made for the same line and cursor (so a pick stays), else a
 /// new one gathered from the sources: history and the suggestion hook when
-/// the cursor is at the end of the line, then the completion hook.
-fn menu_for(line: &str, point: usize) -> Menu {
+/// the cursor is at the end of the line, then the mode server's items
+/// (`mode`), then the completion hook. A new menu for the same line and
+/// cursor keeps the pick on the item with the same text and range, if it is
+/// still there.
+fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
     let lisp_runs = crate::lisp::RUNNING.load(Ordering::Relaxed);
+    let waiting = mode.waiting;
+    let mut kept = STATE.with_borrow(|s| s.menu.clone().filter(|m| m.is_for(line, point)));
     // A menu made while Lisp ran has no items from the Lisp hooks: once Lisp
-    // has stopped, a new one is gathered.
-    if let Some(menu) = STATE.with_borrow(|s| {
-        s.menu
-            .clone()
-            .filter(|m| m.is_for(line, point) && (lisp_runs || !m.lisp_ran))
-    }) {
+    // has stopped, a new one is gathered. One made while the mode server had
+    // not answered is gathered again once it has.
+    if let Some(menu) = kept.take_if(|m| (lisp_runs || !m.lisp_ran) && (!m.mode_waiting || waiting))
+    {
         return menu;
     }
     let style = crate::lisp::settings::completion_style();
@@ -1357,17 +1399,23 @@ fn menu_for(line: &str, point: usize) -> Menu {
             note: None,
         });
     let words = crate::lisp::hooks::completions(line, point);
-    let items = menu::assemble(
-        line,
-        point,
-        style,
-        history.into_items(),
-        whole,
-        Vec::new(),
-        words,
-    );
+    let mode = mode
+        .came
+        .map(|(items, arg)| menu::mode::place(line, point, &arg, &items))
+        .unwrap_or_default();
+    let items = menu::assemble(line, point, style, history.into_items(), whole, mode, words);
+    let picked = kept
+        .as_ref()
+        .and_then(|m| m.items.get(m.picked?))
+        .and_then(|was| {
+            items
+                .iter()
+                .position(|i| i.text == was.text && i.start == was.start && i.end == was.end)
+        });
     Menu {
+        picked,
         lisp_ran: lisp_runs,
+        mode_waiting: waiting,
         ..Menu::new(line, point, items)
     }
 }
@@ -1438,22 +1486,35 @@ fn showing_menu() -> bool {
 /// first lines and replies. The commands answered in time, each with its
 /// mode and its reply, in line order. Why a server was turned off waits for
 /// `show_mode_server_notices`.
-fn ask_mode_servers(line: &str, path: &str) -> Vec<(String, CommandArgs, Reply)> {
+///
+/// With `point`, the cursor's place when a menu is gathered, the server of
+/// the innermost of those commands with an argument (after its name) that
+/// holds the cursor is also asked for completion items there, within the
+/// same wait. The request is sent only once typing has paused on this line
+/// and cursor, so a burst of keys never waits behind it; until then a kept
+/// reply still answers, and otherwise the items are waiting and a pause is
+/// asked for.
+fn ask_mode_servers(
+    line: &str,
+    path: &str,
+    point: Option<usize>,
+) -> (Vec<(String, CommandArgs, Reply)>, ModeItems) {
     let began = Instant::now();
+    let nothing = || (Vec::new(), ModeItems::default());
     if !ffi::reading_command()
         || crate::lisp::RUNNING.load(Ordering::Relaxed)
         || !mode_server::any_defined()
     {
-        return Vec::new();
+        return nothing();
     }
     let table = crate::lisp::settings::command_modes();
     if table.is_empty() {
-        return Vec::new();
+        return nothing();
     }
     // `STATE` is borrowed only for the parse: never while waiting on a
     // server.
     let Some(tree) = STATE.with_borrow_mut(|s| s.lexer.tree(line)) else {
-        return Vec::new();
+        return nothing();
     };
     let found: Vec<(String, CommandArgs)> = args::commands(&tree, line, |word| {
         mode_server::mode_for(word, &table).is_some()
@@ -1462,7 +1523,7 @@ fn ask_mode_servers(line: &str, path: &str) -> Vec<(String, CommandArgs, Reply)>
     .filter_map(|c| Some((mode_server::mode_for(&c.name, &table)?, c)))
     .collect();
     if found.is_empty() {
-        return Vec::new();
+        return nothing();
     }
     let modes: Vec<String> = found.iter().map(|(mode, _)| mode.clone()).collect();
     mode_server::prepare(&modes, path, || Some(ffi::exported_environment()));
@@ -1471,13 +1532,69 @@ fn ask_mode_servers(line: &str, path: &str) -> Vec<(String, CommandArgs, Reply)>
         .iter()
         .map(|(mode, c)| (mode.clone(), mode_server::request(cwd.clone(), c)))
         .collect();
+    // The command and the argument the cursor is in, and the cursor. A
+    // command inside another's argument comes after it in `found`.
+    let at_cursor = point.and_then(|point| {
+        found
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(c, (_, command))| {
+                let arg = command.args.iter().skip(1).position(|a| a.holds(point))? + 1;
+                Some((c, arg, point))
+            })
+    });
+    let paused = at_cursor.is_some_and(|(_, _, point)| {
+        STATE.with_borrow(|s| {
+            s.items_paused_on
+                .as_ref()
+                .is_some_and(|(on, at)| on == line && *at == point)
+        })
+    });
+    let items_ask = at_cursor.map(|(c, arg, point)| {
+        let (mode, request) = asks[c].clone();
+        mode_server::ItemsAsk {
+            mode,
+            request,
+            at: (arg, found[c].1.args[arg].offset_at(point)),
+            send: paused,
+        }
+    });
     let wait = mode_server::WAIT.saturating_sub(began.elapsed());
-    let replies = mode_server::replies(&asks, None, wait, ffi::signal_to_act_on).0;
-    found
+    let (replies, items) =
+        mode_server::replies(&asks, items_ask.as_ref(), wait, ffi::signal_to_act_on);
+    let mut mode_items = ModeItems::default();
+    if let Some((c, arg, _)) = at_cursor {
+        match items {
+            mode_server::Items::Came(items) => {
+                mode_items.came = Some((items, found[c].1.args[arg].clone()));
+            }
+            mode_server::Items::Waiting => {
+                mode_items.waiting = true;
+                if !paused {
+                    STATE.with_borrow_mut(|s| s.items_want_pause = true);
+                }
+            }
+            mode_server::Items::NotAsked => {}
+        }
+    }
+    let found = found
         .into_iter()
         .zip(replies)
         .filter_map(|((mode, command), reply)| Some((mode, command, reply?)))
-        .collect()
+        .collect();
+    (found, mode_items)
+}
+
+/// What the mode server of the command the cursor is in gave for the
+/// completion menu.
+#[derive(Default)]
+struct ModeItems {
+    /// The items that came, not yet placed on the line, and the argument
+    /// they are for.
+    came: Option<(Rc<[ReplyItem]>, Arg)>,
+    /// Whether items may still come for this line and cursor.
+    waiting: bool,
 }
 
 /// Shows why mode servers were turned off once typing pauses on
