@@ -25,7 +25,7 @@ pub struct Colors {
     error: String,
     /// The SGR codes of the menu's rows; empty means no colour.
     menu: String,
-    /// The SGR codes of the picked row.
+    /// The SGR codes of the highlighted row.
     menu_selected: String,
     /// The SGR codes of each row's source letter and of the `… N more` row.
     menu_source: String,

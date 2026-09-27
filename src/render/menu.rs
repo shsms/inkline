@@ -6,17 +6,18 @@ use super::{expand_tabs, fit};
 use crate::colors::Colors;
 use crate::menu::{Item, window};
 
-/// A menu to draw: its items, the picked one, and the most rows it takes.
+/// A menu to draw: its items, the highlighted one, and the most rows it
+/// takes.
 pub struct MenuView<'a> {
     pub items: &'a [Item],
-    pub picked: Option<usize>,
+    pub highlighted: Option<usize>,
     pub max_rows: usize,
 }
 
 /// The rows to draw for `view` on a screen `cols` wide with `room` rows free
 /// under the line, each with its colours, in order. Empty when nothing fits.
 pub fn rows(view: &MenuView, room: usize, cols: usize, colors: &Colors) -> Vec<String> {
-    let shown = window(view.items.len(), view.picked, view.max_rows.min(room));
+    let shown = window(view.items.len(), view.highlighted, view.max_rows.min(room));
     // The last column stays free, so the terminal never wraps.
     let width = cols.saturating_sub(1);
     // Every item row starts with its letter and two spaces.
@@ -55,7 +56,7 @@ pub fn rows(view: &MenuView, room: usize, cols: usize, colors: &Colors) -> Vec<S
             ),
             None => (item_text(&item.text, width.saturating_sub(3)), None),
         };
-        rows.push(if view.picked == Some(i) {
+        rows.push(if view.highlighted == Some(i) {
             let note = note.map(|note| format!("  {note}")).unwrap_or_default();
             paint(colors.menu_selected(), &format!("{letter}  {text}{note}"))
         } else {

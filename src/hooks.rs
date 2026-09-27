@@ -1366,7 +1366,7 @@ fn repaint_line() -> bool {
             message: message.as_deref(),
             menu: menu.as_ref().filter(|_| show_menu).map(|m| MenuView {
                 items: &m.items,
-                picked: m.picked,
+                highlighted: m.picked,
                 max_rows: menu_lines,
             }),
             rows,

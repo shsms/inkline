@@ -425,12 +425,12 @@ pub struct Window {
     pub more: usize,
 }
 
-/// The window of a menu of `total` items with `picked` picked, in at most
-/// `rows` rows. With more items than rows, the last row counts the ones not
-/// shown, and the items start at the top until the pick passes the last item
-/// row; the pick then stays on that row. A single row shows the pick (or the
-/// top item) and no count.
-pub fn window(total: usize, picked: Option<usize>, rows: usize) -> Window {
+/// The window of a menu of `total` items with row `highlighted`
+/// highlighted, in at most `rows` rows. With more items than rows, the last
+/// row counts the ones not shown, and the items start at the top until the
+/// highlighted row passes the last item row; it then stays on that row. A
+/// single row shows the highlighted item (or the top item) and no count.
+pub fn window(total: usize, highlighted: Option<usize>, rows: usize) -> Window {
     if rows == 0 || total == 0 {
         return Window {
             first: 0,
@@ -447,13 +447,13 @@ pub fn window(total: usize, picked: Option<usize>, rows: usize) -> Window {
     }
     if rows == 1 {
         return Window {
-            first: picked.unwrap_or(0),
+            first: highlighted.unwrap_or(0),
             count: 1,
             more: 0,
         };
     }
     let count = rows - 1;
-    let first = match picked {
+    let first = match highlighted {
         Some(p) if p >= count => p + 1 - count,
         _ => 0,
     };

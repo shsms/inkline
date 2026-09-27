@@ -477,11 +477,11 @@ mod tests {
         Colors::from_entries(&[("menu-source".to_owned(), String::new())]).unwrap()
     }
 
-    /// A menu of `items` with no pick and room for eight rows.
+    /// A menu of `items` with no row highlighted and room for eight rows.
     fn view(items: &[crate::menu::Item]) -> MenuView<'_> {
         MenuView {
             items,
-            picked: None,
+            highlighted: None,
             max_rows: 8,
         }
     }
@@ -505,7 +505,7 @@ mod tests {
         let list = items(&["git status", "git stash"]);
         let out = build(&Repaint {
             menu: Some(MenuView {
-                picked: Some(1),
+                highlighted: Some(1),
                 ..view(&list)
             }),
             ..repaint("git st", 6, &[], &colors)
@@ -685,12 +685,12 @@ mod tests {
     }
 
     #[test]
-    fn a_picked_row_draws_its_note_in_the_picked_colour() {
+    fn a_highlighted_row_draws_its_note_in_the_highlight_colour() {
         let colors = Colors::default();
         let list = noted(&[("sort", Some("sort the rows"))]);
         let out = build(&Repaint {
             menu: Some(MenuView {
-                picked: Some(0),
+                highlighted: Some(0),
                 ..view(&list)
             }),
             ..repaint("s", 1, &[], &colors)
