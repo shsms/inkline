@@ -3,6 +3,39 @@
 
 * Features
 
+** TODO Next: a mode server for sed, awk, jq and grep
+
+The next big feature. One new mode server program (for example
+~inkline-tools~, started as ~inkline-tools --mode jq~, with one inkline
+mode per command) colours, underlines errors in, indents and offers
+completion items for the scripts these commands take, as csvm does for
+its own. inkline itself needs no change. Start with a design pass: a
+spec, then a plan.
+
+Suggested order, most payoff for the least work first:
+1. A small shared crate for the mode protocol. The protocol code now
+   lives inside csvm's server (~src/mode_server.rs~ in csvm-rs); both
+   servers would use the crate.
+2. jq: ~jaq-syn~ (MIT, jaq's own jq parser) or ~tree-sitter-jq~
+   (GPL-3.0-or-later). Colours and errors come from the parser;
+   completion offers jq's built-in functions.
+3. Regex colouring, shared by grep, sed's ~s///~ and awk's ~/…/~:
+   ~tree-sitter-regex~ (MIT) or ~regex-syntax~. Both read Rust/ERE
+   syntax, so POSIX BRE (~\(~, ~\{~) needs a small tokenizer of our own.
+4. sed: addresses, ~s///~, ~y///~, labels and ~{}~ blocks.
+   ~tree-sitter-sed~ 0.18 (MIT) is a small one-person project and may not
+   build against the tree-sitter 0.27 inkline pins; sed's grammar is
+   small enough to parse by hand.
+5. awk, the most work: no parser on crates.io is meant to be reused
+   (~frawk~, ~awk-rs~ and ~awkrs~ are whole programs). A tree-sitter awk
+   grammar exists on GitHub but not on crates.io: build it from its C
+   source, or write a parser. A nice extra: with ~-F,~ and a CSV file
+   on the line, ~$3~ gets the column's name as a note, and completion
+   offers awk's built-in functions and variables (~NR~, ~NF~, …).
+
+Keep it a separate program rather than a built-in tree-sitter mode
+inside inkline, which would grow the library every bash process loads.
+
 ** TODO A completion menu under the line
 
 As you type, a menu of possible completions shows under the command, and
