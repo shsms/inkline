@@ -19,6 +19,7 @@ const DEFINITIONS: &str = "
 (defvar inkline-show-suggestion t)
 (defvar inkline-menu-lines 8)
 (defvar inkline-completion-style 'prefix)
+(defvar inkline-completion-ignore-case nil)
 ";
 
 struct Symbols {
@@ -31,6 +32,7 @@ struct Symbols {
     show_suggestion: TulispObject,
     menu_lines: TulispObject,
     completion_style: TulispObject,
+    completion_ignore_case: TulispObject,
 }
 
 #[derive(Default)]
@@ -103,6 +105,7 @@ pub fn register(ctx: &mut TulispContext) {
         show_suggestion: ctx.intern("inkline-show-suggestion"),
         menu_lines: ctx.intern("inkline-menu-lines"),
         completion_style: ctx.intern("inkline-completion-style"),
+        completion_ignore_case: ctx.intern("inkline-completion-ignore-case"),
     };
     SYMBOLS.with_borrow_mut(|s| *s = Some(symbols));
     CACHE.with_borrow_mut(|c| *c = Cache::default());
@@ -431,10 +434,17 @@ fn completion_style() -> Style {
     )
 }
 
-/// How the menu and the grey text match items: `inkline-completion-style`.
+/// How the menu and the grey text match items: `inkline-completion-style` and
+/// `inkline-completion-ignore-case`.
 pub fn completion_matching() -> Matching {
     Matching {
         style: completion_style(),
+        ignore_case: read(
+            "inkline-completion-ignore-case",
+            |s| &s.completion_ignore_case,
+            parse_flag,
+            false,
+        ),
     }
 }
 
@@ -643,17 +653,26 @@ mod tests {
 
     #[test]
     fn menu_settings_have_their_defaults_and_follow_the_variables() {
-        use crate::menu::Style;
+        use crate::menu::{Matching, Style};
         crate::lisp::start();
         assert!(show_menu());
         assert!(show_suggestion());
         assert_eq!(menu_lines(), 8);
         assert_eq!(completion_style(), Style::Prefix);
+        assert!(!completion_matching().ignore_case);
         crate::lisp::eval(
             "(progn (setq inkline-show-menu nil inkline-show-suggestion nil
-                          inkline-menu-lines 3 inkline-completion-style 'fuzzy) nil)",
+                          inkline-menu-lines 3 inkline-completion-style 'fuzzy
+                          inkline-completion-ignore-case t) nil)",
         )
         .unwrap();
+        assert_eq!(
+            completion_matching(),
+            Matching {
+                style: Style::Fuzzy,
+                ignore_case: true
+            }
+        );
         assert!(!show_menu());
         assert!(!show_suggestion());
         assert_eq!(menu_lines(), 3);

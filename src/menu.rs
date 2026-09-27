@@ -47,14 +47,46 @@ pub enum Style {
     Fuzzy,
 }
 
-/// How items are matched (`inkline-completion-style`).
+/// How items are matched: the style and whether case counts
+/// (`inkline-completion-ignore-case`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Matching {
     pub style: Style,
+    pub ignore_case: bool,
 }
 
-/// The most history items gathered for one line that start with it, and in
-/// the fuzzy style also the most that match it with gaps.
+impl Matching {
+    /// Whether `a` and `b` match as characters.
+    fn same(self, a: char, b: char) -> bool {
+        a == b || (self.ignore_case && a.to_lowercase().eq(b.to_lowercase()))
+    }
+
+    /// Whether `text` starts with `typed`: `Prefix` in the typed case,
+    /// `OtherCasePrefix` only when case is ignored.
+    fn starts(self, typed: &str, text: &str) -> Option<Rank> {
+        if text.starts_with(typed) {
+            return Some(Rank::Prefix);
+        }
+        if !self.ignore_case {
+            return None;
+        }
+        let mut rest = text.chars();
+        typed
+            .chars()
+            .all(|c| rest.next().is_some_and(|t| self.same(t, c)))
+            .then_some(Rank::OtherCasePrefix)
+    }
+
+    /// Whether the characters of `typed` appear in `text` in order.
+    fn in_order(self, typed: &str, text: &str) -> bool {
+        let mut rest = text.chars();
+        typed.chars().all(|c| rest.any(|t| self.same(t, c)))
+    }
+}
+
+/// The most history items gathered for one line of each kind: those that
+/// start with it in the same case, those that start with it in another case,
+/// and those that match it with gaps.
 pub const HISTORY_LIMIT: usize = 50;
 
 /// Whether `text` can be drawn: it has no control character other than a
@@ -65,19 +97,14 @@ pub fn drawable(text: &str) -> bool {
         .any(|c| c.is_control() && c != '\n' && c != '\t')
 }
 
-/// How well an item matched, lower first: every item that starts with the
-/// typed text, then the others by the length of their tightest match and
-/// then by where it starts (in characters).
+/// How well an item matched, lower first: every item that starts with the typed
+/// text, then those that start with it in another case, then the others by the
+/// length of their tightest match and then by where it starts (in characters).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     Prefix,
+    OtherCasePrefix,
     Gapped { span: usize, start: usize },
-}
-
-/// Whether the characters of `typed` appear in `text` in order.
-fn in_order(typed: &str, text: &str) -> bool {
-    let mut rest = text.chars();
-    typed.chars().all(|c| rest.any(|t| t == c))
 }
 
 /// The tightest place `typed` (not empty) matches in `text`, in order with
@@ -88,7 +115,7 @@ fn in_order(typed: &str, text: &str) -> bool {
 /// no start in between gives a shorter match. The next round starts after
 /// that start, so the time grows with the text's length times `typed`'s,
 /// not with the square of the text's length.
-fn tightest(typed: &[char], text: &[char]) -> Option<(usize, usize)> {
+fn tightest(how: Matching, typed: &[char], text: &[char]) -> Option<(usize, usize)> {
     typed.first()?;
     let mut best: Option<(usize, usize)> = None;
     let mut from = 0;
@@ -96,7 +123,7 @@ fn tightest(typed: &[char], text: &[char]) -> Option<(usize, usize)> {
         let mut want = 0;
         let mut end = from;
         while want < typed.len() && end < text.len() {
-            if text[end] == typed[want] {
+            if how.same(text[end], typed[want]) {
                 want += 1;
             }
             end += 1;
@@ -108,7 +135,7 @@ fn tightest(typed: &[char], text: &[char]) -> Option<(usize, usize)> {
         let mut start = end;
         while want > 0 {
             start -= 1;
-            if text[start] == typed[want - 1] {
+            if how.same(text[start], typed[want - 1]) {
                 want -= 1;
             }
         }
@@ -123,15 +150,15 @@ fn tightest(typed: &[char], text: &[char]) -> Option<(usize, usize)> {
 
 /// How `typed` matches `text`, or None for no match.
 fn rank(how: Matching, typed: &str, text: &str) -> Option<Rank> {
-    if text.starts_with(typed) {
-        return Some(Rank::Prefix);
+    if let Some(rank) = how.starts(typed, text) {
+        return Some(rank);
     }
     match how.style {
         Style::Prefix => None,
         Style::Fuzzy => {
             let typed: Vec<char> = typed.chars().collect();
             let text: Vec<char> = text.chars().collect();
-            tightest(&typed, &text).map(|(span, start)| Rank::Gapped { span, start })
+            tightest(how, &typed, &text).map(|(span, start)| Rank::Gapped { span, start })
         }
     }
 }
@@ -159,8 +186,20 @@ pub struct HistoryGather {
     how: Matching,
     items: Vec<Item>,
     seen: HashSet<String>,
-    /// How many of `items` start with the line.
-    prefixed: usize,
+    /// How many of `items` are of each `Kind`.
+    taken: [usize; 3],
+}
+
+/// How a history entry matches the line.
+#[derive(Clone, Copy)]
+enum Kind {
+    /// It starts with the line in the same case.
+    SameCase,
+    /// It starts with the line in another case.
+    OtherCase,
+    /// It does not start with the line: it is taken only when it matches
+    /// with gaps, in the fuzzy style.
+    Gapped,
 }
 
 impl HistoryGather {
@@ -170,28 +209,31 @@ impl HistoryGather {
             how,
             items: Vec::new(),
             seen: HashSet::new(),
-            prefixed: 0,
+            taken: [0; 3],
         }
     }
 
     /// Takes `entry` when it matches the whole line and is not the line
-    /// itself, an entry already taken, or one that cannot be drawn. Entries
-    /// that start with the line and those that match with gaps each stop
-    /// being taken at `HISTORY_LIMIT`, so gapped matches never crowd out an
-    /// older entry that starts with the line. True once `HISTORY_LIMIT`
-    /// entries that start with the line are taken: the scan can stop.
+    /// itself, an entry already taken, or one that cannot be drawn. Each
+    /// `Kind` of entry stops being taken at `HISTORY_LIMIT`, so a kind that
+    /// ranks lower never crowds out an older entry of a kind that ranks
+    /// higher. True once `HISTORY_LIMIT` entries that start with the line in
+    /// the same case are taken: the scan can stop.
     pub fn offer(&mut self, entry: &str) -> bool {
-        let prefixed = entry.starts_with(&self.line);
-        let matches = match self.how.style {
-            Style::Prefix => prefixed,
-            Style::Fuzzy => {
-                prefixed
-                    || (self.items.len() - self.prefixed < HISTORY_LIMIT
-                        && in_order(&self.line, entry))
-            }
+        let kind = match self.how.starts(&self.line, entry) {
+            Some(Rank::Prefix) => Kind::SameCase,
+            Some(Rank::OtherCasePrefix) => Kind::OtherCase,
+            Some(Rank::Gapped { .. }) | None => Kind::Gapped,
         };
+        let room = self.taken[kind as usize] < HISTORY_LIMIT;
+        let matches = room
+            && match (kind, self.how.style) {
+                (Kind::SameCase | Kind::OtherCase, _) => true,
+                (Kind::Gapped, Style::Prefix) => false,
+                (Kind::Gapped, Style::Fuzzy) => self.how.in_order(&self.line, entry),
+            };
         if matches && entry != self.line && !self.seen.contains(entry) && drawable(entry) {
-            self.prefixed += usize::from(prefixed);
+            self.taken[kind as usize] += 1;
             self.seen.insert(entry.to_owned());
             self.items.push(Item {
                 text: entry.to_owned(),
@@ -201,7 +243,7 @@ impl HistoryGather {
                 note: None,
             });
         }
-        self.prefixed >= HISTORY_LIMIT
+        self.taken[Kind::SameCase as usize] >= HISTORY_LIMIT
     }
 
     pub fn into_items(self) -> Vec<Item> {
@@ -389,9 +431,11 @@ mod tests {
 
     const PREFIX: Matching = Matching {
         style: Style::Prefix,
+        ignore_case: false,
     };
     const FUZZY: Matching = Matching {
         style: Style::Fuzzy,
+        ignore_case: false,
     };
 
     fn history(line: &str, how: Matching, entries: &[&str]) -> Vec<String> {
@@ -496,6 +540,87 @@ mod tests {
         assert_eq!(texts, ["Swap"]);
     }
 
+    const IGNORE_CASE: Matching = Matching {
+        style: Style::Prefix,
+        ignore_case: true,
+    };
+
+    #[test]
+    fn ignoring_case_ranks_items_of_the_typed_case_first() {
+        let items = assemble(
+            "x sw",
+            4,
+            IGNORE_CASE,
+            vec![],
+            None,
+            vec![],
+            vec![word("Swap", 2, 4), word("switch", 2, 4), word("SHOW", 2, 4)],
+        );
+        let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, ["switch", "Swap"]);
+    }
+
+    #[test]
+    fn fuzzy_can_ignore_case() {
+        let fuzzy = Matching {
+            style: Style::Fuzzy,
+            ignore_case: true,
+        };
+        let items = assemble(
+            "gst",
+            3,
+            fuzzy,
+            vec![],
+            None,
+            vec![],
+            vec![word("Git STatus", 0, 3), word("ls", 0, 3)],
+        );
+        let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, ["Git STatus"]);
+    }
+
+    #[test]
+    fn history_can_ignore_case() {
+        let found = history("GIT st", IGNORE_CASE, &["git status", "ls", "GIT stash"]);
+        assert_eq!(found, ["git status", "GIT stash"]);
+        let fuzzy = Matching {
+            style: Style::Fuzzy,
+            ignore_case: true,
+        };
+        assert_eq!(history("gst", fuzzy, &["Git STatus", "ls"]), ["Git STatus"]);
+    }
+
+    /// Each kind of match counts toward its own limit, so entries in
+    /// another case never crowd out an older entry in the same case, and
+    /// entries with gaps never crowd out one in another case.
+    #[test]
+    fn each_kind_of_history_match_has_its_own_limit() {
+        let mut entries: Vec<String> = (0..80).map(|i| format!("GIT s{i}")).collect();
+        entries.push("git status".to_owned());
+        let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let found = history("git s", IGNORE_CASE, &refs);
+        assert_eq!(found.len(), HISTORY_LIMIT + 1);
+        assert_eq!(found.last().map(String::as_str), Some("git status"));
+        let fuzzy = Matching {
+            style: Style::Fuzzy,
+            ignore_case: true,
+        };
+        let mut entries: Vec<String> = (0..80).map(|i| format!("g x s t {i}")).collect();
+        entries.push("GST older".to_owned());
+        let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let found = history("gst", fuzzy, &refs);
+        assert_eq!(found.len(), HISTORY_LIMIT + 1);
+        assert_eq!(found.last().map(String::as_str), Some("GST older"));
+    }
+
+    /// Adding the rest of an item of another case would leave the line with the
+    /// typed case followed by the item's, so no grey text shows.
+    #[test]
+    fn no_grey_text_for_an_item_of_another_case() {
+        assert_eq!(grey("x Sw", 4, &word("switch", 2, 4)), None);
+        assert_eq!(grey("x Sw", 4, &word("Swap", 2, 4)), Some("ap"));
+    }
+
     #[test]
     fn an_empty_typed_text_matches_every_item() {
         let items = assemble(
@@ -537,7 +662,7 @@ mod tests {
     #[test]
     fn the_tightest_match_may_overlap_an_earlier_one() {
         let chars = |s: &str| s.chars().collect::<Vec<char>>();
-        let t = |typed: &str, text: &str| tightest(&chars(typed), &chars(text));
+        let t = |typed: &str, text: &str| tightest(PREFIX, &chars(typed), &chars(text));
         // "abxac" matches "abc" from 0; "acbc" from 3 is shorter.
         assert_eq!(t("abc", "abxacbc"), Some((4, 3)));
         // The earliest wins a tie.

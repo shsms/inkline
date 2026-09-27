@@ -827,3 +827,20 @@ inkline eval \"(keymap-global-set \\\"C-t\\\" 'menu-next)\"
     sh.send("xy\x14z");
     sh.wait_for("the shell still up", |s| cursor_row(s) == "$ xyz");
 }
+
+/// Ignoring case, an item of another case is listed, with no grey text, and
+/// taking it puts the item's own case in the line.
+#[test]
+fn ignoring_case_lists_items_of_another_case() {
+    let mut sh = menu_showing(
+        with_init(
+            "(setq inkline-completion-ignore-case t)",
+            vec!["Echo Hello"],
+        ),
+        "echo h",
+        "h  Echo Hello",
+    );
+    assert_eq!(cursor_row(&sh.screen()), "$ echo h");
+    sh.send(&format!("{C_N}\t"));
+    sh.wait_for("the item taken", |s| cursor_row(s) == "$ Echo Hello");
+}
