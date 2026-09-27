@@ -32,7 +32,12 @@ change takes effect on the next key.
 - `inkline-completion-style` (default `prefix`): how the text you typed
   matches a completion item, the symbol `prefix` (the item starts with what
   you typed) or `fuzzy` (the letters you typed appear in the item in order,
-  with gaps allowed).
+  with gaps allowed). A mode server's item that starts with a quote mark
+  is also matched against the text after that mark when the mark goes on
+  the line as it is: in an argument with an expansion (such as `$x`), and
+  inside quotes of the other kind (`` ` `` or `"` inside single quotes,
+  `'` inside double quotes). So inside single quotes `fi` finds
+  `` `first name` ``.
 - `inkline-history-cursor` (default `start`): the symbol `start` or `end`,
   where `previous-line-or-history` leaves the cursor in a multi-line entry
   it recalls.
@@ -46,11 +51,12 @@ change takes effect on the next key.
   colour when it is not set; and three that only
   [command modes](#command-modes) use: `number` (default `36`), `function`
   (default `32`) and `script` (default `2`), the style added on top of
-  every colour inside an argument a mode server coloured; and three for the
+  every colour inside an argument a mode server coloured; and four for the
   completion menu: `menu`, for its rows (no colour by default),
-  `menu-selected` (default `7`), for the picked row, and `menu-source`
-  (default `2`), for the source letter and the `… N more` row. See the
-  README's "Colours" section for the colour words.
+  `menu-selected` (default `7`), for the picked row, `menu-source`
+  (default `2`), for the source letter and the `… N more` row, and
+  `menu-note` (default `2`), for an item's note. See the README's
+  "Colours" section for the colour words.
 - `inkline-command-mode-alist` (default `nil`): which commands use which
   [command mode](#command-modes).
 
@@ -384,7 +390,10 @@ reading functions, and returns `nil` or a list `(START END ITEMS)`:
 Unlike Emacs's `completion-at-point-functions`, every function in the hook is
 asked, and all their items go into the menu, marked `l`, in the order of the
 hook and of each function's own list. History items come first, then the
-item from `inkline-suggestion-functions`, then these.
+item from `inkline-suggestion-functions`, then a command's mode server's
+items, marked `m` (see [command modes](#command-modes) and
+[`docs/mode-protocol.md`](mode-protocol.md#completing-a-word-complete)),
+then these.
 
 - The functions may only read the line, under the same rules as
   `inkline-suggestion-functions`, with the same list of functions they may

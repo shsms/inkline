@@ -298,13 +298,27 @@ l  show
 ```
 
 A row marked `h` is a past command that starts with what you typed, newest
-first; a row marked `l` is an item your own Lisp function offers. The menu
-takes at most `inkline-menu-lines` rows; when there are more items, the last
-row says how many more.
+first; a row marked `l` is an item your own Lisp function offers. A row
+marked `m` is an item from a command's mode server (see "Command modes"),
+such as a column name from a `csvm` script; some come with a short note
+after them, saying what they are. They show once you stop typing for a
+moment. Here the cursor is right after `am`, inside the quotes:
+
+```
+$ csvm 'sort am' data.csv
+m  amount      column
+m  amended_at  column
+```
+
+The menu takes at most `inkline-menu-lines` rows; when there are more
+items, the last row says how many more.
 
 - `C-n` and `C-p` pick the next or the previous item; `C-p` with nothing
   picked starts at the bottom. The grey text is the rest of the picked item,
-  or of the top item when none is picked.
+  or of the top item when none is picked. Inside a quoted script the grey
+  text does not show, since the closing quote there follows the cursor and
+  the grey text is only drawn at the end of the line; pick an item with
+  `C-n` and take it with Tab or Enter instead.
 - Tab or Enter take the picked item into the line, as one step that `C-_`
   undoes; a second Enter runs the line. With no item picked, Tab completes as
   bash does and Enter does what it always did. Enter takes an item only while
@@ -318,8 +332,8 @@ row says how many more.
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
 text off on their own, and `inkline-completion-style` set to `fuzzy` lets the
 letters you typed match with gaps; see [`docs/lisp.md`](docs/lisp.md). The
-menu's colours are set with the `menu`, `menu-selected` and `menu-source`
-keys (see "Colours").
+menu's colours are set with the `menu`, `menu-selected`, `menu-source` and
+`menu-note` keys (see "Colours").
 
 A function in `inkline-completion-functions` reads the line and offers items
 for the menu:
@@ -465,6 +479,12 @@ out, and the new line gets the indentation of the line the cursor is on; on
 the line the script starts on, it goes one step in. Nothing is indented, and
 the quotes are not opened, while pasting or with `inkline-indent` 0.
 
+A mode server can also offer items for the completion menu, marked `m`
+(see "Completion menu" above), such as commands, flags and column names
+inside a script; see
+[`docs/mode-protocol.md`](docs/mode-protocol.md#completing-a-word-complete)
+for how it answers.
+
 `inkline-command-mode-alist` holds `("COMMAND" . MODE)` pairs. A command
 uses the first pair whose `COMMAND` is its name as typed, after quotes are
 removed (so `'csvm'` matches too), or the part of that name after its last
@@ -505,20 +525,23 @@ shows one line for each mode, in the order the modes were first defined
 puts it last), with the commands that use it:
 
 ```
-mode csvm-mode (csvm, c): running
+mode csvm-mode (csvm, c): running (indent, complete)
 ```
 
-or `not started`, or `off (REASON)`; then one line for each pair that never
-takes effect: `command c: no mode named cvsm-mode` when a pair's mode name is
-mistyped, `command /usr/bin/csvm: uses csvm-mode, not other-mode` when an
-earlier pair (here the one for `csvm`) already gives the command another mode,
-and `command "": matches nothing` for an empty `COMMAND`. A mode server that
-fails is turned off, and `inkline: mode csvm-mode: off (REASON)` shows under the
-line when you pause typing. The reason is `not found`, `cannot run: …`, `not a
-mode server` (the program did not answer as a mode server), `bad reply: …` (it
-broke the protocol, or wrote too much), `exited`, or `connection lost` (a
-command in the shell closed inkline's end of the connection). It stays off until
-its mode is defined again or you run `inkline reload`. `inkline reload` forgets
+A server that answers `indent`, `complete`, or both, has them listed after
+`running`, in the order it named them; one that answers neither just shows
+`running`. Otherwise the state is `not started`, or `off (REASON)`; then one
+line for each pair that never takes effect: `command c: no mode named
+cvsm-mode` when a pair's mode name is mistyped, `command /usr/bin/csvm: uses
+csvm-mode, not other-mode` when an earlier pair (here the one for `csvm`)
+already gives the command another mode, and `command "": matches nothing`
+for an empty `COMMAND`. A mode server that fails is turned off, and
+`inkline: mode csvm-mode: off (REASON)` shows under the line when you pause
+typing. The reason is `not found`, `cannot run: …`, `not a mode server` (the
+program did not answer as a mode server), `bad reply: …` (it broke the
+protocol, or wrote too much), `exited`, or `connection lost` (a command in
+the shell closed inkline's end of the connection). It stays off until its
+mode is defined again or you run `inkline reload`. `inkline reload` forgets
 every mode and stops their servers; `init.el` defines them again.
 
 Mode servers run only at bash's main prompt, including every line of a
@@ -557,13 +580,14 @@ what you want to change; a change applies from the next key.
                         (option . "36") (string . "33") (variable . "34")
                         (operator . "1") (comment . "2") (suggestion . "90")
                         (number . "36") (function . "32") (script . "2")
-                        (menu-selected . "7") (menu-source . "2")))
+                        (menu-selected . "7") (menu-source . "2")
+                        (menu-note . "2")))
 ```
 
 or, in the old string format:
 
 ```elisp
-(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2")
+(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2:menu-note=2")
 ```
 
 In the alist form, a name can be a symbol or a string, and the first entry
@@ -733,6 +757,12 @@ The protocol is now described in
 `mode MODE (COMMANDS): STATE` lines where it showed `highlight NAME: STATE`,
 and a server that is turned off shows `inkline: mode MODE: off (REASON)`
 under the line.
+
+A running mode server that named `indent` or `complete` on its first line
+shows them in `inkline status`, as in
+`mode csvm-mode (csvm): running (indent)`. A script that checks for a
+running server should look for `running` at the start of the state, not
+for the whole state.
 
 ## Limitations
 
