@@ -354,40 +354,28 @@ fn ctrl_p_starts_at_the_bottom() {
     sh.wait_for("the bottom picked", |s| picked(s, 2));
 }
 
+/// Enter runs the line as typed, whatever item is picked.
 #[test]
-fn enter_takes_the_picked_item_and_a_second_enter_runs_it() {
+fn enter_runs_the_line_as_typed() {
     let mut sh = menu_showing(
-        with_history(vec!["echo one-two"]),
+        with_history(vec!["echo one-two", "echo oh"]),
         "echo o",
-        "h  echo one-two",
+        "h  echo oh",
     );
-    sh.send(C_N);
-    sh.wait_for("the pick", |s| picked(s, 1));
+    sh.send(C_P);
+    sh.wait_for("the bottom picked", |s| picked(s, 2) && !picked(s, 1));
     sh.send("\r");
-    // The grey text already shows the item, so wait for the cursor too.
-    sh.wait_for("the item in the line", |s| {
-        cursor_row(s) == "$ echo one-two" && s.cursor_position() == (0, 14)
-    });
-    let s = sh.settle();
-    assert_eq!(s.cursor_position(), (0, 14), "not run yet: {}", dump(&s));
-    sh.send("\r");
-    sh.wait_for("the output", |s| {
-        has_row(s, "one-two") && row_text(s, 1) == "one-two"
-    });
+    sh.wait_for("the output", |s| row_text(s, 1) == "o");
 }
 
-/// Keys typed ahead in one burst still take the picked item: the line does
-/// not run.
+/// Keys typed ahead in one burst still take the picked item.
 #[test]
-fn a_typed_ahead_pick_and_enter_take_the_item() {
+fn a_typed_ahead_pick_and_tab_take_the_item() {
     let mut sh = Shell::start(with_history(vec!["git stash", "git status"]));
-    sh.send(&format!("git st{C_N}\r"));
+    sh.send(&format!("git st{C_N}\t"));
     sh.wait_for("the item in the line", |s| {
         cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
     });
-    let s = sh.settle();
-    assert_eq!(s.cursor_position(), (0, 12), "not run: {}", dump(&s));
-    assert!(find(&s, "command not found").is_none(), "{}", dump(&s));
 }
 
 #[test]

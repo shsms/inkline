@@ -1911,7 +1911,7 @@ extern "C" fn menu_hide(count: c_int, key: c_int) -> c_int {
 /// screen is for the line and cursor as they are and has a pick: the item
 /// replaces its part of the line and the cursor goes to its end. Whether
 /// it did.
-pub(super) fn take_picked() -> bool {
+fn take_picked() -> bool {
     if !showing_menu() {
         return false;
     }
