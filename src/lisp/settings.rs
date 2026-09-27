@@ -7,7 +7,7 @@ use tulisp::{TulispContext, TulispObject};
 
 use super::values::{items, read_int, read_str};
 use crate::colors::{ColorSet, Colors};
-use crate::menu::Style;
+use crate::menu::{Matching, Style};
 
 const DEFINITIONS: &str = "
 (defvar inkline-indent 4)
@@ -422,13 +422,20 @@ pub fn menu_lines() -> usize {
     read("inkline-menu-lines", |s| &s.menu_lines, parse_lines, 8)
 }
 
-pub fn completion_style() -> Style {
+fn completion_style() -> Style {
     read(
         "inkline-completion-style",
         |s| &s.completion_style,
         parse_style,
         Style::Prefix,
     )
+}
+
+/// How the menu and the grey text match items: `inkline-completion-style`.
+pub fn completion_matching() -> Matching {
+    Matching {
+        style: completion_style(),
+    }
 }
 
 /// Reads every setting and returns the bad values not reported before, as
@@ -442,7 +449,7 @@ pub fn problems() -> Vec<String> {
     show_menu();
     show_suggestion();
     menu_lines();
-    completion_style();
+    completion_matching();
     CACHE.with_borrow_mut(|c| std::mem::take(&mut c.pending))
 }
 

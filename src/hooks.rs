@@ -1395,9 +1395,9 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
     {
         return menu;
     }
-    let style = crate::lisp::settings::completion_style();
+    let how = crate::lisp::settings::completion_matching();
     let at_end = point == line.len();
-    let mut history = menu::HistoryGather::new(line, style);
+    let mut history = menu::HistoryGather::new(line, how);
     if at_end {
         ffi::history_find_map(|entry| history.offer(entry).then_some(()));
     }
@@ -1416,7 +1416,7 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
         .came
         .map(|(items, arg)| menu::mode::place(line, point, &arg, &items))
         .unwrap_or_default();
-    let items = menu::assemble(line, point, style, history.into_items(), whole, mode, words);
+    let items = menu::assemble(line, point, how, history.into_items(), whole, mode, words);
     let picked = kept
         .as_ref()
         .and_then(|m| m.items.get(m.picked?))

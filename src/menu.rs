@@ -47,6 +47,12 @@ pub enum Style {
     Fuzzy,
 }
 
+/// How items are matched (`inkline-completion-style`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Matching {
+    pub style: Style,
+}
+
 /// The most history items gathered for one line that start with it, and in
 /// the fuzzy style also the most that match it with gaps.
 pub const HISTORY_LIMIT: usize = 50;
@@ -115,12 +121,12 @@ fn tightest(typed: &[char], text: &[char]) -> Option<(usize, usize)> {
     best
 }
 
-/// How `typed` matches `text` under `style`, or None for no match.
-fn rank(style: Style, typed: &str, text: &str) -> Option<Rank> {
+/// How `typed` matches `text`, or None for no match.
+fn rank(how: Matching, typed: &str, text: &str) -> Option<Rank> {
     if text.starts_with(typed) {
         return Some(Rank::Prefix);
     }
-    match style {
+    match how.style {
         Style::Prefix => None,
         Style::Fuzzy => {
             let typed: Vec<char> = typed.chars().collect();
@@ -130,27 +136,27 @@ fn rank(style: Style, typed: &str, text: &str) -> Option<Rank> {
     }
 }
 
-/// How `typed` matches `item` under `style`, or None for no match. A mode
-/// server's item whose text starts with a quote mark (`` ` ``, `'` or `"`)
-/// also matches against the text after that mark, so `fi` finds
-/// `` `first name` ``: starting with the typed text there ranks as starting
-/// with it, and in the fuzzy style a match with gaps there ranks by where it
-/// falls after the mark. The better of the two ranks counts.
-fn item_rank(style: Style, typed: &str, item: &Item) -> Option<Rank> {
-    let whole = rank(style, typed, &item.text);
+/// How `typed` matches `item`, or None for no match. A mode server's item whose
+/// text starts with a quote mark (`` ` ``, `'` or `"`) also matches against the
+/// text after that mark, so `fi` finds `` `first name` ``: starting with the
+/// typed text there ranks as starting with it, and in the fuzzy style a match
+/// with gaps there ranks by where it falls after the mark. The better of the
+/// two ranks counts.
+fn item_rank(how: Matching, typed: &str, item: &Item) -> Option<Rank> {
+    let whole = rank(how, typed, &item.text);
     if item.source != Source::Mode || whole == Some(Rank::Prefix) {
         return whole;
     }
     let Some(after) = item.text.strip_prefix(['`', '\'', '"']) else {
         return whole;
     };
-    whole.into_iter().chain(rank(style, typed, after)).min()
+    whole.into_iter().chain(rank(how, typed, after)).min()
 }
 
 /// Gathers history items for `line`: offered entries come newest first.
 pub struct HistoryGather {
     line: String,
-    style: Style,
+    how: Matching,
     items: Vec<Item>,
     seen: HashSet<String>,
     /// How many of `items` start with the line.
@@ -158,10 +164,10 @@ pub struct HistoryGather {
 }
 
 impl HistoryGather {
-    pub fn new(line: &str, style: Style) -> HistoryGather {
+    pub fn new(line: &str, how: Matching) -> HistoryGather {
         HistoryGather {
             line: line.to_owned(),
-            style,
+            how,
             items: Vec::new(),
             seen: HashSet::new(),
             prefixed: 0,
@@ -176,7 +182,7 @@ impl HistoryGather {
     /// entries that start with the line are taken: the scan can stop.
     pub fn offer(&mut self, entry: &str) -> bool {
         let prefixed = entry.starts_with(&self.line);
-        let matches = match self.style {
+        let matches = match self.how.style {
             Style::Prefix => prefixed,
             Style::Fuzzy => {
                 prefixed
@@ -208,14 +214,14 @@ fn applied(line: &str, item: &Item) -> String {
     format!("{}{}{}", &line[..item.start], item.text, &line[item.end..])
 }
 
-/// The items of one source that match, in the order `style` gives: those
+/// The items of one source that match, in the order `how` gives: those
 /// that start with the typed text in list order, then the others. See
 /// [`item_rank`] for a mode server's quoted items.
-fn ordered(line: &str, point: usize, style: Style, items: Vec<Item>) -> Vec<Item> {
+fn ordered(line: &str, point: usize, how: Matching, items: Vec<Item>) -> Vec<Item> {
     let mut ranked: Vec<(Rank, Item)> = items
         .into_iter()
         .filter(|i| i.start <= point && point <= i.end && i.end <= line.len())
-        .filter_map(|i| Some((item_rank(style, &line[i.start..point], &i)?, i)))
+        .filter_map(|i| Some((item_rank(how, &line[i.start..point], &i)?, i)))
         .collect();
     // A stable sort keeps list order among equal ranks.
     ranked.sort_by_key(|(rank, _)| *rank);
@@ -225,13 +231,13 @@ fn ordered(line: &str, point: usize, style: Style, items: Vec<Item>) -> Vec<Item
 /// The menu's items for `line` with the cursor at byte `point`: `history`,
 /// then `whole` (the suggestion hook's line), then `mode` (a mode server's
 /// items), then `words` (the completion hook's items), each source matched
-/// and ordered under `style`. An item that cannot be drawn, that would leave
+/// and ordered under `how`. An item that cannot be drawn, that would leave
 /// the line as it is, or that gives the same line as an item before it is
 /// left out.
 pub fn assemble(
     line: &str,
     point: usize,
-    style: Style,
+    how: Matching,
     history: Vec<Item>,
     whole: Option<Item>,
     mode: Vec<Item>,
@@ -240,10 +246,10 @@ pub fn assemble(
     let mut seen = HashSet::from([line.to_owned()]);
     let mut items = Vec::new();
     let groups = [
-        ordered(line, point, style, history),
-        ordered(line, point, style, whole.into_iter().collect()),
-        ordered(line, point, style, mode),
-        ordered(line, point, style, words),
+        ordered(line, point, how, history),
+        ordered(line, point, how, whole.into_iter().collect()),
+        ordered(line, point, how, mode),
+        ordered(line, point, how, words),
     ];
     for item in groups.into_iter().flatten() {
         if drawable(&item.text) && seen.insert(applied(line, &item)) {
@@ -381,8 +387,15 @@ pub fn window(total: usize, picked: Option<usize>, rows: usize) -> Window {
 mod tests {
     use super::*;
 
-    fn history(line: &str, style: Style, entries: &[&str]) -> Vec<String> {
-        let mut gather = HistoryGather::new(line, style);
+    const PREFIX: Matching = Matching {
+        style: Style::Prefix,
+    };
+    const FUZZY: Matching = Matching {
+        style: Style::Fuzzy,
+    };
+
+    fn history(line: &str, how: Matching, entries: &[&str]) -> Vec<String> {
+        let mut gather = HistoryGather::new(line, how);
         for entry in entries {
             if gather.offer(entry) {
                 break;
@@ -406,7 +419,7 @@ mod tests {
         // Entries come newest first, as `ffi::history_find_map` gives them.
         let found = history(
             "git st",
-            Style::Prefix,
+            PREFIX,
             &["git status", "ls", "git stash", "git status", "git st"],
         );
         assert_eq!(found, ["git status", "git stash"]);
@@ -414,11 +427,7 @@ mod tests {
 
     #[test]
     fn history_skips_entries_that_cannot_be_drawn() {
-        let found = history(
-            "echo",
-            Style::Prefix,
-            &["echo \x1b[31m", "echo\thi", "echo a\nb"],
-        );
+        let found = history("echo", PREFIX, &["echo \x1b[31m", "echo\thi", "echo a\nb"]);
         assert_eq!(found, ["echo\thi", "echo a\nb"]);
     }
 
@@ -426,7 +435,7 @@ mod tests {
     fn history_stops_at_the_limit() {
         let entries: Vec<String> = (0..80).map(|i| format!("x{i}")).collect();
         let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
-        let mut gather = HistoryGather::new("x", Style::Prefix);
+        let mut gather = HistoryGather::new("x", PREFIX);
         let mut offered = 0;
         for entry in &refs {
             offered += 1;
@@ -440,7 +449,7 @@ mod tests {
 
     #[test]
     fn a_history_item_replaces_the_whole_line() {
-        let mut gather = HistoryGather::new("git st", Style::Prefix);
+        let mut gather = HistoryGather::new("git st", PREFIX);
         gather.offer("git status");
         assert_eq!(
             gather.into_items(),
@@ -461,14 +470,14 @@ mod tests {
         let mut entries: Vec<String> = (0..80).map(|i| format!("l-{i}-s")).collect();
         entries.push("ls -la".to_owned());
         let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
-        let found = history("ls", Style::Fuzzy, &refs);
+        let found = history("ls", FUZZY, &refs);
         assert_eq!(found.len(), HISTORY_LIMIT + 1);
         assert_eq!(found.last().map(String::as_str), Some("ls -la"));
     }
 
     #[test]
     fn fuzzy_history_takes_letters_in_order() {
-        let found = history("gst", Style::Fuzzy, &["git status", "gist", "ls"]);
+        let found = history("gst", FUZZY, &["git status", "gist", "ls"]);
         assert_eq!(found, ["git status", "gist"]);
     }
 
@@ -477,7 +486,7 @@ mod tests {
         let items = assemble(
             "x Sw",
             4,
-            Style::Prefix,
+            PREFIX,
             vec![],
             None,
             vec![],
@@ -492,7 +501,7 @@ mod tests {
         let items = assemble(
             "git ",
             4,
-            Style::Prefix,
+            PREFIX,
             vec![],
             None,
             vec![],
@@ -506,7 +515,7 @@ mod tests {
         let items = assemble(
             "sw",
             2,
-            Style::Fuzzy,
+            FUZZY,
             vec![],
             None,
             vec![],
@@ -553,7 +562,7 @@ mod tests {
             note: None,
         });
         let words = vec![word("status", 4, 6), word("stash", 4, 6)];
-        let items = assemble("git st", 6, Style::Prefix, hist, whole, vec![], words);
+        let items = assemble("git st", 6, PREFIX, hist, whole, vec![], words);
         let texts: Vec<(&str, char)> = items
             .iter()
             .map(|i| (i.text.as_str(), i.source.letter()))
@@ -575,7 +584,7 @@ mod tests {
             ..word("stash", 4, 6)
         }];
         let words = vec![word("stack", 4, 6), word("stash", 4, 6)];
-        let items = assemble("git st", 6, Style::Prefix, hist, whole, mode, words);
+        let items = assemble("git st", 6, PREFIX, hist, whole, mode, words);
         let got: Vec<(&str, char)> = items
             .iter()
             .map(|i| (i.text.as_str(), i.source.letter()))
@@ -605,7 +614,7 @@ mod tests {
             noted("add", "first"),
             noted("stash", "b"),
         ];
-        let items = assemble("git st", 6, Style::Prefix, vec![], None, mode, vec![]);
+        let items = assemble("git st", 6, PREFIX, vec![], None, mode, vec![]);
         let got: Vec<(&str, Option<&str>)> = items
             .iter()
             .map(|i| (i.text.as_str(), i.note.as_deref()))
@@ -637,17 +646,12 @@ mod tests {
             mode("`other`", 5, 7),
         ];
         assert_eq!(
-            texts("sort fi", Style::Prefix, mode_items.clone(), vec![]),
+            texts("sort fi", PREFIX, mode_items.clone(), vec![]),
             ["`first name`", "file", "'fig'", "\"fin\""]
         );
         // The typed quote mark still matches as it is.
         assert_eq!(
-            texts(
-                "sort `fi",
-                Style::Prefix,
-                vec![mode("`first name`", 5, 8)],
-                vec![]
-            ),
+            texts("sort `fi", PREFIX, vec![mode("`first name`", 5, 8)], vec![]),
             ["`first name`"]
         );
         // In the fuzzy style the text after the mark counts too: a prefix
@@ -655,32 +659,19 @@ mod tests {
         assert_eq!(
             texts(
                 "sort fi",
-                Style::Fuzzy,
+                FUZZY,
                 vec![mode("xfxi", 5, 7), mode("`first name`", 5, 7)],
                 vec![]
             ),
             ["`first name`", "xfxi"]
         );
         assert_eq!(
-            texts(
-                "sort fn",
-                Style::Fuzzy,
-                vec![mode("`first name`", 5, 7)],
-                vec![]
-            ),
+            texts("sort fn", FUZZY, vec![mode("`first name`", 5, 7)], vec![]),
             ["`first name`"]
         );
         // Only a mode server's items: a quoted Lisp word must start with the
         // typed text.
-        assert!(
-            texts(
-                "sort fi",
-                Style::Prefix,
-                vec![],
-                vec![word("`first`", 5, 7)]
-            )
-            .is_empty()
-        );
+        assert!(texts("sort fi", PREFIX, vec![], vec![word("`first`", 5, 7)]).is_empty());
     }
 
     #[test]
@@ -697,7 +688,7 @@ mod tests {
         let items = assemble(
             "ab",
             2,
-            Style::Prefix,
+            PREFIX,
             vec![],
             None,
             vec![],
