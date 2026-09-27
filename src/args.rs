@@ -35,6 +35,20 @@ impl Arg {
             .min()
     }
 
+    /// One past the last byte of the line this argument was typed as: its
+    /// last quote mark or kept byte. `map` holds the line byte of each
+    /// byte of `text`, so for a last character of several bytes this is
+    /// past the whole character.
+    pub fn end(&self) -> Option<usize> {
+        self.map.last().max(self.quotes.last()).map(|&b| b + 1)
+    }
+
+    /// Whether a cursor at byte `point` of the line is on this argument: from
+    /// its first byte to just after its last.
+    pub fn holds(&self, point: usize) -> bool {
+        self.start().is_some_and(|s| s <= point) && self.end().is_some_and(|e| point <= e)
+    }
+
     /// Where a cursor at byte `point` of the line is in `text`: the number
     /// of bytes of `text` typed before `point`.
     pub fn offset_at(&self, point: usize) -> usize {
@@ -831,6 +845,20 @@ mod tests {
         assert_eq!(un(r#""a\"b""#).quotes, [0, 5], "not an escaped one");
         assert_eq!(un(r#""a $x" 'b'"#).quotes, [0, 5, 7, 9], "raw too");
         assert!(un("a").quotes.is_empty());
+    }
+
+    #[test]
+    fn an_argument_holds_the_places_it_was_typed_over() {
+        let line = "csvm 'a b' x";
+        let arg = unquote(line, 5..10);
+        assert_eq!((arg.start(), arg.end()), (Some(5), Some(10)));
+        assert!(arg.holds(5) && arg.holds(9) && arg.holds(10));
+        assert!(!arg.holds(4) && !arg.holds(11));
+        assert_eq!(un("aé").end(), Some(3), "past the last byte of `é`");
+        assert_eq!(un("a\\").end(), Some(2), "a kept lone backslash");
+        let empty = un("");
+        assert_eq!((empty.start(), empty.end()), (None, None));
+        assert!(!empty.holds(0));
     }
 
     #[test]
