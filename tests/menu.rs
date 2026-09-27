@@ -424,6 +424,48 @@ fn ctrl_g_then_tab_completes_as_bash_does() {
     });
 }
 
+/// A second Tab right after one that took an item completes as bash does,
+/// though the menu for the new text shows.
+#[test]
+fn a_second_tab_after_a_take_completes_as_bash_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut sh = menu_showing(
+        with_zzfile(&dir, vec!["ls zzf -l", "ls zzf"]),
+        "ls z",
+        "h  ls zzf",
+    );
+    sh.send("\t");
+    sh.wait_for("the item and its own menu", |s| {
+        cursor_row(s) == "$ ls zzf -l" && row_text(s, 1) == "h  ls zzf -l"
+    });
+    sh.send("\t");
+    sh.wait_for("the file name", |s| {
+        cursor_row(s).starts_with("$ ls zzfile")
+    });
+}
+
+/// A third Tab lists the choices, as bash's second Tab does, though a menu
+/// shows.
+#[test]
+fn a_third_tab_after_a_take_lists_the_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = with_zzfile(&dir, vec!["ls zzf -l", "ls zzf"]);
+    std::fs::write(dir.path().join("zzfoo"), "").unwrap();
+    let mut sh = menu_showing(opts, "ls z", "h  ls zzf");
+    sh.send("\t");
+    sh.wait_for("the item and its own menu", |s| {
+        cursor_row(s) == "$ ls zzf -l" && row_text(s, 1) == "h  ls zzf -l"
+    });
+    sh.send("\t\t");
+    sh.wait_for("the listing and the prompt under it", |s| {
+        find(s, "zzfoo").is_some()
+            && s.cursor_position().0 > 1
+            && cursor_row(s).starts_with("$ ls zzf")
+    });
+    let s = sh.settle();
+    assert_eq!(s.cursor_position().1, 8, "no item taken: {}", dump(&s));
+}
+
 /// The menu keys work in a Lisp command after a draw it made, here under
 /// `y-or-n-p`'s question: the kept menu stays in use while Lisp runs.
 #[test]

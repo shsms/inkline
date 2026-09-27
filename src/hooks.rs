@@ -1862,16 +1862,17 @@ fn menu_fallback(
     }
 }
 
-/// Tab: takes the highlighted item into the line; with no menu, readline's
-/// `complete`, which may jump back to readline's or bash's top level, so it
-/// runs last with nothing here to drop.
+/// Tab: takes the highlighted item into the line. With no menu, or right
+/// after another Tab, readline's `complete`, which may jump back to
+/// readline's or bash's top level, so it runs last with nothing here to
+/// drop.
 extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
     let (took, again) = guard(
         || {
-            let again = ffi::last_command()
-                .is_some_and(|f| std::ptr::fn_addr_eq(f, menu_take as ffi::CommandFn))
-                && STATE.with_borrow(|s| s.completing);
-            let took = take_highlighted();
+            let right_after = ffi::last_command()
+                .is_some_and(|f| std::ptr::fn_addr_eq(f, menu_take as ffi::CommandFn));
+            let again = right_after && STATE.with_borrow(|s| s.completing);
+            let took = !right_after && take_highlighted();
             STATE.with_borrow_mut(|s| s.completing = !took);
             (took, again)
         },
