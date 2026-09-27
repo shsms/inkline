@@ -642,6 +642,101 @@ mod tests {
         assert!(t.contains("\r\nh  a…\x1b[K"), "{t:?}");
     }
 
+    fn noted(texts: &[(&str, Option<&str>)]) -> Vec<crate::menu::Item> {
+        texts
+            .iter()
+            .map(|(t, n)| crate::menu::Item {
+                text: t.to_string(),
+                start: 0,
+                end: 0,
+                source: crate::menu::Source::Mode,
+                note: n.map(str::to_owned),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn notes_line_up_after_the_items() {
+        let colors = Colors::from_entries(&[
+            ("menu-source".to_owned(), String::new()),
+            ("menu-note".to_owned(), "2".to_owned()),
+        ])
+        .unwrap();
+        let list = noted(&[
+            ("sort", Some("sort the rows")),
+            ("amount", Some("column")),
+            ("x", None),
+        ]);
+        let out = build(&Repaint {
+            menu: Some(view(&list)),
+            ..repaint("s", 1, &[], &colors)
+        })
+        .unwrap();
+        let t = text(&out);
+        assert!(
+            t.contains("\r\nm  sort    \x1b[2msort the rows\x1b[0m\x1b[K"),
+            "{t:?}"
+        );
+        assert!(
+            t.contains("\r\nm  amount  \x1b[2mcolumn\x1b[0m\x1b[K"),
+            "{t:?}"
+        );
+        assert!(t.contains("\r\nm  x\x1b[K"), "{t:?}");
+    }
+
+    #[test]
+    fn a_picked_row_draws_its_note_in_the_picked_colour() {
+        let colors = Colors::default();
+        let list = noted(&[("sort", Some("sort the rows"))]);
+        let out = build(&Repaint {
+            menu: Some(MenuView {
+                picked: Some(0),
+                ..view(&list)
+            }),
+            ..repaint("s", 1, &[], &colors)
+        })
+        .unwrap();
+        assert!(
+            text(&out).contains("\x1b[7mm  sort  sort the rows\x1b[0m"),
+            "{:?}",
+            text(&out)
+        );
+    }
+
+    #[test]
+    fn items_take_at_most_half_the_width_and_notes_are_cut() {
+        let colors = plain_menu();
+        let list = noted(&[("a-very-long-column-name", Some("column and more words"))]);
+        let out = build(&Repaint {
+            cols: 30,
+            menu: Some(view(&list)),
+            ..repaint("s", 1, &[], &colors)
+        })
+        .unwrap();
+        // 29 usable columns; half is 14, minus 3 for "m  ": 11 for the item.
+        // Then two spaces and 13 columns for the note.
+        let t = text(&out);
+        assert!(t.contains("m  a-very-lon…  "), "{t:?}");
+        assert!(t.contains("column and m…"), "{t:?}");
+    }
+
+    #[test]
+    fn with_no_room_for_the_items_notes_are_left_off() {
+        let colors = plain_menu();
+        let list = noted(&[("sort", Some("rows"))]);
+        let out = build(&Repaint {
+            cols: 8,
+            menu: Some(view(&list)),
+            ..repaint("s", 1, &[], &colors)
+        })
+        .unwrap();
+        // 7 usable columns; half is 3, which leaves no room for the item
+        // next to its note. The row is drawn as one without a note.
+        let t = text(&out);
+        assert!(t.contains("\r\nm  sort\x1b[K"), "{t:?}");
+        assert!(!t.contains("rows"), "{t:?}");
+    }
+
     #[test]
     fn underlines_the_error() {
         let colors = Colors::parse("error=4");
