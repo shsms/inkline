@@ -22,6 +22,7 @@ const DEFINITIONS: &str = "
 (defvar inkline-completion-ignore-case nil)
 (defvar inkline-menu-sources '(history lisp mode))
 (defvar inkline-menu-min-chars 0)
+(defvar inkline-menu-on-move nil)
 ";
 
 struct Symbols {
@@ -37,6 +38,7 @@ struct Symbols {
     completion_ignore_case: TulispObject,
     menu_sources: TulispObject,
     menu_min_chars: TulispObject,
+    menu_on_move: TulispObject,
 }
 
 #[derive(Default)]
@@ -112,6 +114,7 @@ pub fn register(ctx: &mut TulispContext) {
         completion_ignore_case: ctx.intern("inkline-completion-ignore-case"),
         menu_sources: ctx.intern("inkline-menu-sources"),
         menu_min_chars: ctx.intern("inkline-menu-min-chars"),
+        menu_on_move: ctx.intern("inkline-menu-on-move"),
     };
     SYMBOLS.with_borrow_mut(|s| *s = Some(symbols));
     CACHE.with_borrow_mut(|c| *c = Cache::default());
@@ -500,6 +503,17 @@ pub fn menu_listed() -> Listed {
     }
 }
 
+/// Whether `inkline-menu-on-move` is on: the menu stays while the cursor moves
+/// without the text changing.
+pub fn menu_on_move() -> bool {
+    read(
+        "inkline-menu-on-move",
+        |s| &s.menu_on_move,
+        parse_flag,
+        false,
+    )
+}
+
 /// Reads every setting and returns the bad values not reported before, as
 /// `NAME: why` lines.
 pub fn problems() -> Vec<String> {
@@ -513,6 +527,7 @@ pub fn problems() -> Vec<String> {
     menu_lines();
     completion_matching();
     menu_listed();
+    menu_on_move();
     CACHE.with_borrow_mut(|c| std::mem::take(&mut c.pending))
 }
 
@@ -734,6 +749,7 @@ mod tests {
         assert_eq!(menu_lines(), 8);
         assert_eq!(completion_style(), Style::Prefix);
         assert!(!completion_matching().ignore_case);
+        assert!(!menu_on_move());
         assert_eq!(
             menu_listed(),
             Listed {
@@ -745,7 +761,8 @@ mod tests {
             "(progn (setq inkline-show-menu nil inkline-show-suggestion nil
                           inkline-menu-lines 3 inkline-completion-style 'fuzzy
                           inkline-completion-ignore-case t
-                          inkline-menu-sources '(mode) inkline-menu-min-chars 2) nil)",
+                          inkline-menu-sources '(mode) inkline-menu-min-chars 2
+                          inkline-menu-on-move t) nil)",
         )
         .unwrap();
         assert_eq!(
@@ -762,6 +779,7 @@ mod tests {
                 min_chars: 2
             }
         );
+        assert!(menu_on_move());
         assert!(!show_menu());
         assert!(!show_suggestion());
         assert_eq!(menu_lines(), 3);

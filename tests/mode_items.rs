@@ -214,11 +214,36 @@ fn a_moved_cursor_waits_for_a_new_pause() {
     assert!(!lines.iter().any(|l| l == "at:1 6"), "{lines:?}");
 }
 
+/// A move that hides the menu, with the cursor before the line's end where no
+/// grey text shows, asks for no items even once typing pauses there.
+#[test]
+fn a_move_that_hides_the_menu_asks_for_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let mut sh = shell_logging("complete", &log, "", Vec::new());
+    sh.send("csvm 'sort am");
+    wait_for_log(&log, "the :at", |l| l == "at:1 7");
+    sh.send("\x02");
+    sh.settle();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // Requests are logged in order: once the changed line's colours are logged,
+    // so is any `:complete` sent before them.
+    sh.send("z");
+    let lines = wait_for_log(&log, "the changed line", |l| l == "final:sort azm");
+    assert!(!lines.iter().any(|l| l == "at:1 6"), "{lines:?}");
+}
+
 #[test]
 fn the_innermost_command_is_asked() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("log");
-    let mut sh = shell_logging("complete", &log, "", Vec::new());
+    // The menu stays while the cursor moves back.
+    let mut sh = shell_logging(
+        "complete",
+        &log,
+        "(setq inkline-menu-on-move t)",
+        Vec::new(),
+    );
     // Both commands use the mode; the cursor goes back into the inner
     // one's argument, at offset 7 of `sort am` and 16 of the outer one's.
     sh.send("csvm \"$(csvm 'sort am')\"\x02\x02\x02");

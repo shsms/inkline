@@ -55,6 +55,12 @@ struct State {
     /// The line text `C-g` hid the menu on: no menu and no grey text show
     /// until a draw in plain editing finds another text.
     hidden_on: Option<String>,
+    /// The line text and cursor of the last draw in plain editing.
+    drawn_at: Option<(String, usize)>,
+    /// Whether the cursor moved since the line's text last changed: unless
+    /// `inkline-menu-on-move` is set, no menu shows until a draw in plain
+    /// editing finds another text.
+    cursor_moved: bool,
     /// The line text a history search left, while it stays unchanged: such
     /// a line counts as brought back from history. Readline before 8.3 puts
     /// its history place back after a search, so `recalled` cannot tell it
@@ -183,6 +189,8 @@ thread_local! {
         menu_rows: None,
         menu: None,
         hidden_on: None,
+        drawn_at: None,
+        cursor_moved: false,
         searched: None,
         displaced: false,
         unloaded: false,
@@ -1018,6 +1026,8 @@ extern "C" fn pre_input() -> c_int {
                 s.search_continues = false;
                 s.menu = None;
                 s.hidden_on = None;
+                s.drawn_at = None;
+                s.cursor_moved = false;
                 s.searched = None;
             });
             // A new line at the main prompt drops the mode servers' replies;
@@ -1280,6 +1290,10 @@ fn repaint_line() -> bool {
             if s.hidden_on.as_deref() != text {
                 s.hidden_on = None;
             }
+            let same_text = matches!((&s.drawn_at, text), (Some((was, _)), Some(l)) if was == l);
+            let moved = s.drawn_at.as_ref().is_some_and(|(_, at)| *at != point);
+            s.cursor_moved = same_text && (s.cursor_moved || moved);
+            s.drawn_at = line.clone().map(|l| (l, point));
         }
     });
     let Some(line) = line else {
@@ -1298,12 +1312,14 @@ fn repaint_line() -> bool {
     let colors = crate::lisp::settings::colors();
     let suggestion_lines = crate::lisp::settings::suggestion_lines();
     let path = ffi::shell_variable("PATH").unwrap_or_default();
-    let show_menu = crate::lisp::settings::show_menu();
+    let show_menu = crate::lisp::settings::show_menu()
+        && (crate::lisp::settings::menu_on_move() || !STATE.with_borrow(|s| s.cursor_moved));
     let show_suggestion = crate::lisp::settings::show_suggestion();
-    // With both the menu and the grey text off, nothing is gathered.
+    // With no menu to show and no grey text possible (it shows only with the
+    // cursor at the end), nothing is gathered.
     let gather = editing
         && !line.is_empty()
-        && (show_menu || show_suggestion)
+        && (show_menu || (show_suggestion && point == line.len()))
         && !is_hidden(&line)
         && !recalled(&line);
     // Mode server items are asked for only when a menu is gathered.

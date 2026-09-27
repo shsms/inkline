@@ -869,3 +869,36 @@ fn the_menu_waits_for_enough_typed_characters() {
     sh.send("w");
     sh.wait_for("the menu", |s| row_text(s, 1) == "l  switch");
 }
+
+/// Moving the cursor without changing the text hides the menu, so `C-n` and
+/// `C-p` then move between the lines of a command; typing brings it back.
+#[test]
+fn moving_the_cursor_hides_the_menu_until_the_text_changes() {
+    // `\x0a` is C-j: it adds a line to the command. The second line has no
+    // prompt, so the cursor's column there is after the `s` of the first.
+    let mut sh = menu_showing(with_init(WORDS, vec![]), "echo s\x0aecho  sh", "l  show");
+    sh.send("\x1b[A");
+    sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
+    let s = sh.settle();
+    assert!(!has_row(&s, "l  s"), "{}", dump(&s));
+    sh.send(C_N);
+    sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
+    let s = sh.settle();
+    assert!(!has_row(&s, "l  s"), "{}", dump(&s));
+    sh.send(C_P);
+    sh.wait_for("the first line again", |s| s.cursor_position().0 == 0);
+    sh.send(C_N);
+    sh.wait_for("the second line again", |s| s.cursor_position().0 == 1);
+    sh.send("o");
+    sh.wait_for("the menu again", |s| row_text(s, 2) == "l  show");
+}
+
+#[test]
+fn menu_on_move_keeps_the_menu_while_the_cursor_moves() {
+    let init = format!("{WORDS}\n(setq inkline-menu-on-move t)");
+    let mut sh = menu_showing(with_init(&init, vec![]), "echo s\x0aecho  sh", "l  show");
+    sh.send("\x1b[A");
+    sh.wait_for("the first line and its menu", |s| {
+        s.cursor_position().0 == 0 && has_row(s, "l  switch")
+    });
+}
