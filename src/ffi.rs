@@ -773,6 +773,12 @@ pub fn continue_history_search() {
     unsafe { rl_last_func = Some(rl_history_search_backward) };
 }
 
+/// Makes readline see `f` as the last command, for a command about to run
+/// that checks it, as when `f`'s own key ran just before.
+pub fn set_last_command(f: CommandFn) {
+    unsafe { rl_last_func = Some(f) };
+}
+
 /// Registers a readline command under `name` without binding a key.  Readline
 /// keeps the name pointer, so it must be `'static`.
 pub fn add_command(name: &'static CStr, f: CommandFn) {
@@ -1257,6 +1263,16 @@ pub fn is_next_history(f: CommandFn) -> bool {
 /// Whether `f` is readline's `previous-history`.
 pub fn is_previous_history(f: CommandFn) -> bool {
     std::ptr::fn_addr_eq(f, rl_get_previous_history as CommandFn)
+}
+
+/// Whether `f` is readline's `history-search-forward`.
+pub fn is_history_search_forward(f: CommandFn) -> bool {
+    std::ptr::fn_addr_eq(f, rl_history_search_forward as CommandFn)
+}
+
+/// Whether `f` is readline's `history-search-backward`.
+pub fn is_history_search_backward(f: CommandFn) -> bool {
+    std::ptr::fn_addr_eq(f, rl_history_search_backward as CommandFn)
 }
 
 /// Sets whether the running command counts as given a count by the user,

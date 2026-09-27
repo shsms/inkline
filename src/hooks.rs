@@ -87,6 +87,11 @@ struct State {
     /// Whether the last vertical command that deferred to history did a
     /// search, so a further one continues it instead of starting fresh.
     search_continues: bool,
+    /// The command the last `menu-next` or `menu-previous` ran as its key's
+    /// own command (see `menu_fallback`); None when it did anything else. It
+    /// stays across other keys, but counts only while readline's last command
+    /// is `menu-next` or `menu-previous`.
+    menu_key_ran: Option<ffi::CommandFn>,
     /// Whether the last `menu-take` ran readline's `complete`, so a Tab
     /// right after it lists the choices as readline's second Tab does.
     completing: bool,
@@ -190,6 +195,7 @@ thread_local! {
         items_want_pause: false,
         goal_column: None,
         search_continues: false,
+        menu_key_ran: None,
         completing: false,
     });
 }
@@ -1443,16 +1449,31 @@ fn recalled(line: &str) -> bool {
 
 /// Whether the key just handled ran a history search that puts a history
 /// entry in the line: readline's prefix, substring and non-incremental
-/// searches, or an Up or Down command that went on to a search.
+/// searches; an Up or Down command that went on to a search; or a
+/// `menu-next` or `menu-previous` that ran one of these.
 fn ran_history_search() -> bool {
-    static SEARCHES: OnceLock<Vec<ffi::CommandFn>> = OnceLock::new();
     let last = ffi::last_command();
     if multiline::is_vertical(last) {
-        return STATE.with_borrow(|s| s.search_continues);
+        return STATE.with_borrow(|s| {
+            s.search_continues
+                || (is_menu_key(last) && s.menu_key_ran.is_some_and(is_history_search))
+        });
     }
-    let Some(last) = last else {
-        return false;
-    };
+    last.is_some_and(is_history_search)
+}
+
+/// Whether `f` is `menu-next` or `menu-previous`.
+fn is_menu_key(f: Option<ffi::CommandFn>) -> bool {
+    f.is_some_and(|f| {
+        std::ptr::fn_addr_eq(f, menu_next as ffi::CommandFn)
+            || std::ptr::fn_addr_eq(f, menu_previous as ffi::CommandFn)
+    })
+}
+
+/// Whether `f` is one of readline's prefix, substring or non-incremental
+/// history searches.
+fn is_history_search(f: ffi::CommandFn) -> bool {
+    static SEARCHES: OnceLock<Vec<ffi::CommandFn>> = OnceLock::new();
     SEARCHES
         .get_or_init(|| {
             [
@@ -1470,7 +1491,7 @@ fn ran_history_search() -> bool {
             .collect()
         })
         .iter()
-        .any(|&f| std::ptr::fn_addr_eq(f, last))
+        .any(|&g| std::ptr::fn_addr_eq(f, g))
 }
 
 /// Whether the last draw in plain editing showed the menu, and it is for
@@ -1706,9 +1727,10 @@ pub(super) extern "C" fn menu_previous(count: c_int, key: c_int) -> c_int {
 /// and Down: the next one starts from the cursor's own column and a new
 /// history search.
 fn move_pick(count: c_int, key: c_int, down: bool) -> c_int {
-    let moved = guard(
+    let (moved, ran_before) = guard(
         || {
-            showing_menu()
+            let ran_before = STATE.with_borrow_mut(|s| s.menu_key_ran.take());
+            let moved = showing_menu()
                 && STATE.with_borrow_mut(|s| {
                     let Some(menu) = s.menu.as_mut() else {
                         return false;
@@ -1716,25 +1738,37 @@ fn move_pick(count: c_int, key: c_int, down: bool) -> c_int {
                     menu.step(down, i64::from(count));
                     s.end_vertical_run();
                     true
-                })
+                });
+            (moved, ran_before)
         },
-        || false,
+        || (false, None),
     );
     if moved {
         0
     } else {
-        menu_fallback(count, key, down)
+        menu_fallback(count, key, down, ran_before)
     }
 }
 
 /// What `menu-next` (`down`) or `menu-previous` runs with no menu: what the key
 /// had before inkline bound it. Readline's `next-history` and
 /// `previous-history` become `next-line-or-history` and
-/// `previous-line-or-history`, as on Down and Up; a key that had nothing, or a
+/// `previous-line-or-history`, and `history-search-forward` and
+/// `history-search-backward` become `next-line-or-search` and
+/// `previous-line-or-search`, as on Down and Up; a key that had nothing, or a
 /// run from Lisp, moves a line or through history too. Another command ends a
 /// run of Up and Down, and runs last, as readline may jump from it back to its
-/// top level.
-fn menu_fallback(count: c_int, key: c_int, down: bool) -> c_int {
+/// top level. When the last key was also `menu-next` or `menu-previous` and
+/// ran its key's own command (`ran_before`), readline sees that command as
+/// the last one, as when its own key ran it, so a search goes on from where
+/// it stopped; and after one of readline's history searches, the line it
+/// finds counts as found by a search (see `ran_history_search`).
+fn menu_fallback(
+    count: c_int,
+    key: c_int,
+    down: bool,
+    ran_before: Option<ffi::CommandFn>,
+) -> c_int {
     use crate::lisp::keys::{self, Fallback};
     let own: ffi::CommandFn = if down { menu_next } else { menu_previous };
     match guard(|| keys::saved_binding_of(own), || Fallback::Nothing) {
@@ -1744,8 +1778,26 @@ fn menu_fallback(count: c_int, key: c_int, down: bool) -> c_int {
         Fallback::Command(f) if ffi::is_previous_history(f) => {
             multiline::previous_line_or_history(count, key)
         }
+        Fallback::Command(f) if ffi::is_history_search_forward(f) => {
+            multiline::next_line_or_search(count, key)
+        }
+        Fallback::Command(f) if ffi::is_history_search_backward(f) => {
+            multiline::previous_line_or_search(count, key)
+        }
         Fallback::Command(f) => {
-            guard(|| STATE.with_borrow_mut(State::end_vertical_run), || ());
+            let before = ran_before.filter(|_| is_menu_key(ffi::last_command()));
+            guard(
+                || {
+                    STATE.with_borrow_mut(|s| {
+                        s.end_vertical_run();
+                        s.menu_key_ran = Some(f);
+                    });
+                },
+                || (),
+            );
+            if let Some(g) = before {
+                ffi::set_last_command(g);
+            }
             ffi::run_command(f, count, key)
         }
         Fallback::Macro(text) => {

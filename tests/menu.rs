@@ -700,6 +700,89 @@ fn menu_next_on_another_key_keeps_that_keys_own_job() {
     sh.wait_for("the two characters swapped", |s| cursor_row(s) == "$ yx");
 }
 
+/// The README's `M-p`: with no menu it runs readline's non-incremental
+/// history search. The line the search finds shows no menu (here the Lisp
+/// items, which show wherever the search leaves the cursor), so a second
+/// `M-p` searches again.
+#[test]
+fn menu_previous_on_m_p_runs_the_non_incremental_search() {
+    let init = format!("{WORDS}\n(keymap-global-set \"M-p\" 'menu-previous)");
+    let mut sh = Shell::start(with_init(&init, vec!["ls", "echo one"]));
+    sh.send("\x1bp");
+    sh.wait_for("the search prompt", |s| cursor_row(s) == "$ :");
+    sh.send("one\r");
+    sh.wait_for("the found line", |s| cursor_row(s) == "$ echo one");
+    let s = sh.settle();
+    assert_eq!(row_text(&s, 1), "", "{}", dump(&s));
+    sh.send("\x1bp");
+    sh.wait_for("the search prompt again", |s| cursor_row(s) == "$ :");
+}
+
+/// A key that ran `history-search-backward` moves through the matches on
+/// each press with no menu, as `<up>` does when bound to it.
+#[test]
+fn menu_previous_on_a_history_search_key_moves_through_the_matches() {
+    let mut sh = Shell::start(Options {
+        inputrc: Some("\"\\ep\": history-search-backward\n".into()),
+        ..with_init(
+            "(keymap-global-set \"M-p\" 'menu-previous)",
+            vec!["git status", "git stash", "ls"],
+        )
+    });
+    sh.send("git st");
+    sh.wait_for("the menu", |s| row_text(s, 1) == "h  git stash");
+    sh.send("\x07");
+    sh.wait_for("the menu hidden", |s| row_text(s, 1).is_empty());
+    sh.send("\x1bp");
+    sh.wait_for("the newest match", |s| cursor_row(s) == "$ git stash");
+    sh.send("\x1bp");
+    sh.wait_for("the match before it", |s| cursor_row(s) == "$ git status");
+}
+
+/// Keys that ran readline's substring searches also move through the
+/// matches on each press with no menu, in both directions, as when both are
+/// bound to the searches. Another key in between, even one that runs
+/// `menu-previous` to move through history, starts a new search.
+#[test]
+fn menu_keys_on_substring_search_keys_move_through_the_matches() {
+    let mut sh = Shell::start(Options {
+        inputrc: Some(
+            "\"\\ep\": history-substring-search-backward
+\"\\en\": history-substring-search-forward
+"
+            .into(),
+        ),
+        ..with_init(
+            "(keymap-global-set \"M-p\" 'menu-previous)
+             (keymap-global-set \"M-n\" 'menu-next)
+             (setq inkline-history-cursor 'end)",
+            vec!["x stat", "zzz", "git status", "a stat", "ls"],
+        )
+    });
+    sh.send("stat\x07");
+    sh.settle();
+    sh.send("\x1bp");
+    sh.wait_for("the newest match", |s| cursor_row(s) == "$ a stat");
+    sh.send("\x1bp");
+    sh.wait_for("the match before it", |s| cursor_row(s) == "$ git status");
+    sh.send("\x1bn");
+    sh.wait_for("the newer match again", |s| cursor_row(s) == "$ a stat");
+    sh.send("\x1bp");
+    sh.wait_for("the older match again", |s| cursor_row(s) == "$ git status");
+    // A new search for the whole line finds nothing older.
+    sh.send("\x05\x1bp");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+    // `C-p` moves through history; the new search after it finds nothing
+    // older either.
+    sh.send("\x10");
+    sh.wait_for("another entry", |s| cursor_row(s) != "$ git status");
+    let moved = cursor_row(&sh.settle());
+    sh.send("\x1bp");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), moved, "{}", dump(&s));
+}
+
 /// With no menu, a key that had macro text types it.
 #[test]
 fn menu_next_on_a_macro_key_types_the_macro() {
