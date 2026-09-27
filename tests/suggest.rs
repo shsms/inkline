@@ -106,7 +106,9 @@ fn erased_before_completion_listing() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("zz1"), "").unwrap();
     std::fs::write(dir.path().join("zz2"), "").unwrap();
+    // With a menu, Tab would take its highlighted item.
     let opts = Options {
+        init_el: no_menu(),
         history: vec!["ls zz-long-suggestion"],
         cwd: Some(dir.path().to_path_buf()),
         ..Options::default()

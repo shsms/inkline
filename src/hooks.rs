@@ -1366,7 +1366,7 @@ fn repaint_line() -> bool {
             message: message.as_deref(),
             menu: menu.as_ref().filter(|_| show_menu).map(|m| MenuView {
                 items: &m.items,
-                highlighted: m.picked,
+                highlighted: m.highlighted(),
                 max_rows: menu_lines,
             }),
             rows,
@@ -1862,7 +1862,7 @@ fn menu_fallback(
     }
 }
 
-/// Tab: takes the picked item into the line; with no pick, readline's
+/// Tab: takes the highlighted item into the line; with no menu, readline's
 /// `complete`, which may jump back to readline's or bash's top level, so it
 /// runs last with nothing here to drop.
 extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
@@ -1871,7 +1871,7 @@ extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
             let again = ffi::last_command()
                 .is_some_and(|f| std::ptr::fn_addr_eq(f, menu_take as ffi::CommandFn))
                 && STATE.with_borrow(|s| s.completing);
-            let took = take_picked();
+            let took = take_highlighted();
             STATE.with_borrow_mut(|s| s.completing = !took);
             (took, again)
         },
@@ -1907,15 +1907,15 @@ extern "C" fn menu_hide(count: c_int, key: c_int) -> c_int {
     if hidden { 0 } else { ffi::abort(count, key) }
 }
 
-/// Takes the picked item into the line, as one undo step, when the menu on
-/// screen is for the line and cursor as they are and has a pick: the item
-/// replaces its part of the line and the cursor goes to its end. Whether
-/// it did.
-fn take_picked() -> bool {
+/// Takes the highlighted item into the line, as one undo step, when the
+/// menu on screen is for the line and cursor as they are: the item replaces
+/// its part of the line and the cursor goes to its end. Whether it did.
+fn take_highlighted() -> bool {
     if !showing_menu() {
         return false;
     }
-    let Some(item) = STATE.with_borrow(|s| s.menu.as_ref().and_then(|m| m.picked_item().cloned()))
+    let Some(item) =
+        STATE.with_borrow(|s| s.menu.as_ref().and_then(|m| m.highlighted_item().cloned()))
     else {
         return false;
     };

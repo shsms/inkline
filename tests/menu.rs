@@ -322,11 +322,13 @@ fn two_items() -> Shell {
 #[test]
 fn ctrl_n_and_ctrl_p_move_the_pick() {
     let mut sh = two_items();
-    assert!(!picked(&sh.screen(), 1));
+    let s = sh.screen();
+    assert!(
+        picked(&s, 1) && !picked(&s, 2),
+        "the top starts highlighted"
+    );
     sh.send(C_N);
-    sh.wait_for("the top picked", |s| picked(s, 1) && !picked(s, 2));
-    sh.send(C_N);
-    let s = sh.wait_for("the second picked", |s| picked(s, 2));
+    let s = sh.wait_for("the second picked", |s| picked(s, 2) && !picked(s, 1));
     assert_eq!(
         cursor_row(&s),
         "$ git stash",
@@ -340,10 +342,14 @@ fn ctrl_n_and_ctrl_p_move_the_pick() {
 /// while the count is typed.
 #[test]
 fn a_count_moves_the_pick_that_many_rows() {
-    let mut sh = two_items();
+    let mut sh = menu_showing(
+        with_history(vec!["git stage", "git stash", "git status"]),
+        "git st",
+        "h  git status",
+    );
     sh.send(&format!("\x1b2{C_N}"));
-    sh.wait_for("the second picked", |s| {
-        picked(s, 2) && !picked(s, 1) && cursor_row(s) == "$ git stash"
+    sh.wait_for("the third picked", |s| {
+        picked(s, 3) && !picked(s, 1) && cursor_row(s) == "$ git stage"
     });
 }
 
@@ -374,14 +380,14 @@ fn a_typed_ahead_pick_and_tab_take_the_item() {
     let mut sh = Shell::start(with_history(vec!["git stash", "git status"]));
     sh.send(&format!("git st{C_N}\t"));
     sh.wait_for("the item in the line", |s| {
-        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+        cursor_row(s) == "$ git stash" && s.cursor_position() == (0, 11)
     });
 }
 
 #[test]
 fn tab_takes_the_picked_item_and_undo_takes_it_back() {
     let mut sh = two_items();
-    sh.send(&format!("{C_N}{C_N}\t"));
+    sh.send(&format!("{C_N}\t"));
     sh.wait_for("the item in the line", |s| {
         cursor_row(s) == "$ git stash" && s.cursor_position() == (0, 11)
     });
@@ -390,16 +396,29 @@ fn tab_takes_the_picked_item_and_undo_takes_it_back() {
 }
 
 #[test]
-fn tab_without_a_pick_completes_as_bash_does() {
-    let dir = tempfile::tempdir().unwrap();
+fn tab_takes_the_top_item_at_once() {
+    let mut sh = two_items();
+    sh.send("\t");
+    sh.wait_for("the item in the line", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+}
+
+/// A shell in a directory holding `zzfile`, with `history`.
+fn with_zzfile(dir: &tempfile::TempDir, history: Vec<&'static str>) -> Options {
     std::fs::write(dir.path().join("zzfile"), "").unwrap();
-    let opts = Options {
-        history: vec!["ls zz-old"],
+    Options {
+        history,
         cwd: Some(dir.path().to_path_buf()),
         ..Options::default()
-    };
-    let mut sh = menu_showing(opts, "ls z", "h  ls zz-old");
-    sh.send("\t");
+    }
+}
+
+#[test]
+fn ctrl_g_then_tab_completes_as_bash_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut sh = menu_showing(with_zzfile(&dir, vec!["ls zz-old"]), "ls z", "h  ls zz-old");
+    sh.send(&format!("{C_G}\t"));
     sh.wait_for("the file name", |s| {
         cursor_row(s).starts_with("$ ls zzfile")
     });
@@ -412,7 +431,6 @@ fn a_lisp_command_picks_after_its_own_question() {
     let init = r#"(keymap-global-set "C-x w"
   (lambda () (interactive)
     (y-or-n-p "Q? ")
-    (call-interactively 'menu-next)
     (call-interactively 'menu-next)))"#;
     let mut sh = menu_showing(
         with_init(init, vec!["git stash", "git status"]),
@@ -450,7 +468,7 @@ fn the_menu_keys_work_in_read_e_under_lisp() {
         row_text(s, s.cursor_position().0 + 1) == "h  echo help-me"
     });
     let row = s.cursor_position().0;
-    sh.send(&format!("{C_N}{C_N}"));
+    sh.send(C_N);
     sh.wait_for("the second item picked", |s| picked(s, row + 2));
     sh.send("\t");
     sh.wait_for("the item in the line", |s| {
@@ -535,7 +553,7 @@ fn up_after_a_pick_keeps_the_cursors_column() {
     let s = sh.wait_for("the menu", |s| row_text(s, 2) == "l  switch");
     let col = s.cursor_position().1;
     sh.send(C_N);
-    sh.wait_for("the pick", |s| picked(s, 2));
+    sh.wait_for("the pick", |s| picked(s, 3));
     sh.send("\x1b[A");
     let s = sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
     assert_eq!(s.cursor_position(), (0, col), "{}", dump(&s));
@@ -681,7 +699,7 @@ fn menu_next_on_another_key_keeps_that_keys_own_job() {
         "h  git status",
     );
     sh.send("\x14");
-    sh.wait_for("the top picked", |s| picked(s, 1));
+    sh.wait_for("the second picked", |s| picked(s, 2));
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
     sh.send("xy\x14");
@@ -829,7 +847,7 @@ fn ignoring_case_lists_items_of_another_case() {
         "h  Echo Hello",
     );
     assert_eq!(cursor_row(&sh.screen()), "$ echo h");
-    sh.send(&format!("{C_N}\t"));
+    sh.send("\t");
     sh.wait_for("the item taken", |s| cursor_row(s) == "$ Echo Hello");
 }
 
@@ -840,11 +858,15 @@ fn ignoring_case_lists_items_of_another_case() {
 fn menu_sources_limit_the_menu_but_not_the_grey_text() {
     let init = format!("{WORDS}\n(setq inkline-menu-sources '(lisp))");
     let history = vec!["git switch", "git status"];
-    let sh = menu_showing(with_init(&init, history), "git s", "l  switch");
+    let mut sh = menu_showing(with_init(&init, history), "git s", "l  switch");
     let s = sh.screen();
     assert_eq!(cursor_row(&s), "$ git status");
     assert_eq!(row_text(&s, 2), "l  show");
     assert_eq!(row_text(&s, 3), "");
+    // Tab takes the highlighted row, not the grey text's item.
+    assert!(picked(&s, 1), "{}", dump(&s));
+    sh.send("\t");
+    sh.wait_for("the item in the line", |s| cursor_row(s) == "$ git switch");
 }
 
 #[test]
