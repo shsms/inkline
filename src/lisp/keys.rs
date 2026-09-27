@@ -8,7 +8,7 @@ use tulisp::{Error, TulispContext, TulispObject};
 use super::buffer::refuse_when_read_only;
 use super::commands::{self, Command, LispCommand};
 use super::keydesc;
-use super::layout::Group;
+use super::layout::{Group, MENU_FALLBACKS};
 use crate::ffi;
 
 /// The Lisp command a sequence runs.
@@ -244,9 +244,37 @@ pub fn unset(desc: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Puts back the sequences the default layout bound for `groups`.
+/// Puts back the sequences the default layout bound for `groups`. When the
+/// menu group goes and the multi-line group stays, a key that still runs
+/// `menu-next` or `menu-previous` runs its fallback from `MENU_FALLBACKS`
+/// instead, as a multi-line key, and keeps what it had before inkline first
+/// bound it.
 pub fn unset_groups(groups: &[Group]) {
+    let multi_line_stays = !groups.contains(&Group::MultiLine)
+        && TABLE.with_borrow(|t| {
+            t.iter()
+                .any(|b| b.group == Some(Group::MultiLine) && still_ours(b))
+        });
+    let fallbacks: Vec<(Vec<u8>, String, &'static str)> =
+        if groups.contains(&Group::Menu) && multi_line_stays {
+            TABLE.with_borrow(|t| {
+                t.iter()
+                    .filter(|b| b.group == Some(Group::Menu) && still_ours(b))
+                    .filter_map(|b| {
+                        let (_, back) = MENU_FALLBACKS.iter().find(|(c, _)| *c == b.command)?;
+                        Some((b.seq.clone(), b.key.clone(), *back))
+                    })
+                    .collect()
+            })
+        } else {
+            Vec::new()
+        };
     unset_where(|b| b.group.is_some_and(|g| groups.contains(&g)));
+    for (seq, key, command) in fallbacks {
+        if let Some(f) = ffi::named_command(command) {
+            let _ = bind_seq(&seq, &key, command, f, None, Some(Group::MultiLine));
+        }
+    }
 }
 
 /// Puts back every sequence inkline still owns (for `reload`).

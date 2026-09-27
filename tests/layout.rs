@@ -184,6 +184,61 @@ fn unbind_defaults_gives_back_a_group() {
     sh.wait_for("no pair", |s| cursor_row(s) == "$ echo (");
 }
 
+/// With the menu group unbound and the multi-line group still bound, `C-p`
+/// and `C-n` move between the lines of a command again, and past the first
+/// or last line through history.
+#[test]
+fn unbinding_the_menu_gives_ctrl_p_and_ctrl_n_back_to_multi_line() {
+    let mut sh = Shell::start(Options {
+        init_el: Some("(inkline-unbind-defaults 'menu)\n".into()),
+        history: vec!["echo old"],
+        ..Options::default()
+    });
+    sh.send(&format!("echo a{CTRL_J}echo b"));
+    sh.wait_for("two lines", |s| s.cursor_position().0 == 1);
+    sh.send("\x10");
+    sh.wait_for("the first line", |s| {
+        s.cursor_position().0 == 0 && row_text(s, 1) == "echo b"
+    });
+    sh.send("\x0e");
+    sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
+    sh.send("\x15\x0binkline keys | grep -E '^C-[np]\\s'\r");
+    sh.wait_for("the bindings", |s| {
+        (0..s.size().0).any(|r| {
+            row_text(s, r).starts_with("C-p")
+                && row_text(s, r).ends_with("previous-line-or-history")
+        })
+    });
+}
+
+/// Unbinding the multi-line group after the menu group gives `C-p` back to
+/// readline: it keeps what it had before inkline first bound it.
+#[test]
+fn unbinding_the_menu_then_multi_line_gives_ctrl_p_back_to_readline() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            "(inkline-unbind-defaults 'menu)\n(inkline-unbind-defaults 'multi-line)\n".into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("bind -q previous-history | grep -o C-p\r");
+    sh.wait_for("readline's own C-p", |s| has_row(s, "C-p"));
+}
+
+/// With the multi-line group unbound first, unbinding the menu group gives
+/// `C-p` and `C-n` back to readline.
+#[test]
+fn unbinding_multi_line_then_the_menu_gives_ctrl_p_back_to_readline() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            "(inkline-unbind-defaults 'multi-line)\n(inkline-unbind-defaults 'menu)\n".into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("bind -q previous-history | grep -o C-p\r");
+    sh.wait_for("readline's own C-p", |s| has_row(s, "C-p"));
+}
+
 #[test]
 fn a_later_bind_wins_over_the_layout() {
     let mut sh = Shell::start(Options {
