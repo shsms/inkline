@@ -1,7 +1,7 @@
 //! Version 1 of the line protocol inkline speaks with a mode server: the
 //! requests inkline writes (colours, and with the `indent` feature,
-//! indentation), and the replies a server writes back. All numbers are
-//! decimal ASCII; lengths and offsets count bytes.
+//! indentation, and completion items), and the replies a server writes back.
+//! All numbers are decimal ASCII; lengths and offsets count bytes.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +26,31 @@ pub fn request(id: u64, cwd: &[u8], args: &[(bool, String)]) -> Vec<u8> {
 /// `:at ARG OFFSET` before `:done`. `at` is where the new line breaks: an
 /// argument's index and a byte offset in its text.
 pub fn indent_request(id: u64, cwd: &[u8], args: &[(bool, String)], at: (usize, usize)) -> Vec<u8> {
-    let mut out = format!(":indent {id}\n").into_bytes();
+    request_at("indent", id, cwd, args, at)
+}
+
+/// Writes a completion request: as `request`, headed `:complete ID`, with
+/// `:at ARG OFFSET` before `:done`. `at` is where the cursor is: an
+/// argument's index and a byte offset in its text.
+pub fn complete_request(
+    id: u64,
+    cwd: &[u8],
+    args: &[(bool, String)],
+    at: (usize, usize),
+) -> Vec<u8> {
+    request_at("complete", id, cwd, args, at)
+}
+
+/// Writes `:HEAD ID`, `:cwd` and the `:arg`s, `:at ARG OFFSET`, then
+/// `:done`.
+fn request_at(
+    head: &str,
+    id: u64,
+    cwd: &[u8],
+    args: &[(bool, String)],
+    at: (usize, usize),
+) -> Vec<u8> {
+    let mut out = format!(":{head} {id}\n").into_bytes();
     write_args(&mut out, cwd, args);
     out.extend_from_slice(format!(":at {} {}\n", at.0, at.1).as_bytes());
     out.extend_from_slice(b":done\n");
@@ -674,5 +698,19 @@ mod tests {
         for buf in [&b":span 1 0 2 command\n:en"[..], b":span 1 x 2 command\n"] {
             assert!(matches!(reply(buf, 3, &[4, 4], &mut 0), Read::Incomplete));
         }
+    }
+
+    #[test]
+    fn a_complete_request_has_its_place_last() {
+        let bytes = complete_request(
+            3,
+            b"/d",
+            &[(false, "csvm".into()), (false, "so".into())],
+            (1, 2),
+        );
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            ":complete 3\n:cwd 2\n/d\n:arg final 4\ncsvm\n:arg final 2\nso\n:at 1 2\n:done\n"
+        );
     }
 }
