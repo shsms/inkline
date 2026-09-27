@@ -233,7 +233,8 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   `C-n` and `C-p` pick an item in the menu; Tab or Enter (while Enter runs
   the multi-line layout's `accept-or-newline`) take the picked item, and with
   no item picked they do what they always did. `C-g` hides the menu
-  until the line changes. A line brought back from history (`C-p`, `<up>`, a
+  until the line changes, and moving the cursor without typing hides it
+  until you type again. A line brought back from history (`C-p`, `<up>`, a
   search) shows no menu and no grey text until you change it. With no menu,
   `C-n` and `C-p` move between lines and through history, as `<down>` and
   `<up>` do. `inkline-show-menu` and `inkline-show-suggestion` turn the menu
@@ -325,15 +326,37 @@ items, the last row says how many more.
   it runs `accept-or-newline`, from the multi-line group of the layout.
 - `C-g` hides the menu and the grey text until the line's text changes. With
   no menu, `C-g` is readline's `abort`.
+- Moving the cursor without changing the text (`<left>`, `<up>`, `C-a`, …) hides
+  the menu until you type again, so `C-n` and `C-p` then move between the lines
+  of a command. Set `inkline-menu-on-move` to keep the menu wherever the cursor
+  stops.
 - A line brought back from history (`C-p`, `<up>`, a search) shows no menu
   and no grey text until you change it. With no menu, `C-n` and `C-p` move
   between lines and through history, as `<down>` and `<up>` do.
 
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
 text off on their own, and `inkline-completion-style` set to `fuzzy` lets the
-letters you typed match with gaps; see [`docs/lisp.md`](docs/lisp.md). The
-menu's colours are set with the `menu`, `menu-selected`, `menu-source` and
-`menu-note` keys (see "Colours").
+letters you typed match with gaps. `inkline-completion-ignore-case` matches
+items whatever their case; `inkline-menu-sources` picks which sources the menu
+lists, and `inkline-menu-min-chars` how many characters you type before it lists
+an item. See [`docs/lisp.md`](docs/lisp.md). The menu's colours are set with the
+`menu`, `menu-selected`, `menu-source` and `menu-note` keys (see "Colours").
+
+To pick with `M-n` and `M-p` instead, and keep `C-n` and `C-p` for moving
+between lines and through history:
+
+```elisp
+;; ~/.config/inkline/init.el
+(keymap-global-set "M-n" 'menu-next)
+(keymap-global-set "M-p" 'menu-previous)
+(keymap-global-set "C-n" 'next-line-or-history)
+(keymap-global-set "C-p" 'previous-line-or-history)
+```
+
+With no menu, `M-n` and `M-p` then do what they did before: readline's
+non-incremental history search, which asks for text and brings back a command
+that holds it. The line it brings back shows no menu until you change it, so
+another `M-p` starts a new search.
 
 A function in `inkline-completion-functions` reads the line and offers items
 for the menu:

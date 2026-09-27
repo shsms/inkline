@@ -38,6 +38,24 @@ change takes effect on the next key.
   inside quotes of the other kind (`` ` `` or `"` inside single quotes,
   `'` inside double quotes). So inside single quotes `fi` finds
   `` `first name` ``.
+- `inkline-completion-ignore-case` (default `nil`): when non-nil, the text you
+  typed matches items whatever their case, in both styles, so `am` also finds
+  `Amount`. Within each source, items that start with the typed text in the same
+  case come first. The grey text shows only when the item it comes from (the
+  picked item, or else the top one) starts with the typed text in the same case;
+  taking an item from the menu puts the item's own case in the line.
+- `inkline-menu-sources` (default `(history lisp mode)`): the sources the menu
+  lists, a list of the symbols `history`, `lisp` and `mode`. It limits only the
+  menu: with no item picked, the grey text still comes from the top item of all
+  the sources.
+- `inkline-menu-min-chars` (default `0`): the menu lists an item only once you
+  have typed at least this many characters of it (from where the item starts to
+  the cursor: the whole line for a history item), an integer of at least 0. Like
+  `inkline-menu-sources`, it limits only the menu.
+- `inkline-menu-on-move` (default `nil`): when `nil`, a key that moves the
+  cursor without changing the line's text hides the menu until the text changes,
+  so `C-n` and `C-p` then move between the lines of a command; when non-nil, the
+  menu shows again wherever the cursor stops.
 - `inkline-history-cursor` (default `start`): the symbol `start` or `end`,
   where `previous-line-or-history` leaves the cursor in a multi-line entry
   it recalls.
@@ -68,7 +86,16 @@ change takes effect on the next key.
   [Commands](#commands)). After `enable -d inkline`, and after an internal
   error turned inkline off until `inkline on`, a key bound to a Lisp command
   runs what it had before inkline first bound it (a readline command or
-  macro text), or rings the bell when it had nothing. `KEY` is an Emacs key
+  macro text), or rings the bell when it had nothing. A key bound to
+  `menu-next` or `menu-previous` runs, while no menu shows, what it had
+  before inkline first bound it; readline's `next-history` and
+  `previous-history` become `next-line-or-history` and
+  `previous-line-or-history`, `history-search-forward` and
+  `history-search-backward` become `next-line-or-search` and
+  `previous-line-or-search`, and a key that had nothing moves a line or
+  through history. When the key runs another of readline's history searches
+  this way, the line that search finds shows no menu until you change it.
+  `KEY` is an Emacs key
   description: keys separated by spaces. Each key is a character or one of
   `RET`, `TAB`, `DEL`, `SPC`, `ESC`, with an optional `M-` prefix (`M-RET`);
   a letter, `SPC`, or one of `@ [ \ ] ^ _ ?` may also take a `C-` prefix
@@ -383,13 +410,16 @@ reading functions, and returns `nil` or a list `(START END ITEMS)`:
   `END`.
 - `ITEMS` is a list of strings: every completion the function knows for that
   part of the line. inkline matches and orders them itself, against the
-  text from `START` to the cursor, under `inkline-completion-style`.
+  text from `START` to the cursor, under `inkline-completion-style` and
+  `inkline-completion-ignore-case`.
 - Any other answer — `START` or `END` out of range or in the wrong order, or
   `ITEMS` not a list of strings — is an error, as for a function that fails.
 
 Unlike Emacs's `completion-at-point-functions`, every function in the hook is
 asked, and all their items go into the menu, marked `l`, in the order of the
-hook and of each function's own list. History items come first, then the
+hook and of each function's own list (`inkline-menu-sources` and
+`inkline-menu-min-chars` can leave some of them out of the menu; an item left
+out can still give the grey text). History items come first, then the
 item from `inkline-suggestion-functions`, then a command's mode server's
 items, marked `m` (see [command modes](#command-modes) and
 [`docs/mode-protocol.md`](mode-protocol.md#completing-a-word-complete)),

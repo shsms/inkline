@@ -410,19 +410,19 @@ What inkline does with a reply:
 
 - Each item becomes a row of the completion menu, marked `m`, after the
   rows from history and the suggestion hook and before the ones from
-  `inkline-completion-functions`. It is matched, under
-  `inkline-completion-style`, against the typed text from the item's
-  `START` to the cursor, the same as any other menu item; its note does
-  not take part in the matching. When an item's text starts with a quote
-  mark (`` ` ``, `'` or `"`) that goes on the line as it is — in a `raw`
-  argument, or inside quotes of the other kind (`` ` `` or `"` inside
-  single quotes, `'` inside double quotes) — the item also matches against
-  the text after that mark, so inside single quotes `fi` finds `` `first
-  name` ``: under `prefix` when that text starts with the typed text,
-  which ranks the item with the items that start with it, and under
-  `fuzzy` also when the typed letters appear in it in order. The grey text
-  shows only for an item that starts with the typed text itself, quote
-  mark and all.
+  `inkline-completion-functions`, unless `inkline-menu-sources` or
+  `inkline-menu-min-chars` leaves it out. It is matched, under
+  `inkline-completion-style` and `inkline-completion-ignore-case`, against the
+  typed text from the item's `START` to the cursor, the same as any other menu
+  item; its note does not take part in the matching. When an item's text starts
+  with a quote mark (`` ` ``, `'` or `"`) that goes on the line as it is — in a
+  `raw` argument, or inside quotes of the other kind (`` ` `` or `"` inside
+  single quotes, `'` inside double quotes) — the item also matches against the
+  text after that mark, so inside single quotes `fi` finds `` `first name` ``:
+  under `prefix` when that text starts with the typed text, which ranks the item
+  with the items that start with it, and under `fuzzy` also when the typed
+  letters appear in it in order. The grey text shows only for an item that
+  starts with the typed text itself, quote mark and all.
 - inkline keeps the first 1000 items of a reply and drops the rest; the
   reply's 1 MiB limit still holds.
 - An item's text is quoted, as soon as it is gathered, for the quoting at

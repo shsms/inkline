@@ -19,7 +19,7 @@ off. Built in three pieces, each adding sources to the same list:
    and the ~complete~ rules other tools install. Those rules run shell
    code (git's calls git), so they must never hold up typing: run them in
    a copy of the shell, with a time limit, and show a late answer when it
-   comes.
+   comes. ~inkline-menu-sources~ then gains a name for it.
 3. Done: mode servers (~m~), a completion request in the inkline mode
    protocol (~docs/mode-protocol.md~), which a server such as csvm can
    answer with commands, flags, functions and column names.
