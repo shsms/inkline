@@ -571,6 +571,7 @@ pub fn read_answer(value: &TulispObject, line: &str, point: usize) -> Result<Vec
                 start,
                 end,
                 source: Source::Lisp,
+                note: None,
             });
         }
     }

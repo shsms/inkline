@@ -1354,9 +1354,18 @@ fn menu_for(line: &str, point: usize) -> Menu {
             start: 0,
             end: line.len(),
             source: Source::Lisp,
+            note: None,
         });
     let words = crate::lisp::hooks::completions(line, point);
-    let items = menu::assemble(line, point, style, history.into_items(), whole, words);
+    let items = menu::assemble(
+        line,
+        point,
+        style,
+        history.into_items(),
+        whole,
+        Vec::new(),
+        words,
+    );
     Menu {
         lisp_ran: lisp_runs,
         ..Menu::new(line, point, items)

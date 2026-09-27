@@ -8,6 +8,7 @@ use std::collections::HashSet;
 pub enum Source {
     History,
     Lisp,
+    Mode,
 }
 
 impl Source {
@@ -15,6 +16,7 @@ impl Source {
         match self {
             Source::History => 'h',
             Source::Lisp => 'l',
+            Source::Mode => 'm',
         }
     }
 }
@@ -28,6 +30,9 @@ pub struct Item {
     pub start: usize,
     pub end: usize,
     pub source: Source,
+    /// A few words saying what the item is, shown after it; it takes no
+    /// part in matching.
+    pub note: Option<String>,
 }
 
 /// How the typed text matches an item (`inkline-completion-style`).
@@ -168,6 +173,7 @@ impl HistoryGather {
                 start: 0,
                 end: self.line.len(),
                 source: Source::History,
+                note: None,
             });
         }
         self.prefixed >= HISTORY_LIMIT
@@ -197,16 +203,18 @@ fn ordered(line: &str, point: usize, style: Style, items: Vec<Item>) -> Vec<Item
 }
 
 /// The menu's items for `line` with the cursor at byte `point`: `history`,
-/// then `whole` (the suggestion hook's line), then `words` (the completion
-/// hook's items), each source matched and ordered under `style`. An item
-/// that cannot be drawn, that would leave the line as it is, or that gives
-/// the same line as an item before it is left out.
+/// then `whole` (the suggestion hook's line), then `mode` (a mode server's
+/// items), then `words` (the completion hook's items), each source matched
+/// and ordered under `style`. An item that cannot be drawn, that would leave
+/// the line as it is, or that gives the same line as an item before it is
+/// left out.
 pub fn assemble(
     line: &str,
     point: usize,
     style: Style,
     history: Vec<Item>,
     whole: Option<Item>,
+    mode: Vec<Item>,
     words: Vec<Item>,
 ) -> Vec<Item> {
     let mut seen = HashSet::from([line.to_owned()]);
@@ -214,6 +222,7 @@ pub fn assemble(
     let groups = [
         ordered(line, point, style, history),
         ordered(line, point, style, whole.into_iter().collect()),
+        ordered(line, point, style, mode),
         ordered(line, point, style, words),
     ];
     for item in groups.into_iter().flatten() {
@@ -364,6 +373,7 @@ mod tests {
             start,
             end,
             source: Source::Lisp,
+            note: None,
         }
     }
 
@@ -414,7 +424,8 @@ mod tests {
                 text: "git status".into(),
                 start: 0,
                 end: 6,
-                source: Source::History
+                source: Source::History,
+                note: None,
             }]
         );
     }
@@ -445,6 +456,7 @@ mod tests {
             Style::Prefix,
             vec![],
             None,
+            vec![],
             vec![word("switch", 2, 4), word("Swap", 2, 4)],
         );
         let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
@@ -459,6 +471,7 @@ mod tests {
             Style::Prefix,
             vec![],
             None,
+            vec![],
             vec![word("status", 4, 4), word("stash", 4, 4)],
         );
         assert_eq!(items.len(), 2);
@@ -472,6 +485,7 @@ mod tests {
             Style::Fuzzy,
             vec![],
             None,
+            vec![],
             vec![
                 word("show-switch", 0, 2),
                 word("s-w", 0, 2),
@@ -505,21 +519,74 @@ mod tests {
             start: 0,
             end: 6,
             source: Source::History,
+            note: None,
         }];
         let whole = Some(Item {
             text: "git status".into(),
             start: 0,
             end: 6,
             source: Source::Lisp,
+            note: None,
         });
         let words = vec![word("status", 4, 6), word("stash", 4, 6)];
-        let items = assemble("git st", 6, Style::Prefix, hist, whole, words);
+        let items = assemble("git st", 6, Style::Prefix, hist, whole, vec![], words);
         let texts: Vec<(&str, char)> = items
             .iter()
             .map(|i| (i.text.as_str(), i.source.letter()))
             .collect();
         // "status" gives the same line as the history item.
         assert_eq!(texts, [("git status", 'h'), ("stash", 'l')]);
+    }
+
+    #[test]
+    fn mode_items_come_between_the_whole_line_and_lisp_words() {
+        let hist = vec![Item {
+            source: Source::History,
+            ..word("git status", 0, 6)
+        }];
+        let whole = Some(word("git stage", 0, 6));
+        let mode = vec![Item {
+            note: Some("column".into()),
+            source: Source::Mode,
+            ..word("stash", 4, 6)
+        }];
+        let words = vec![word("stack", 4, 6), word("stash", 4, 6)];
+        let items = assemble("git st", 6, Style::Prefix, hist, whole, mode, words);
+        let got: Vec<(&str, char)> = items
+            .iter()
+            .map(|i| (i.text.as_str(), i.source.letter()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("git status", 'h'),
+                ("git stage", 'l'),
+                ("stash", 'm'),
+                ("stack", 'l')
+            ]
+        );
+    }
+
+    #[test]
+    fn a_note_takes_no_part_in_matching_or_the_repeat_check() {
+        let noted = |text: &str, note: &str| Item {
+            note: Some(note.into()),
+            source: Source::Mode,
+            ..word(text, 4, 6)
+        };
+        // "st" is in the note but not the text; the second "stash" repeats
+        // the first, whatever its note says.
+        let mode = vec![
+            noted("stash", "a"),
+            noted("add", "first"),
+            noted("stash", "b"),
+        ];
+        let items = assemble("git st", 6, Style::Prefix, vec![], None, mode, vec![]);
+        let got: Vec<(&str, Option<&str>)> = items
+            .iter()
+            .map(|i| (i.text.as_str(), i.note.as_deref()))
+            .collect();
+        assert_eq!(got, [("stash", Some("a"))]);
     }
 
     #[test]
@@ -530,6 +597,7 @@ mod tests {
             Style::Prefix,
             vec![],
             None,
+            vec![],
             vec![word("ab", 0, 2), word("ab\x07c", 0, 2), word("abc", 0, 2)],
         );
         let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();

@@ -494,6 +494,7 @@ mod tests {
                 start: 0,
                 end: 0,
                 source: crate::menu::Source::History,
+                note: None,
             })
             .collect()
     }
