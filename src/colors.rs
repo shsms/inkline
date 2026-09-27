@@ -5,7 +5,7 @@
 
 use crate::lexer::Kind;
 
-pub const DEFAULT: &str = "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2";
+pub const DEFAULT: &str = "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2:menu-note=2";
 
 /// The start of the syntax-error underline: a plain underline first, which
 /// every terminal shows, then a wavy one in red where the terminal supports
@@ -29,6 +29,8 @@ pub struct Colors {
     menu_selected: String,
     /// The SGR codes of each row's source letter and of the `… N more` row.
     menu_source: String,
+    /// The SGR codes of a menu row's note.
+    menu_note: String,
 }
 
 impl Colors {
@@ -42,6 +44,7 @@ impl Colors {
             menu: String::new(),
             menu_selected: String::new(),
             menu_source: String::new(),
+            menu_note: String::new(),
         };
         colors.apply(DEFAULT);
         colors.apply(spec);
@@ -84,6 +87,7 @@ impl Colors {
             "menu" => &mut self.menu,
             "menu-selected" => &mut self.menu_selected,
             "menu-source" => &mut self.menu_source,
+            "menu-note" => &mut self.menu_note,
             _ => return None,
         })
     }
@@ -118,6 +122,10 @@ impl Colors {
 
     pub fn menu_source(&self) -> &str {
         &self.menu_source
+    }
+
+    pub fn menu_note(&self) -> &str {
+        &self.menu_note
     }
 
     /// These colours with `set`'s on top. A separator the set leaves out
@@ -640,7 +648,7 @@ mod tests {
                 "{name}"
             );
         }
-        for name in ["unknown", "suggestion", "error", "comand"] {
+        for name in ["unknown", "suggestion", "error", "comand", "menu-note"] {
             assert_eq!(
                 ColorSet::from_entries(&entries(&[(name, "1")])),
                 Err(format!("unknown colour name {name}"))
@@ -714,23 +722,32 @@ mod tests {
     fn menu_colours_have_defaults_and_can_be_set() {
         let c = Colors::default();
         assert_eq!(
-            (c.menu(), c.menu_selected(), c.menu_source()),
-            ("", "7", "2")
+            (c.menu(), c.menu_selected(), c.menu_source(), c.menu_note()),
+            ("", "7", "2", "2")
         );
-        let c = Colors::parse("menu=36:menu-selected=1;7:menu-source=90");
+        let c = Colors::parse("menu=36:menu-selected=1;7:menu-source=90:menu-note=91");
         assert_eq!(
-            (c.menu(), c.menu_selected(), c.menu_source()),
-            ("36", "1;7", "90")
+            (c.menu(), c.menu_selected(), c.menu_source(), c.menu_note()),
+            ("36", "1;7", "90", "91")
         );
         let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
             list.iter()
                 .map(|(a, b)| (a.to_string(), b.to_string()))
                 .collect()
         };
-        let c = Colors::from_entries(&pairs(&[("menu", "cyan"), ("menu-selected", "")])).unwrap();
-        assert_eq!((c.menu(), c.menu_selected()), ("36", ""));
+        let c = Colors::from_entries(&pairs(&[
+            ("menu", "cyan"),
+            ("menu-selected", ""),
+            ("menu-note", "91"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            (c.menu(), c.menu_selected(), c.menu_note()),
+            ("36", "", "91")
+        );
         // A mode's own colours cannot set them.
         assert!(ColorSet::from_entries(&pairs(&[("menu", "1")])).is_err());
+        assert!(ColorSet::from_entries(&pairs(&[("menu-note", "1")])).is_err());
     }
 
     /// The first entry for a name wins, but a later one is checked too.
