@@ -1240,7 +1240,7 @@ fn a_dash_leaves_a_line_indented_by_hand() {
     // C-u would clear only the last line of the command: C-c drops it all.
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
-    status_row(&mut sh, "mode csvm-mode (csvm): running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running (indent)");
 }
 
 /// The same keys with a server that gives the cursor's line a number move that
@@ -1333,7 +1333,7 @@ fn no_depths_in_time_keeps_the_line_above() {
     // C-u would clear only the last line of the command: C-c drops it all.
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
-    status_row(&mut sh, "mode csvm-mode (csvm): running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running (indent)");
 }
 
 #[test]
@@ -1346,7 +1346,7 @@ fn c_c_while_waiting_for_depths() {
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
     sh.send("echo still here\r");
     sh.wait_for("bash is alive", |s| has_row(s, "still here"));
-    status_row(&mut sh, "mode csvm-mode (csvm): running");
+    status_row(&mut sh, "mode csvm-mode (csvm): running (indent)");
 }
 
 #[test]

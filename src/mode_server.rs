@@ -32,6 +32,10 @@ const MOST_UNREAD: usize = 1 << 20;
 /// the command name first.
 pub type Request = (Vec<u8>, Vec<(bool, String)>);
 
+/// The extra requests a mode server may name in its first line, as
+/// `inkline status` shows them.
+const EXTRA_REQUESTS: [&str; 2] = ["indent", "complete"];
+
 enum State {
     NotStarted,
     /// Started; its first line has not all come yet.
@@ -58,8 +62,9 @@ struct Server {
 /// A mode server that named itself, and the requests it was sent.
 struct Running {
     process: Process,
-    /// Whether its first line named `indent`.
-    indent: bool,
+    /// The words of its first line after `inkline-mode 1`, in order: the
+    /// extra requests it answers.
+    features: Vec<String>,
     /// The ID of the last request sent, 0 before the first. Colour and
     /// indent requests share it.
     last_id: u64,
@@ -180,13 +185,15 @@ pub fn stop_all() {
 /// NAME (COMMANDS): STATE`. COMMANDS are the commands of the pairs of `table`
 /// (as for `mode_for`) that use the mode, in order, each once; STATE is
 /// `running` (also while the first line is still coming), `not started` or `off
-/// (REASON)`. Then, in `table`'s order, one line for each pair that never takes
-/// effect, each once: `command COMMAND: no mode named MODE` when its mode is
-/// not defined, `command COMMAND: uses USED, not MODE` when an earlier pair
-/// gives the command another mode, and `command "": matches nothing` for an
-/// empty COMMAND. A pair that repeats the mode an earlier pair gives its
-/// command gets no line. The work grows with the length of `table`, not with
-/// its square, so a very long alist does not hold up `inkline status`.
+/// (REASON)`; a running server that named extra requests (`indent`, `complete`)
+/// has them after `running`, in the order it named them, as in `running
+/// (indent, complete)`. Then, in `table`'s order, one line for each pair that
+/// never takes effect, each once: `command COMMAND: no mode named MODE` when
+/// its mode is not defined, `command COMMAND: uses USED, not MODE` when an
+/// earlier pair gives the command another mode, and `command "": matches
+/// nothing` for an empty COMMAND. A pair that repeats the mode an earlier pair
+/// gives its command gets no line. The work grows with the length of `table`,
+/// not with its square, so a very long alist does not hold up `inkline status`.
 pub fn status_lines(table: &[(String, String)]) -> Vec<String> {
     SERVERS.with_borrow(|servers| {
         let defined: HashSet<&str> = servers.iter().map(|s| s.mode.as_str()).collect();
@@ -244,7 +251,8 @@ pub fn status_lines(table: &[(String, String)]) -> Vec<String> {
                 let commands = commands.get(s.mode.as_str()).map(|c| c.join(", "));
                 let state = match &s.state {
                     State::NotStarted => "not started".to_owned(),
-                    State::Starting(_) | State::Running(_) => "running".to_owned(),
+                    State::Starting(_) => "running".to_owned(),
+                    State::Running(running) => running.status(),
                     State::Off(reason) => format!("off ({reason})"),
                 };
                 format!(
@@ -423,7 +431,7 @@ pub fn indent(
     SERVERS.with_borrow_mut(|servers| {
         let s = servers.iter_mut().find(|s| s.mode == mode)?;
         let asked = s.read_first_line().and_then(|()| match &mut s.state {
-            State::Running(running) if running.indent => {
+            State::Running(running) if running.names("indent") => {
                 running.ask_indent(request, at, deadline, interrupted)
             }
             State::NotStarted | State::Starting(_) | State::Running(_) | State::Off(_) => Ok(None),
@@ -487,7 +495,7 @@ impl Server {
             };
             self.state = State::Running(Running {
                 process,
-                indent: features.iter().any(|f| f == "indent"),
+                features,
                 last_id: 0,
                 in_flight: None,
                 kept: Vec::new(),
@@ -676,6 +684,28 @@ impl Running {
         self.last_id = id;
         self.in_flight = Some((id, Asked::Colors(request.clone())));
         Ok(())
+    }
+
+    /// Whether its first line named the extra request `word`.
+    fn names(&self, word: &str) -> bool {
+        self.features.iter().any(|f| f == word)
+    }
+
+    /// `running`, then the extra requests it named that `inkline status`
+    /// shows, in the order it named them, each once: `running (indent,
+    /// complete)`.
+    fn status(&self) -> String {
+        let mut named: Vec<&str> = Vec::new();
+        for f in &self.features {
+            if EXTRA_REQUESTS.contains(&f.as_str()) && !named.contains(&f.as_str()) {
+                named.push(f);
+            }
+        }
+        if named.is_empty() {
+            "running".to_owned()
+        } else {
+            format!("running ({})", named.join(", "))
+        }
     }
 
     /// Keeps `reply` as the reply for `request`, in place of any before it.
@@ -1106,7 +1136,7 @@ mod tests {
             "a line that starts by closing a group"
         );
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running (indent)"]);
     }
 
     #[test]
@@ -1135,7 +1165,7 @@ mod tests {
             None
         );
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running (indent)"]);
     }
 
     /// A colour request in flight is answered first, and its reply kept.
@@ -1169,7 +1199,7 @@ mod tests {
         let got = ask(&["b"], Duration::from_secs(3));
         assert!(got[0].is_some(), "colours after the late depths");
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running (indent)"]);
     }
 
     #[test]
@@ -1204,7 +1234,7 @@ mod tests {
         assert!(asked_anything("csvm"), "the C-c came during the wait");
         assert!(took < Duration::from_millis(300), "took {took:?}");
         assert!(take_notices().is_empty());
-        assert_eq!(status_lines(&[]), ["mode csvm (): running"]);
+        assert_eq!(status_lines(&[]), ["mode csvm (): running (indent)"]);
     }
 
     /// Whether a request to the server of the mode `mode` is in flight.
