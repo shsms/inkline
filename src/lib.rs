@@ -2,6 +2,7 @@
 //! bash's readline, loaded into bash with `enable -f`.
 
 pub mod args;
+pub mod bash_complete;
 pub mod colors;
 pub mod commands;
 pub mod highlight;
