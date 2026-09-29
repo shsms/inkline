@@ -371,3 +371,83 @@ fn the_status_says_whether_bash_completion_is_on() {
     sh.send("inkline status\r");
     sh.wait_for("off", |s| has_row(s, "bash completion: off"));
 }
+
+#[test]
+fn a_rude_rule_leaves_the_screen_and_the_shell_alone() {
+    let dir = files();
+    let mut sh = shell_in(
+        dir.path(),
+        "_rude() {\n\
+             echo RUDE-OUT; echo RUDE-ERR >&2; echo RUDE-TTY > /dev/tty\n\
+             read -r x; cd /; COMPREPLY=(polite)\n\
+         }\n\
+         complete -F _rude rude\n",
+        "",
+    );
+    let s = typed_then(&mut sh, "rude ", "c  polite");
+    assert!(find(&s, "RUDE").is_none(), "{}", dump(&s));
+    sh.send("\x15pwd\r");
+    let here = dir.path().canonicalize().unwrap();
+    let here = here.to_str().unwrap().to_owned();
+    sh.wait_for("the shell's directory", |s| has_row(s, &here));
+}
+
+#[test]
+fn a_rule_that_exits_runs_no_trap_and_writes_no_history() {
+    let dir = files();
+    let home = dir.path();
+    let mut sh = shell_in(
+        home,
+        &format!(
+            "HISTFILE={home}/hist\n\
+             trap ': > {home}/trapped' EXIT\n\
+             _quit() {{ echo $BASHPID > {home}/ran; exit 0; }}\n\
+             complete -F _quit quit\n",
+            home = home.display()
+        ),
+        "",
+    );
+    // bash writes the history file at exit only once a line joined the
+    // history.
+    sh.send("true\r");
+    sh.send("quit ");
+    // Once the copy has ended, its pipe is closed, and the next key's draw
+    // reads that before it replaces the copy: the failure is counted.
+    let group = written_group(&home.join("ran"));
+    eventually("the copy ended", || !group_alive(&group));
+    sh.send("\x15inkline status\r");
+    sh.wait_for("the failure", |s| {
+        has_row(s, "bash completion: on (1 failed)")
+    });
+    // The failure is counted only once the copy's pipe closes, which is
+    // after the copy's exit path ran any EXIT trap and wrote any history.
+    assert!(!home.join("trapped").exists(), "the copy ran the EXIT trap");
+    assert!(
+        !home.join("hist").exists(),
+        "the copy wrote the history file"
+    );
+}
+
+/// The first answer is cut at 1000 names; a longer word asks again once
+/// typing pauses.
+#[test]
+fn more_than_a_thousand_files() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..1500 {
+        std::fs::write(dir.path().join(format!("f{i:04}")), "").unwrap();
+    }
+    let mut sh = shell_in(dir.path(), "", "");
+    typed_then(&mut sh, "cat f", "c  f0000");
+    typed_then(&mut sh, "14", "c  f1400");
+}
+
+#[test]
+fn a_file_name_that_is_not_utf8_is_left_out() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(std::ffi::OsStr::from_bytes(b"bad\xff")), "").unwrap();
+    std::fs::write(dir.path().join("bad-ok"), "").unwrap();
+    let mut sh = shell_in(dir.path(), "", "");
+    let s = typed_then(&mut sh, "cat bad", "c  bad-ok");
+    assert_eq!(bash_rows(&s), ["c  bad-ok"], "{}", dump(&s));
+}
