@@ -11,16 +11,18 @@ pub enum Source {
     History,
     Lisp,
     Mode,
+    Bash,
 }
 
 impl Source {
-    pub const ALL: [Source; 3] = [Source::History, Source::Lisp, Source::Mode];
+    pub const ALL: [Source; 4] = [Source::History, Source::Lisp, Source::Mode, Source::Bash];
 
     pub fn letter(self) -> char {
         match self {
             Source::History => 'h',
             Source::Lisp => 'l',
             Source::Mode => 'm',
+            Source::Bash => 'c',
         }
     }
 
@@ -30,6 +32,7 @@ impl Source {
             Source::History => "history",
             Source::Lisp => "lisp",
             Source::Mode => "mode",
+            Source::Bash => "bash",
         }
     }
 
@@ -178,6 +181,11 @@ fn rank(how: Matching, typed: &str, text: &str) -> Option<Rank> {
     }
 }
 
+/// Whether `typed` matches `text` under `how`.
+pub fn matches(how: Matching, typed: &str, text: &str) -> bool {
+    rank(how, typed, text).is_some()
+}
+
 /// How `typed` matches `item`, or None for no match. A mode server's item whose
 /// text starts with a quote mark (`` ` ``, `'` or `"`) also matches against the
 /// text after that mark, so `fi` finds `` `first name` ``: starting with the
@@ -287,10 +295,14 @@ fn ordered(line: &str, point: usize, how: Matching, items: Vec<Item>) -> Vec<Ite
 
 /// The menu's items for `line` with the cursor at byte `point`: `history`,
 /// then `whole` (the suggestion hook's line), then `mode` (a mode server's
-/// items), then `words` (the completion hook's items), each source matched
-/// and ordered under `how`. An item that cannot be drawn, that would leave
-/// the line as it is, or that gives the same line as an item before it is
-/// left out.
+/// items), then `bash` (bash's own completion), then `words` (the completion
+/// hook's items), each source matched and ordered under `how`. An item that
+/// cannot be drawn, that would leave the line as it is, or that gives the
+/// same line as an item before it is left out.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one argument per source, in menu order"
+)]
 pub fn assemble(
     line: &str,
     point: usize,
@@ -298,6 +310,7 @@ pub fn assemble(
     history: Vec<Item>,
     whole: Option<Item>,
     mode: Vec<Item>,
+    bash: Vec<Item>,
     words: Vec<Item>,
 ) -> Vec<Item> {
     let mut seen = HashSet::from([line.to_owned()]);
@@ -306,6 +319,7 @@ pub fn assemble(
         ordered(line, point, how, history),
         ordered(line, point, how, whole.into_iter().collect()),
         ordered(line, point, how, mode),
+        ordered(line, point, how, bash),
         ordered(line, point, how, words),
     ];
     for item in groups.into_iter().flatten() {
@@ -368,6 +382,9 @@ pub struct Menu {
     /// Whether a mode server was asked for items for this line and cursor
     /// and had not answered when the menu was made.
     pub mode_waiting: bool,
+    /// Whether a copy of the shell was working on bash's items for this
+    /// line and cursor when the menu was made.
+    pub bash_waiting: bool,
 }
 
 impl Menu {
@@ -381,6 +398,7 @@ impl Menu {
             shown: false,
             lisp_ran: false,
             mode_waiting: false,
+            bash_waiting: false,
         }
     }
 
@@ -579,6 +597,7 @@ mod tests {
             vec![],
             None,
             vec![],
+            vec![],
             vec![word("switch", 2, 4), word("Swap", 2, 4)],
         );
         let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
@@ -599,6 +618,7 @@ mod tests {
             vec![],
             None,
             vec![],
+            vec![],
             vec![word("Swap", 2, 4), word("switch", 2, 4), word("SHOW", 2, 4)],
         );
         let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
@@ -617,6 +637,7 @@ mod tests {
             fuzzy,
             vec![],
             None,
+            vec![],
             vec![],
             vec![word("Git STatus", 0, 3), word("ls", 0, 3)],
         );
@@ -675,6 +696,7 @@ mod tests {
             vec![],
             None,
             vec![],
+            vec![],
             vec![word("status", 4, 4), word("stash", 4, 4)],
         );
         assert_eq!(items.len(), 2);
@@ -688,6 +710,7 @@ mod tests {
             FUZZY,
             vec![],
             None,
+            vec![],
             vec![],
             vec![
                 word("show-switch", 0, 2),
@@ -732,7 +755,7 @@ mod tests {
             note: None,
         });
         let words = vec![word("status", 4, 6), word("stash", 4, 6)];
-        let items = assemble("git st", 6, PREFIX, hist, whole, vec![], words);
+        let items = assemble("git st", 6, PREFIX, hist, whole, vec![], vec![], words);
         let texts: Vec<(&str, char)> = items
             .iter()
             .map(|i| (i.text.as_str(), i.source.letter()))
@@ -754,7 +777,7 @@ mod tests {
             ..word("stash", 4, 6)
         }];
         let words = vec![word("stack", 4, 6), word("stash", 4, 6)];
-        let items = assemble("git st", 6, PREFIX, hist, whole, mode, words);
+        let items = assemble("git st", 6, PREFIX, hist, whole, mode, vec![], words);
         let got: Vec<(&str, char)> = items
             .iter()
             .map(|i| (i.text.as_str(), i.source.letter()))
@@ -784,7 +807,7 @@ mod tests {
             noted("add", "first"),
             noted("stash", "b"),
         ];
-        let items = assemble("git st", 6, PREFIX, vec![], None, mode, vec![]);
+        let items = assemble("git st", 6, PREFIX, vec![], None, mode, vec![], vec![]);
         let got: Vec<(&str, Option<&str>)> = items
             .iter()
             .map(|i| (i.text.as_str(), i.note.as_deref()))
@@ -803,7 +826,7 @@ mod tests {
     fn a_quoted_mode_item_matches_after_its_quote_mark() {
         let texts = |line: &str, style, mode: Vec<Item>, words: Vec<Item>| -> Vec<String> {
             let point = line.len();
-            let items = assemble(line, point, style, vec![], None, mode, words);
+            let items = assemble(line, point, style, vec![], None, mode, vec![], words);
             items.into_iter().map(|i| i.text).collect()
         };
         // `fi` finds each quoted name, and ranks it with the plain ones that
@@ -861,6 +884,7 @@ mod tests {
             PREFIX,
             vec![],
             None,
+            vec![],
             vec![],
             vec![word("ab", 0, 2), word("ab\x07c", 0, 2), word("abc", 0, 2)],
         );
@@ -951,10 +975,55 @@ mod tests {
 
     #[test]
     fn sources_have_names() {
-        for source in [Source::History, Source::Lisp, Source::Mode] {
+        for source in Source::ALL {
             assert_eq!(Source::named(source.name()), Some(source));
         }
-        assert_eq!(Source::named("bash"), None);
+        assert_eq!(Source::Bash.letter(), 'c');
+        assert_eq!(Source::named("bash"), Some(Source::Bash));
+        assert_eq!(Source::named("zsh"), None);
+    }
+
+    #[test]
+    fn bash_items_come_after_mode_items_and_before_lisp_words() {
+        let bash = |text: &str| Item {
+            source: Source::Bash,
+            ..word(text, 4, 6)
+        };
+        let mode = Item {
+            source: Source::Mode,
+            ..word("stamp", 4, 6)
+        };
+        let items = assemble(
+            "git st",
+            6,
+            PREFIX,
+            vec![],
+            None,
+            vec![mode],
+            vec![bash("status "), bash("stash ")],
+            vec![word("stage", 4, 6)],
+        );
+        let rows: Vec<(char, &str)> = items
+            .iter()
+            .map(|i| (i.source.letter(), i.text.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ('m', "stamp"),
+                ('c', "status "),
+                ('c', "stash "),
+                ('l', "stage")
+            ]
+        );
+    }
+
+    #[test]
+    fn matches_follows_the_style() {
+        assert!(matches(PREFIX, "st", "status"));
+        assert!(!matches(PREFIX, "sts", "status"));
+        assert!(matches(FUZZY, "sts", "status"));
+        assert!(matches(PREFIX, "", "anything"));
     }
 
     #[test]

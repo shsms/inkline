@@ -1446,7 +1446,7 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
         Menu::new(
             line,
             point,
-            menu::assemble(line, point, how, history, whole, mode, words),
+            menu::assemble(line, point, how, history, whole, mode, Vec::new(), words),
         )
     } else {
         // The listed items are assembled on their own, so that an item the
@@ -1460,9 +1460,10 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
             keep(&history),
             whole.as_ref().filter(|i| lists(i)).cloned(),
             keep(&mode),
+            Vec::new(),
             keep(&words),
         );
-        let top = menu::assemble(line, point, how, history, whole, mode, words)
+        let top = menu::assemble(line, point, how, history, whole, mode, Vec::new(), words)
             .into_iter()
             .next();
         Menu {

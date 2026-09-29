@@ -20,9 +20,12 @@ const DEFINITIONS: &str = "
 (defvar inkline-menu-lines 8)
 (defvar inkline-completion-style 'prefix)
 (defvar inkline-completion-ignore-case nil)
-(defvar inkline-menu-sources '(history lisp mode))
+(defvar inkline-menu-sources '(history lisp mode bash))
 (defvar inkline-menu-min-chars 0)
 (defvar inkline-menu-on-move nil)
+(defvar inkline-bash-completion t)
+(defvar inkline-command-min-chars 1)
+(defvar inkline-bash-completion-timeout 2000)
 ";
 
 struct Symbols {
@@ -39,6 +42,9 @@ struct Symbols {
     menu_sources: TulispObject,
     menu_min_chars: TulispObject,
     menu_on_move: TulispObject,
+    bash_completion: TulispObject,
+    command_min_chars: TulispObject,
+    bash_completion_timeout: TulispObject,
 }
 
 #[derive(Default)]
@@ -115,6 +121,9 @@ pub fn register(ctx: &mut TulispContext) {
         menu_sources: ctx.intern("inkline-menu-sources"),
         menu_min_chars: ctx.intern("inkline-menu-min-chars"),
         menu_on_move: ctx.intern("inkline-menu-on-move"),
+        bash_completion: ctx.intern("inkline-bash-completion"),
+        command_min_chars: ctx.intern("inkline-command-min-chars"),
+        bash_completion_timeout: ctx.intern("inkline-bash-completion-timeout"),
     };
     SYMBOLS.with_borrow_mut(|s| *s = Some(symbols));
     CACHE.with_borrow_mut(|c| *c = Cache::default());
@@ -165,7 +174,7 @@ pub fn parse_style(v: &TulispObject) -> Result<Style, String> {
     }
 }
 
-const BAD_SOURCES: &str = "expected a list of history, lisp and mode";
+const BAD_SOURCES: &str = "expected a list of history, lisp, mode and bash";
 
 /// A list of the menu's source names.
 pub fn parse_sources(v: &TulispObject) -> Result<Vec<Source>, String> {
@@ -514,6 +523,40 @@ pub fn menu_on_move() -> bool {
     )
 }
 
+/// Whether `inkline-bash-completion` is on: bash's own completion gives
+/// items for the menu.
+pub fn bash_completion() -> bool {
+    read(
+        "inkline-bash-completion",
+        |s| &s.bash_completion,
+        parse_flag,
+        true,
+    )
+}
+
+/// How many characters of a command name are typed before bash's items for
+/// it are listed (`inkline-command-min-chars`).
+pub fn command_min_chars() -> usize {
+    read(
+        "inkline-command-min-chars",
+        |s| &s.command_min_chars,
+        parse_min_chars,
+        1,
+    )
+}
+
+/// How long a copy of the shell may take to answer
+/// (`inkline-bash-completion-timeout`, in milliseconds).
+pub fn bash_completion_timeout() -> std::time::Duration {
+    let ms = read(
+        "inkline-bash-completion-timeout",
+        |s| &s.bash_completion_timeout,
+        parse_lines,
+        2000,
+    );
+    std::time::Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX))
+}
+
 /// Reads every setting and returns the bad values not reported before, as
 /// `NAME: why` lines.
 pub fn problems() -> Vec<String> {
@@ -528,6 +571,9 @@ pub fn problems() -> Vec<String> {
     completion_matching();
     menu_listed();
     menu_on_move();
+    bash_completion();
+    command_min_chars();
+    bash_completion_timeout();
     CACHE.with_borrow_mut(|c| std::mem::take(&mut c.pending))
 }
 
@@ -728,8 +774,12 @@ mod tests {
             parse_sources(&value(&mut ctx, "'(mode history)")),
             Ok(vec![Source::Mode, Source::History])
         );
+        assert_eq!(
+            parse_sources(&value(&mut ctx, "'(bash mode)")),
+            Ok(vec![Source::Bash, Source::Mode])
+        );
         let bad = Err(BAD_SOURCES.to_owned());
-        for text in ["'history", "'(bash)", r#"'("lisp")"#, "'(lisp . mode)"] {
+        for text in ["'history", "'(zsh)", r#"'("lisp")"#, "'(lisp . mode)"] {
             assert_eq!(parse_sources(&value(&mut ctx, text)), bad, "{text}");
         }
         assert_eq!(parse_min_chars(&value(&mut ctx, "0")), Ok(0));
@@ -737,6 +787,37 @@ mod tests {
         assert_eq!(
             parse_min_chars(&value(&mut ctx, "-1")),
             Err("expected a number of at least 0".to_owned())
+        );
+    }
+
+    #[test]
+    fn bash_completion_settings_have_their_defaults_and_follow_the_variables() {
+        use std::time::Duration;
+        crate::lisp::start();
+        assert!(bash_completion());
+        assert_eq!(command_min_chars(), 1);
+        assert_eq!(bash_completion_timeout(), Duration::from_millis(2000));
+        crate::lisp::eval(
+            "(progn (setq inkline-bash-completion nil inkline-command-min-chars 0
+                          inkline-bash-completion-timeout 300) nil)",
+        )
+        .unwrap();
+        assert!(!bash_completion());
+        assert_eq!(command_min_chars(), 0);
+        assert_eq!(bash_completion_timeout(), Duration::from_millis(300));
+        crate::lisp::eval(
+            "(progn (setq inkline-command-min-chars -1
+                          inkline-bash-completion-timeout 0) nil)",
+        )
+        .unwrap();
+        assert_eq!(command_min_chars(), 1);
+        assert_eq!(bash_completion_timeout(), Duration::from_millis(2000));
+        assert_eq!(
+            problems(),
+            vec![
+                "inkline-command-min-chars: expected a number of at least 0".to_owned(),
+                "inkline-bash-completion-timeout: expected a number of at least 1".to_owned(),
+            ]
         );
     }
 
@@ -753,7 +834,7 @@ mod tests {
         assert_eq!(
             menu_listed(),
             Listed {
-                sources: vec![Source::History, Source::Lisp, Source::Mode],
+                sources: vec![Source::History, Source::Lisp, Source::Mode, Source::Bash],
                 min_chars: 0
             }
         );
