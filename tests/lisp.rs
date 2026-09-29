@@ -77,7 +77,8 @@ fn non_interactive_shells_read_no_init_el() {
         .unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "inkline: on\ninit.el: not read (not an interactive shell with line editing on)\n"
+        "inkline: on\ninit.el: not read (not an interactive shell with line editing on)\n\
+         bash completion: on\n"
     );
 }
 

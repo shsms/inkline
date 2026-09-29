@@ -2,6 +2,7 @@
 //! back on, and ending the copy.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::time::{Duration, Instant};
 
 use super::Word;
 use super::answer::{self, Answer, Decoded};
@@ -11,6 +12,8 @@ use crate::mode_server::process;
 /// kills the copy and what it started, unless its answer has come.
 pub struct Running {
     pub word: Word,
+    /// When the copy's time is up.
+    pub deadline: Instant,
     pid: libc::pid_t,
     pipe: OwnedFd,
     buf: Vec<u8>,
@@ -28,10 +31,10 @@ pub enum Read {
 
 impl Running {
     /// Forks a copy of the shell to ask bash's completion for the word at
-    /// the cursor, which is `word`. The caller holds no `RefCell` borrow
-    /// the copy's code needs: the copy calls bash's completion, which calls
-    /// inkline's `complete`.
-    pub fn start(word: Word) -> std::io::Result<Running> {
+    /// the cursor, which is `word`; it may take `limit`. The caller holds
+    /// no `RefCell` borrow the copy's code needs: the copy calls bash's
+    /// completion, which calls inkline's `complete`.
+    pub fn start(word: Word, limit: Duration) -> std::io::Result<Running> {
         let mut fds = [0; 2];
         // SAFETY: `pipe2` fills `fds` with two new descriptors on success.
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -49,6 +52,7 @@ impl Running {
                 return Err(std::io::Error::last_os_error());
             }
         }
+        let deadline = Instant::now() + limit;
         // SAFETY: the child only runs `copy::run`, which never returns: it
         // ends with `_exit`, or with bash's own exit when a rule's error
         // jumps to bash's top level. So nothing of the shell's is unwound or
@@ -61,6 +65,7 @@ impl Running {
             }
             pid => Ok(Running {
                 word,
+                deadline,
                 pid,
                 pipe: read,
                 buf: Vec::new(),

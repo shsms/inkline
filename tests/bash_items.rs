@@ -264,4 +264,110 @@ fn a_rule_s_error_ends_only_the_copy() {
     sh.send("\x15echo still-$((1 + 1))\r");
     sh.wait_for("the next command", |s| has_row(s, "still-2"));
     assert!(sh.keys_one_by_one());
+    sh.send("inkline status\r");
+    sh.wait_for("the status", |s| {
+        has_row(s, "bash completion: on (1 failed)")
+    });
+}
+
+/// Waits up to 5 s for `done`.
+fn eventually(what: &str, done: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "never: {what}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// The process group a rule wrote to `path` once it started: the copy of
+/// the shell leads its own group, and `$BASHPID` in the rule is the copy's.
+fn written_group(path: &Path) -> String {
+    eventually("the rule started", || {
+        std::fs::read_to_string(path).is_ok_and(|s| s.ends_with('\n'))
+    });
+    std::fs::read_to_string(path).unwrap().trim().to_owned()
+}
+
+/// Whether a process of group `group` still runs. One that has ended but
+/// that its parent has not waited for yet does not count.
+fn group_alive(group: &str) -> bool {
+    std::fs::read_dir("/proc").unwrap().flatten().any(|entry| {
+        std::fs::read_to_string(entry.path().join("stat")).is_ok_and(|stat| {
+            // After the name in parentheses: the state, the parent, the group.
+            let Some((_, rest)) = stat.rsplit_once(')') else {
+                return false;
+            };
+            let mut fields = rest.split_whitespace();
+            let state = fields.next();
+            fields.nth(1) == Some(group) && state != Some("Z")
+        })
+    })
+}
+
+#[test]
+fn a_slow_rule_never_holds_up_typing_and_is_killed_at_its_limit() {
+    let dir = files();
+    let pids = tempfile::tempdir().unwrap();
+    let pid = pids.path().join("slow");
+    let mut sh = shell_in(
+        dir.path(),
+        &format!(
+            "_slow() {{ echo $BASHPID > '{}'; sleep 7.25; COMPREPLY=(late); }}\n\
+             complete -F _slow slow\n",
+            pid.display()
+        ),
+        "(setq inkline-bash-completion-timeout 300)",
+    );
+    let began = std::time::Instant::now();
+    sh.send("slow ");
+    sh.send("abc");
+    sh.wait_for("the keys", |s| cursor_row(s) == "$ slow abc");
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(2),
+        "typing waited for the rule"
+    );
+    let group = written_group(&pid);
+    eventually("the rule killed", || !group_alive(&group));
+    sh.send("\x15inkline status\r");
+    sh.wait_for("the status", |s| {
+        has_row(s, "bash completion: on (1 timed out)")
+    });
+}
+
+#[test]
+fn copies_end_with_the_line() {
+    let dir = files();
+    let pids = tempfile::tempdir().unwrap();
+    let (first, second) = (pids.path().join("slow1"), pids.path().join("slow2"));
+    let mut sh = shell_in(
+        dir.path(),
+        &format!(
+            "_slow1() {{ echo $BASHPID > '{}'; sleep 7.5; }}\ncomplete -F _slow1 slowa\n\
+             _slow2() {{ echo $BASHPID > '{}'; sleep 7.75; }}\ncomplete -F _slow2 slowb\n",
+            first.display(),
+            second.display()
+        ),
+        "",
+    );
+    sh.send("slowa ");
+    let group = written_group(&first);
+    assert!(group_alive(&group), "the first rule is not running");
+    sh.send(ENTER);
+    eventually("the first rule killed", || !group_alive(&group));
+    sh.send("slowb ");
+    let group = written_group(&second);
+    assert!(group_alive(&group), "the second rule is not running");
+    sh.send("\x03");
+    eventually("the second rule killed", || !group_alive(&group));
+}
+
+#[test]
+fn the_status_says_whether_bash_completion_is_on() {
+    let dir = files();
+    let mut sh = shell_in(dir.path(), "", "");
+    sh.send("inkline status\r");
+    sh.wait_for("on", |s| has_row(s, "bash completion: on"));
+    let mut sh = shell_in(dir.path(), "", "(setq inkline-bash-completion nil)");
+    sh.send("inkline status\r");
+    sh.wait_for("off", |s| has_row(s, "bash completion: off"));
 }

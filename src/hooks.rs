@@ -284,9 +284,10 @@ fn run_builtin(args: &[String]) -> c_int {
         [] | ["status"] => {
             let on = STATE.with_borrow(|s| s.enabled);
             let mut text = format!(
-                "inkline: {}\n{}\n",
+                "inkline: {}\n{}\n{}\n",
                 if on { "on" } else { "off" },
-                crate::lisp::init::status_line()
+                crate::lisp::init::status_line(),
+                crate::bash_complete::session::status_line(crate::lisp::settings::bash_completion()),
             );
             for line in mode_server::status_lines(&crate::lisp::settings::command_modes()) {
                 text.push_str(&line);
@@ -839,8 +840,26 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         let signal = (!in_lisp && !typed_ahead && !KEYS_AFTER_C_C.get())
             .then(ffi::signal_before_wait)
             .flatten();
-        match signal.unwrap_or_else(|| ffi::wait_for_input(stream, pause, &servers)) {
+        // The wait also ends when a copy of the shell's time is up, so it is
+        // killed while no key comes.
+        let limit = guard(session::until_deadline, || None);
+        let wait = match (pause, limit) {
+            (Some(p), Some(l)) => Some(p.min(l)),
+            (p, l) => p.or(l),
+        };
+        match signal.unwrap_or_else(|| ffi::wait_for_input(stream, wait, &servers)) {
             ffi::Wait::Ready | ffi::Wait::Error => break None,
+            // A copy's time ran out, not the pause: a pause asked for is
+            // still waited for.
+            ffi::Wait::Paused if guard(session::expire, || false) => guard(
+                || {
+                    STATE.with_borrow_mut(|s| {
+                        s.wants_pause |= for_errors;
+                        s.items_want_pause |= for_items;
+                    });
+                },
+                || (),
+            ),
             // Typing paused with a new error or notice on the line, or with
             // a mode server's completion items still to ask for: show the
             // error or notice, and ask for the items.
@@ -1716,6 +1735,7 @@ fn ask_bash(line: &str, point: usize) -> Option<session::Ticket> {
     });
     let wanted = session::Settings {
         min_chars: settings::command_min_chars(),
+        timeout: settings::bash_completion_timeout(),
         how: settings::completion_matching(),
     };
     let (ticket, wants_pause) = session::prepare(word, &wanted, paused);

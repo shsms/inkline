@@ -1,10 +1,10 @@
 //! This shell's bash completion: the answer saved for the last word asked
 //! about, the copy of the shell working on the next one, the word given up
-//! on, and how many requests failed.
+//! on, and how many requests timed out or failed.
 
 use std::cell::RefCell;
 use std::os::fd::RawFd;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::request::{Read, Running};
 use super::{Ask, Inputs, Saved, Word, command_position, decide, fits, items};
@@ -16,6 +16,7 @@ struct Session {
     saved: Option<Saved>,
     running: Option<Running>,
     given_up: Option<Word>,
+    timed_out: u64,
     failed: u64,
 }
 
@@ -43,11 +44,22 @@ impl Session {
         true
     }
 
+    /// Kills the running copy once its time is up; it is counted, and its
+    /// word given up on. Whether it did.
+    fn expire_running(&mut self) -> bool {
+        let Some(running) = self.running.take_if(|r| Instant::now() >= r.deadline) else {
+            return false;
+        };
+        self.timed_out += 1;
+        self.given_up = Some(running.word.clone());
+        true
+    }
+
     /// Asks a copy of the shell about `word` now, in place of any copy
     /// running. A copy that cannot start counts as failed.
-    fn start(&mut self, word: &Word) {
+    fn start(&mut self, word: &Word, limit: Duration) {
         self.running = None;
-        match Running::start(word.clone()) {
+        match Running::start(word.clone(), limit) {
             Ok(running) => self.running = Some(running),
             Err(_) => {
                 self.failed += 1;
@@ -65,6 +77,8 @@ thread_local! {
 pub struct Settings {
     /// `inkline-command-min-chars`.
     pub min_chars: usize,
+    /// `inkline-bash-completion-timeout`.
+    pub timeout: Duration,
     pub how: Matching,
 }
 
@@ -106,7 +120,7 @@ pub fn prepare(word: Word, settings: &Settings, paused: bool) -> (Ticket, bool) 
             // The copy works on nothing in this shell's `RefCell`s but the
             // line: the fork holds this borrow of `SESSION` in the copy too,
             // and the copy never uses `SESSION`.
-            Ask::Now => me.start(&word),
+            Ask::Now => me.start(&word, settings.timeout),
             Ask::InFlight => {}
             Ask::No | Ask::AtPause => me.running = None,
         }
@@ -130,6 +144,7 @@ pub fn found(ticket: &Ticket, deadline: Instant, interrupted: fn() -> bool) -> F
     SESSION.with_borrow_mut(|me| {
         loop {
             me.read_running();
+            me.expire_running();
             let Some(fd) = me
                 .running
                 .as_ref()
@@ -168,6 +183,37 @@ pub fn found(ticket: &Ticket, deadline: Instant, interrupted: fn() -> bool) -> F
 /// The pipe of the copy running, for the key reader to wait on.
 pub fn waiting_fd() -> Option<RawFd> {
     SESSION.with_borrow(|me| me.running.as_ref().map(Running::fd))
+}
+
+/// Milliseconds until the running copy's time is up, rounded up; None with
+/// no copy running.
+pub fn until_deadline() -> Option<std::ffi::c_int> {
+    SESSION.with_borrow(|me| {
+        let left = me
+            .running
+            .as_ref()?
+            .deadline
+            .saturating_duration_since(Instant::now());
+        Some(
+            std::ffi::c_int::try_from(left.as_micros().div_ceil(1000))
+                .unwrap_or(std::ffi::c_int::MAX),
+        )
+    })
+}
+
+/// Kills the running copy if its time is up. Whether it did.
+pub fn expire() -> bool {
+    SESSION.with_borrow_mut(Session::expire_running)
+}
+
+/// `inkline status`'s line, with `on` from `inkline-bash-completion`. In a
+/// copy of the shell, where a rule may run `inkline status` while the
+/// session is borrowed, the counts read zero.
+pub fn status_line(on: bool) -> String {
+    SESSION.with(|me| match me.try_borrow() {
+        Ok(me) => super::status_line(on, me.timed_out, me.failed),
+        Err(_) => super::status_line(on, 0, 0),
+    })
 }
 
 /// Takes the running copy's answer if it came, or notes that it failed,

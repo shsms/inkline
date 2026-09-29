@@ -162,7 +162,7 @@ fn defining_again_and_removing() {
     );
     let rows = status_rows(&mut sh);
     assert_eq!(
-        rows[1..],
+        rows[2..],
         ["command csvm: no mode named csvm-mode"],
         "{rows:?}"
     );
@@ -203,7 +203,7 @@ fn reload_stops_mode_servers() {
     run(&mut sh, "inkline reload");
     let rows = status_rows(&mut sh);
     assert_eq!(
-        rows[1..],
+        rows[2..],
         ["mode csvm-mode (csvm): not started"],
         "{rows:?}"
     );
