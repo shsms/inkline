@@ -5,6 +5,15 @@
 
 pub mod answer;
 
+// These run bash's completion in a fork of bash, so they are left out of
+// the unit-test binary, which runs without bash.
+#[cfg(not(test))]
+mod copy;
+#[cfg(not(test))]
+mod request;
+#[cfg(not(test))]
+pub mod session;
+
 use crate::menu::{self, Item, Matching, Source};
 use answer::Answer;
 

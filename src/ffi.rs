@@ -1615,6 +1615,281 @@ pub fn command_name(f: CommandFn) -> Option<String> {
     None
 }
 
+// ---- bash's completion in a copy of the shell ----
+
+/// readline's `rl_compentry_func_t`: the matches for a text, one per call.
+type EntryFn = unsafe extern "C" fn(*const c_char, c_int) -> *mut c_char;
+
+/// readline's `rl_compignore_func_t`: drops matches from a list.
+type IgnoreFn = unsafe extern "C" fn(*mut *mut c_char) -> c_int;
+
+/// `RL_STATE_COMPLETING` in readline.h.
+const RL_STATE_COMPLETING: c_ulong = 0x0004000;
+
+unsafe extern "C" {
+    fn _rl_find_completion_word(found_quote: *mut c_int, delimiter: *mut c_int) -> c_char;
+    fn rl_complete_internal(what_to_do: c_int) -> c_int;
+    fn rl_completion_matches(text: *const c_char, entry: EntryFn) -> *mut *mut c_char;
+    fn rl_filename_completion_function(text: *const c_char, state: c_int) -> *mut c_char;
+    fn rl_replace_line(text: *const c_char, clear_undo: c_int);
+    fn rl_clear_signals() -> c_int;
+    fn without_job_control();
+    fn reset_signal_handlers();
+    fn restore_original_signals();
+    static mut rl_completion_entry_function: Option<EntryFn>;
+    static mut rl_ignore_some_completions_function: Option<IgnoreFn>;
+    static mut rl_attempted_completion_over: c_int;
+    static mut rl_sort_completion_matches: c_int;
+    static mut rl_ignore_completion_duplicates: c_int;
+    static mut rl_filename_completion_desired: c_int;
+    static mut rl_filename_quoting_desired: c_int;
+    static mut rl_completion_suppress_append: c_int;
+    static mut rl_completion_suppress_quote: c_int;
+    static mut rl_completion_append_character: c_int;
+    static mut rl_completion_mark_symlink_dirs: c_int;
+    static mut _rl_complete_mark_symlink_dirs: c_int;
+    static mut rl_completion_found_quote: c_int;
+    static mut rl_completion_quote_character: c_int;
+    static mut rl_completion_type: c_int;
+    static mut rl_completion_invoking_key: c_int;
+    static mut interactive: c_int;
+    static mut remember_on_history: c_int;
+    static mut shell_tty: c_int;
+    static mut subshell_environment: c_int;
+}
+
+/// `SUBSHELL_COMSUB` in bash's `shell.h`: the shell is the child of `$(…)`.
+const SUBSHELL_COMSUB: c_int = 0x04;
+
+/// The settings a completion function leaves, which decide how Tab puts a
+/// match on the line.
+#[derive(Clone, Copy)]
+pub struct CompletionSettings {
+    filename: c_int,
+    quoting: c_int,
+    suppress_append: c_int,
+    suppress_quote: c_int,
+    append_character: c_int,
+    mark_symlink_dirs: c_int,
+}
+
+/// What bash's completion gave for the word at the cursor.
+pub struct BashMatches {
+    /// Where the word starts.
+    pub start: usize,
+    pub matches: Vec<CString>,
+    pub settings: CompletionSettings,
+}
+
+/// Makes this process, a fork of the shell, a copy that cannot reach the
+/// terminal or the shell's jobs, as bash makes the child of `$(…)`: a
+/// subshell of the command substitution kind, not interactive, so an error
+/// that jumps to bash's top level ends it; bash's own descriptor for the
+/// terminal closed, so ending a job never sets the terminal's modes; a
+/// session of its own, with no terminal; stdin, stdout and stderr on
+/// `/dev/null`; job control off; adding nothing to history; readline's and
+/// bash's signal handlers and traps back to their defaults, so no `EXIT`
+/// trap runs. On Linux it is killed when the shell it was copied from dies.
+pub fn become_copy() {
+    // SAFETY: plain calls and ints on this process, which only this thread
+    // runs after the fork.
+    unsafe {
+        subshell_environment |= SUBSHELL_COMSUB;
+        interactive_shell = 0;
+        interactive = 0;
+        if shell_tty >= 0 {
+            libc::close(shell_tty);
+            shell_tty = -1;
+        }
+        libc::setsid();
+        #[cfg(target_os = "linux")]
+        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+        if null >= 0 {
+            for fd in 0..3 {
+                libc::dup2(null, fd);
+            }
+            if null > 2 {
+                libc::close(null);
+            }
+        }
+        rl_clear_signals();
+        without_job_control();
+        remember_on_history = 0;
+        reset_signal_handlers();
+        restore_original_signals();
+    }
+}
+
+/// Ends a copy of the shell at once, without bash's exit: no traps, no
+/// history file, no buffers flushed.
+pub fn exit_copy(code: c_int) -> ! {
+    // SAFETY: `_exit` ends the process.
+    unsafe { libc::_exit(code) }
+}
+
+/// Asks bash's completion for the word at the cursor as readline does for a
+/// listing: finds the word, sets the completion defaults with `?` as the
+/// completion type (bash's `COMP_TYPE` for a listing), calls the completion
+/// function Tab calls, falls back to file names unless it said not to, drops
+/// the names `FIGNORE` ignores, then sorts and drops repeats as readline's
+/// settings say. None when nothing matched or the word holds a NUL.
+pub fn bash_matches() -> Option<BashMatches> {
+    // SAFETY: in the copy of the shell; the line is readline's own, and the
+    // list the functions return is freed here, as readline frees it.
+    unsafe {
+        let end = rl_point;
+        let (mut found, mut delimiter) = (0, 0);
+        let quote = if end > 0 {
+            _rl_find_completion_word(&mut found, &mut delimiter)
+        } else {
+            0
+        };
+        let start = rl_point.clamp(0, end);
+        rl_point = end;
+        rl_filename_completion_desired = 0;
+        rl_filename_quoting_desired = 1;
+        rl_completion_type = c_int::from(b'?');
+        rl_completion_suppress_append = 0;
+        rl_completion_suppress_quote = 0;
+        rl_completion_append_character = c_int::from(b' ');
+        rl_completion_mark_symlink_dirs = _rl_complete_mark_symlink_dirs;
+        rl_completion_found_quote = found;
+        rl_completion_quote_character = c_int::from(quote as u8);
+        rl_completion_invoking_key = c_int::from(b'\t');
+        rl_attempted_completion_over = 0;
+        let line = line_bytes();
+        let text = CString::new(line.get(start as usize..end as usize)?).ok()?;
+        rl_readline_state |= RL_STATE_COMPLETING;
+        let mut list = match rl_attempted_completion_function {
+            Some(f) => f(text.as_ptr(), start, end),
+            None => std::ptr::null_mut(),
+        };
+        if list.is_null() && rl_attempted_completion_over == 0 {
+            let entry = rl_completion_entry_function.unwrap_or(rl_filename_completion_function);
+            list = rl_completion_matches(text.as_ptr(), entry);
+        }
+        rl_readline_state &= !RL_STATE_COMPLETING;
+        if list.is_null() {
+            return None;
+        }
+        if rl_filename_completion_desired != 0
+            && let Some(ignore) = rl_ignore_some_completions_function
+        {
+            ignore(list);
+        }
+        let mut matches = take_list(list);
+        if rl_sort_completion_matches != 0 {
+            matches.sort_by(|a, b| libc::strcoll(a.as_ptr(), b.as_ptr()).cmp(&0));
+        }
+        if rl_ignore_completion_duplicates != 0 {
+            matches.dedup();
+        }
+        let settings = CompletionSettings {
+            filename: rl_filename_completion_desired,
+            quoting: rl_filename_quoting_desired,
+            suppress_append: rl_completion_suppress_append,
+            suppress_quote: rl_completion_suppress_quote,
+            append_character: rl_completion_append_character,
+            mark_symlink_dirs: rl_completion_mark_symlink_dirs,
+        };
+        Some(BashMatches {
+            start: start as usize,
+            matches,
+            settings,
+        })
+    }
+}
+
+/// Copies and frees a list of matches readline's way: entries up to a null
+/// pointer. With more than one, the first is the text they share and is
+/// dropped.
+///
+/// # Safety
+///
+/// `list` is a `malloc`ed array of `malloc`ed C strings ending with a null
+/// pointer, which nothing else frees.
+unsafe fn take_list(list: *mut *mut c_char) -> Vec<CString> {
+    let mut all = Vec::new();
+    // SAFETY: as the caller promises.
+    unsafe {
+        let mut entry = list;
+        while !(*entry).is_null() {
+            all.push(CStr::from_ptr(*entry).to_owned());
+            libc::free((*entry).cast());
+            entry = entry.add(1);
+        }
+        libc::free(list.cast());
+    }
+    if all.len() > 1 {
+        all.remove(0);
+    }
+    all
+}
+
+thread_local! {
+    /// The match `one_match` answers with, and the settings it sets.
+    static REPLAYED: std::cell::RefCell<Option<(CString, CompletionSettings)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Replays Tab on `line` with the cursor at `point`, with `one` as the only
+/// match and `settings` as the completion function left them, and gives
+/// the line readline leaves: quoted, with a quote taken in or closed, and
+/// `/` or a space added, all as readline does for a single match.
+pub fn replay_tab(line: &str, point: usize, one: &CStr, settings: &CompletionSettings) -> Vec<u8> {
+    let Ok(text) = CString::new(line) else {
+        return line.as_bytes().to_vec();
+    };
+    REPLAYED.set(Some((one.to_owned(), *settings)));
+    // SAFETY: in the copy of the shell: readline's line is replaced and
+    // completed as for a key; its functions are put back after.
+    unsafe {
+        rl_replace_line(text.as_ptr(), 1);
+        rl_point = c_int::try_from(point).unwrap_or(c_int::MAX);
+        let (function, ignore) = (
+            rl_attempted_completion_function,
+            rl_ignore_some_completions_function,
+        );
+        rl_attempted_completion_function = Some(one_match);
+        rl_ignore_some_completions_function = None;
+        rl_complete_internal(c_int::from(b'\t'));
+        rl_attempted_completion_function = function;
+        rl_ignore_some_completions_function = ignore;
+    }
+    line_bytes()
+}
+
+/// The completion function `replay_tab` puts in place: the one match it
+/// was given, with the settings it was given, and no file name fallback.
+unsafe extern "C" fn one_match(
+    _text: *const c_char,
+    _start: c_int,
+    _end: c_int,
+) -> *mut *mut c_char {
+    let Some((one, s)) = REPLAYED.take() else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: plain ints readline keeps; the list is `malloc`ed, as
+    // readline frees it.
+    unsafe {
+        rl_filename_completion_desired = s.filename;
+        rl_filename_quoting_desired = s.quoting;
+        rl_completion_suppress_append = s.suppress_append;
+        rl_completion_suppress_quote = s.suppress_quote;
+        rl_completion_append_character = s.append_character;
+        rl_completion_mark_symlink_dirs = s.mark_symlink_dirs;
+        rl_attempted_completion_over = 1;
+        let list = libc::malloc(2 * std::mem::size_of::<*mut c_char>()).cast::<*mut c_char>();
+        if list.is_null() {
+            return list;
+        }
+        *list = libc::strdup(one.as_ptr());
+        *list.add(1) = std::ptr::null_mut();
+        list
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

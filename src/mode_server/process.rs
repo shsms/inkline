@@ -165,7 +165,7 @@ pub fn start(
 /// A close-on-exec copy of `fd`, in its place, on the highest free
 /// descriptor below `HIGH_FDS_END` and the open-file limit; when none from
 /// `LOWEST_FD` up is free there, on the lowest free one from `LOWEST_FD` up.
-fn to_high_fd(fd: OwnedFd) -> std::io::Result<OwnedFd> {
+pub(crate) fn to_high_fd(fd: OwnedFd) -> std::io::Result<OwnedFd> {
     let end = open_file_limit().min(HIGH_FDS_END);
     let copy_from = |lowest: RawFd| {
         // `F_DUPFD_CLOEXEC` takes the lowest free descriptor from `lowest`
