@@ -873,14 +873,18 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                 }
                 // A copy's time ran out, not the pause: a pause asked for is
                 // still waited for. Where the servers are waited on, the
-                // answer that came is drawn.
+                // answer that came is drawn, and so is the line of a copy
+                // killed while bash's items show: its word gets none now.
                 expired => guard(
                     || {
                         STATE.with_borrow_mut(|s| {
                             s.wants_pause |= for_errors;
                             s.items_want_pause |= for_items;
                         });
-                        if for_servers && expired == session::Expired::Came {
+                        if for_servers
+                            && (expired == session::Expired::Came
+                                || STATE.with_borrow(shows_bash_items))
+                        {
                             redraw();
                         }
                     },
@@ -1215,6 +1219,15 @@ extern "C" fn redisplay() {
     if lisp_ran {
         after_lisp();
     }
+}
+
+/// Whether the menu or the grey text on screen shows one of bash's items.
+fn shows_bash_items(s: &State) -> bool {
+    let bash = |item: &Item| item.source == Source::Bash;
+    s.menu.as_ref().is_some_and(|m| {
+        (s.menu_rows.is_some() && m.items.iter().any(bash))
+            || (s.shown_at.is_some() && m.grey_item().is_some_and(bash))
+    })
 }
 
 /// Draws the line again at once, as one update, while readline waits for a

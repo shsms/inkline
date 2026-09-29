@@ -269,6 +269,25 @@ fn an_answer_that_came_during_a_search_is_not_a_time_out() {
     assert!(has_row(&s, "bash completion: on"), "{}", dump(&s));
 }
 
+/// A copy killed at its limit takes the word's `c` rows away at once: the
+/// word gets no items from bash now. The rows come from a first answer cut
+/// at 1000 matches, which serves the longer word while a copy is asked
+/// about it.
+#[test]
+fn a_time_out_takes_the_rows_away_without_a_key() {
+    let dir = files();
+    let mut sh = shell_in(
+        dir.path(),
+        "_s() { [[ $2 == f0* ]] && sleep 5; COMPREPLY=(f{0000..1499}); }\n\
+         complete -F _s s\n",
+        "(setq inkline-bash-completion-timeout 300)",
+    );
+    typed_then(&mut sh, "s f", "c  f0000");
+    typed_then(&mut sh, "0", "c  f0000");
+    let s = sh.wait_for("no c rows", |s| bash_rows(s).is_empty());
+    assert_eq!(cursor_row(&s), "$ s f0", "{}", dump(&s));
+}
+
 /// An error that makes bash leave a rule for its top level ends the copy
 /// alone.
 #[test]
