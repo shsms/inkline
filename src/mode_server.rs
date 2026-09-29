@@ -16,8 +16,9 @@ use protocol::{Depths, Read, Reply, ReplyItem};
 pub mod process;
 pub mod protocol;
 
-/// The longest a redraw waits for mode servers, in all: for the first line of
-/// the ones starting, then for their replies.
+/// The longest a redraw waits, in all, for mode servers (for the first line of
+/// the ones starting, then for their replies) and for bash's copy of the
+/// shell.
 pub const WAIT: Duration = Duration::from_millis(15);
 
 /// The longest a new line waits for a mode server's depths, in all: for the

@@ -1661,6 +1661,25 @@ unsafe extern "C" {
 /// `SUBSHELL_COMSUB` in bash's `shell.h`: the shell is the child of `$(…)`.
 const SUBSHELL_COMSUB: c_int = 0x04;
 
+/// Where readline's completion takes the word at the cursor to start: after
+/// the last character of `COMP_WORDBREAKS` before the cursor, or after the
+/// quote the word opened. The cursor stays where it is.
+pub fn completion_word_start() -> usize {
+    // SAFETY: `_rl_find_completion_word` reads the line up to the cursor
+    // and leaves `rl_point` at the word's start; the cursor is put back.
+    unsafe {
+        let point = rl_point;
+        if point <= 0 {
+            return 0;
+        }
+        let (mut found, mut delimiter) = (0, 0);
+        _rl_find_completion_word(&mut found, &mut delimiter);
+        let start = rl_point.clamp(0, point);
+        rl_point = point;
+        start as usize
+    }
+}
+
 /// The settings a completion function leaves, which decide how Tab puts a
 /// match on the line.
 #[derive(Clone, Copy)]

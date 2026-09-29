@@ -12,6 +12,7 @@ use std::sync::{Once, OnceLock};
 use std::time::Instant;
 
 use crate::args::{self, Arg, CommandArgs};
+use crate::bash_complete::{self, session};
 use crate::commands::{self, PathCache};
 use crate::ffi;
 use crate::highlight;
@@ -393,6 +394,7 @@ fn disable() {
     let _ = ACCEPT_ERRORS.try_with(|e| e.try_borrow_mut().map(|mut e| e.clear()));
     crate::lisp::hooks::forget_line();
     unwrap_completion();
+    session::forget();
     end_update();
     ffi::flush_out();
     let enabled = STATE.try_with(|s| {
@@ -821,7 +823,9 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                 {
                     Vec::new()
                 } else {
-                    mode_server::waiting_fds()
+                    let mut fds = mode_server::waiting_fds();
+                    fds.extend(session::waiting_fd());
+                    fds
                 }
             },
             Vec::new,
@@ -857,16 +861,18 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                     draw_below_notice,
                 );
             }
-            // A mode server sent something: paint its reply, or say it was
-            // turned off once typing pauses. The redraw asks the servers
-            // again: a reply kept for the line's arguments now answers,
-            // one for arguments no longer on the line is dropped, and a
-            // request for the line as it is now is sent (for completion
-            // items, once typing pauses there). Without a redraw, a pause
-            // asked for is still waited for.
+            // A mode server sent something, or a copy of the shell answered:
+            // paint the reply or the items, or say the server was turned off
+            // once typing pauses. The redraw asks the servers again: a reply
+            // kept for the line's arguments now answers, one for arguments no
+            // longer on the line is dropped, and a request for the line as it
+            // is now is sent (for completion items, once typing pauses
+            // there). Without a redraw, a pause asked for is still waited for.
             ffi::Wait::Other => guard(
                 || {
-                    if mode_server::read_waiting() {
+                    let mode = mode_server::read_waiting();
+                    let bash = session::read_waiting();
+                    if mode || bash {
                         redraw();
                     } else {
                         STATE.with_borrow_mut(|s| {
@@ -1034,6 +1040,7 @@ extern "C" fn pre_input() -> c_int {
             // a line read while Lisp runs is part of the line Lisp runs in.
             if ffi::reading_command() && !crate::lisp::RUNNING.load(Ordering::Relaxed) {
                 mode_server::forget_replies();
+                session::forget();
             }
             wrap_completion();
             crate::lisp::hooks::line_started();
@@ -1072,6 +1079,9 @@ extern "C" fn pre_input() -> c_int {
 extern "C" fn deprep_terminal() {
     guard(
         || {
+            if ffi::line_done() {
+                session::forget();
+            }
             if !crate::lisp::RUNNING.load(Ordering::Relaxed) {
                 crate::lisp::hooks::forget_line();
             }
@@ -1322,9 +1332,16 @@ fn repaint_line() -> bool {
         && (show_menu || (show_suggestion && point == line.len()))
         && !is_hidden(&line)
         && !recalled(&line);
+    let began = Instant::now();
+    // bash's copy of the shell is started first, so it works while the mode
+    // servers are waited on; both share `mode_server::WAIT`.
+    let bash = gather.then(|| ask_bash(&line, point)).flatten();
     // Mode server items are asked for only when a menu is gathered.
-    let (found, mode_items) = ask_mode_servers(&line, &path, gather.then_some(point));
-    let menu = gather.then(|| menu_for(&line, point, mode_items));
+    let (found, mode_items) = ask_mode_servers(&line, &path, gather.then_some(point), began);
+    let bash_items = bash
+        .map(|ticket| session::found(&ticket, began + mode_server::WAIT, ffi::signal_to_act_on))
+        .unwrap_or_default();
+    let menu = gather.then(|| menu_for(&line, point, mode_items, bash_items));
     let suggestion = menu
         .as_ref()
         .filter(|_| show_suggestion)
@@ -1396,20 +1413,26 @@ fn repaint_line() -> bool {
 /// The menu for `line` with the cursor at `point`: the one kept in `STATE` when
 /// it was made for the same line and cursor (so a pick stays), else a new one
 /// gathered from the sources: history and the suggestion hook when the cursor
-/// is at the end of the line, then the mode server's items (`mode`), then the
-/// completion hook. It lists only the items `settings::menu_listed` allows; its
-/// grey text comes from all of them. A new menu for the same line and cursor
-/// keeps the pick on the item with the same text and range, if it is still
-/// listed.
-fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
+/// is at the end of the line, then the mode server's items (`mode`), then
+/// bash's own completion (`bash`), then the completion hook. It lists only
+/// the items `settings::menu_listed` allows; its grey text comes from all of
+/// them. A new menu for the same line and cursor keeps the pick on the item
+/// with the same text and range, if it is still listed.
+fn menu_for(line: &str, point: usize, mode: ModeItems, bash: session::Found) -> Menu {
     let lisp_runs = crate::lisp::RUNNING.load(Ordering::Relaxed);
     let waiting = mode.waiting;
+    let bash_waiting = bash.waiting;
     let mut kept = STATE.with_borrow(|s| s.menu.clone().filter(|m| m.is_for(line, point)));
     // A menu made while Lisp ran has no items from the Lisp hooks: once Lisp
     // has stopped, a new one is gathered. One made while the mode server had
-    // not answered is gathered again once it has.
-    if let Some(menu) = kept.take_if(|m| (lisp_runs || !m.lisp_ran) && (!m.mode_waiting || waiting))
-    {
+    // not answered is gathered again once it has. One made while a copy of
+    // the shell was working on bash's items is gathered again once it has
+    // answered.
+    if let Some(menu) = kept.take_if(|m| {
+        (lisp_runs || !m.lisp_ran)
+            && (!m.mode_waiting || waiting)
+            && (!m.bash_waiting || bash_waiting)
+    }) {
         return menu;
     }
     let how = crate::lisp::settings::completion_matching();
@@ -1433,6 +1456,7 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
         .came
         .map(|(items, arg)| menu::mode::place(line, point, &arg, &items))
         .unwrap_or_default();
+    let bash = bash.items;
     let history = history.into_items();
     let listed = crate::lisp::settings::menu_listed();
     let lists = |item: &Item| listed.lists(line, point, item);
@@ -1440,13 +1464,14 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
         .iter()
         .chain(&whole)
         .chain(&mode)
+        .chain(&bash)
         .chain(&words)
         .all(lists);
     let menu = if every_item_listed {
         Menu::new(
             line,
             point,
-            menu::assemble(line, point, how, history, whole, mode, Vec::new(), words),
+            menu::assemble(line, point, how, history, whole, mode, bash, words),
         )
     } else {
         // The listed items are assembled on their own, so that an item the
@@ -1460,10 +1485,10 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
             keep(&history),
             whole.as_ref().filter(|i| lists(i)).cloned(),
             keep(&mode),
-            Vec::new(),
+            keep(&bash),
             keep(&words),
         );
-        let top = menu::assemble(line, point, how, history, whole, mode, Vec::new(), words)
+        let top = menu::assemble(line, point, how, history, whole, mode, bash, words)
             .into_iter()
             .next();
         Menu {
@@ -1483,6 +1508,7 @@ fn menu_for(line: &str, point: usize, mode: ModeItems) -> Menu {
         picked,
         lisp_ran: lisp_runs,
         mode_waiting: waiting,
+        bash_waiting,
         ..menu
     }
 }
@@ -1564,10 +1590,10 @@ fn showing_menu() -> bool {
 /// Asks the mode servers of the commands on `line` that use a mode how to
 /// colour their arguments, at the main prompt while no Lisp runs: starts
 /// the servers not started yet, looking up their programs in `path`
-/// (bash's `PATH`), and waits up to `mode_server::WAIT` in all for their
-/// first lines and replies. The commands answered in time, each with its
-/// mode and its reply, in line order. Why a server was turned off waits for
-/// `show_mode_server_notices`.
+/// (bash's `PATH`), and waits until `mode_server::WAIT` after `began` at
+/// most for their first lines and replies. The commands answered in time,
+/// each with its mode and its reply, in line order. Why a server was turned
+/// off waits for `show_mode_server_notices`.
 ///
 /// With `point`, the cursor's place when a menu is gathered, the server of
 /// the innermost of those commands with an argument (after its name) that
@@ -1580,8 +1606,8 @@ fn ask_mode_servers(
     line: &str,
     path: &str,
     point: Option<usize>,
+    began: Instant,
 ) -> (Vec<(String, CommandArgs, Reply)>, ModeItems) {
-    let began = Instant::now();
     let nothing = || (Vec::new(), ModeItems::default());
     if !ffi::reading_command()
         || crate::lisp::RUNNING.load(Ordering::Relaxed)
@@ -1666,6 +1692,37 @@ fn ask_mode_servers(
         .filter_map(|((mode, command), reply)| Some((mode, command, reply?)))
         .collect();
     (found, mode_items)
+}
+
+/// Readies bash's own completion for the word at the cursor (see
+/// `session::prepare`), at the main prompt while no Lisp runs. With
+/// `inkline-bash-completion` off, a copy still running is stopped and
+/// nothing is asked. A pause wanted to ask again is asked of `getc`. The
+/// ticket for `session::found`.
+fn ask_bash(line: &str, point: usize) -> Option<session::Ticket> {
+    use crate::lisp::settings;
+    if !ffi::reading_command() || crate::lisp::RUNNING.load(Ordering::Relaxed) {
+        return None;
+    }
+    if !settings::bash_completion() {
+        session::forget();
+        return None;
+    }
+    let word = bash_complete::Word::new(line, ffi::completion_word_start(), point)?;
+    let paused = STATE.with_borrow(|s| {
+        s.items_paused_on
+            .as_ref()
+            .is_some_and(|(on, at)| on == line && *at == point)
+    });
+    let wanted = session::Settings {
+        min_chars: settings::command_min_chars(),
+        how: settings::completion_matching(),
+    };
+    let (ticket, wants_pause) = session::prepare(word, &wanted, paused);
+    if wants_pause {
+        STATE.with_borrow_mut(|s| s.items_want_pause = true);
+    }
+    Some(ticket)
 }
 
 /// What the mode server of the command the cursor is in gave for the

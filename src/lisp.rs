@@ -156,9 +156,10 @@ pub fn load(path: &str) -> Result<(), String> {
 }
 
 /// `inkline reload`: puts back the keys inkline still owns, forgets every
-/// command mode and stops its server, starts a fresh interpreter, sets the
-/// layout's readline variables and binds the layout again, and reads
-/// `init.el` again.
+/// command mode and stops its server, stops the copy of the shell working
+/// on bash's completion and forgets its answers, starts a fresh
+/// interpreter, sets the layout's readline variables and binds the layout
+/// again, and reads `init.el` again.
 /// `Ok(false)` when `init.el` was skipped or failed; its problem is already
 /// printed.
 #[cfg(not(test))]
@@ -171,6 +172,7 @@ pub fn reload() -> Result<bool, String> {
     BROKEN.set(false);
     keys::restore_all();
     crate::mode_server::stop_all();
+    crate::bash_complete::session::forget();
     start();
     let mut read_cleanly = true;
     if crate::ffi::line_editing_shell() {
