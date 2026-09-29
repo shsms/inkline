@@ -382,6 +382,7 @@ fn unset_after_binding_a_layout_key_again_puts_back_readline_s_binding() {
 fn reload_keeps_a_later_bind() {
     let mut sh = Shell::start(Options {
         rc: "bind '\"\\C-k\": kill-line'\n".into(),
+        init_el: Some("(setq inkline-bash-completion nil)".into()),
         ..Options::default()
     });
     sh.send("inkline reload\r");

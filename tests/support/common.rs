@@ -70,6 +70,12 @@ pub struct Options {
     pub home: Option<PathBuf>,
     /// Contents for `~/.config/inkline/init.el`; none when None.
     pub init_el: Option<String>,
+    /// Leave bash's own completion on. Off by default, so the menus of
+    /// tests about other sources hold only their items. The harness adds the
+    /// line that turns it off to `init_el`, and runs it once in the rc file:
+    /// after `inkline reload`, a test with no `init_el`, or one that writes
+    /// `init.el` itself, has it on again.
+    pub bash_completion: bool,
     /// How the cursor row starts once the first prompt is up.
     pub prompt: &'static str,
     pub term: &'static str,
@@ -89,6 +95,7 @@ impl Default for Options {
             cwd: None,
             home: None,
             init_el: None,
+            bash_completion: false,
             prompt: "$",
             term: "xterm-256color",
             lang: "C.UTF-8",
@@ -128,6 +135,11 @@ impl Shell {
         };
         if let Some(text) = &opts.init_el {
             use std::os::unix::fs::PermissionsExt;
+            let text = if opts.bash_completion {
+                text.clone()
+            } else {
+                format!("{text}\n(setq inkline-bash-completion nil)\n")
+            };
             let dir = home_path.join(".config/inkline");
             std::fs::create_dir_all(&dir).unwrap();
             for d in [home_path.join(".config"), dir.clone()] {
@@ -141,6 +153,9 @@ impl Shell {
         rc += &opts.before_inkline;
         if opts.inkline {
             rc += &format!("enable -f {} inkline\n", so_path().display());
+            if !opts.bash_completion {
+                rc += "inkline eval '(setq inkline-bash-completion nil)'\n";
+            }
         }
         rc += "PS1='$ '\nPS2='> '\nHISTFILE=\n";
         rc += "bind 'set bell-style none'\nbind 'set enable-bracketed-paste on'\n";
@@ -274,6 +289,16 @@ impl Shell {
                 pixel_height: 0,
             })
             .unwrap();
+    }
+
+    /// Whether the terminal hands bash each key as it is typed (canonical
+    /// mode off), as readline sets it while it reads a line.
+    pub fn keys_one_by_one(&self) -> bool {
+        let fd = self.master.as_raw_fd().expect("the pty's master");
+        // SAFETY: `termios` is plain data that `tcgetattr` fills.
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::tcgetattr(fd, &mut termios) }, 0);
+        termios.c_lflag & libc::ICANON == 0
     }
 
     pub fn signal(&self, signal: libc::c_int) {
