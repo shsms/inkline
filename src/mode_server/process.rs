@@ -244,13 +244,13 @@ fn close_on_exec_from_3(limit: libc::c_int) {
 }
 
 /// SIGCHLD blocked in this thread until it is dropped.
-struct BlockChild {
+pub(crate) struct BlockChild {
     /// The signal mask before.
-    old: libc::sigset_t,
+    pub(crate) old: libc::sigset_t,
 }
 
 impl BlockChild {
-    fn new() -> BlockChild {
+    pub(crate) fn new() -> BlockChild {
         // SAFETY: the sets are initialised by `sigemptyset` and
         // `pthread_sigmask` before they are read.
         unsafe {

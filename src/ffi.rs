@@ -1700,15 +1700,15 @@ pub struct BashMatches {
     pub settings: CompletionSettings,
 }
 
-/// Makes this process, a fork of the shell, a copy that cannot reach the
-/// terminal or the shell's jobs, as bash makes the child of `$(…)`: a
-/// subshell of the command substitution kind, not interactive, so an error
-/// that jumps to bash's top level ends it; bash's own descriptor for the
-/// terminal closed, so ending a job never sets the terminal's modes; a
-/// session of its own, with no terminal; stdin, stdout and stderr on
+/// Makes this process, a fork of the shell already in a session of its own
+/// with no terminal, a copy that cannot reach the terminal or the shell's
+/// jobs, as bash makes the child of `$(…)`: a subshell of the command
+/// substitution kind, not interactive, so an error that jumps to bash's top
+/// level ends it; bash's own descriptor for the terminal closed, so ending a
+/// job never sets the terminal's modes; stdin, stdout and stderr on
 /// `/dev/null`; job control off; adding nothing to history; readline's and
 /// bash's signal handlers and traps back to their defaults, so no `EXIT`
-/// trap runs. On Linux it is killed when the shell it was copied from dies.
+/// trap runs.
 pub fn become_copy() {
     // SAFETY: plain calls and ints on this process, which only this thread
     // runs after the fork.
@@ -1720,9 +1720,6 @@ pub fn become_copy() {
             libc::close(shell_tty);
             shell_tty = -1;
         }
-        libc::setsid();
-        #[cfg(target_os = "linux")]
-        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
         let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
         if null >= 0 {
             for fd in 0..3 {

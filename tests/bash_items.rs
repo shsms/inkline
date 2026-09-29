@@ -25,6 +25,11 @@ complete -o nospace -W 'key=' kv
 zzfunc_one() { :; }
 zzfunc_two() { :; }
 ZZVAR_ONE=1
+_group_to() {
+    local p g
+    read -r _ _ _ p g _ < /proc/$BASHPID/stat
+    echo "$g $p $$" > "$1"
+}
 "#;
 
 /// A directory holding `alpha.txt`, `my file.txt` and `src/main.rs`.
@@ -300,13 +305,21 @@ fn eventually(what: &str, done: impl Fn() -> bool) {
     }
 }
 
-/// The process group a rule wrote to `path` once it started: the copy of
-/// the shell leads its own group, and `$BASHPID` in the rule is the copy's.
-fn written_group(path: &Path) -> String {
+/// The process group, the parent and the shell a rule wrote to `path` with
+/// `_group_to` once it started: the group is the copy of the shell's own.
+fn written(path: &Path) -> [String; 3] {
     eventually("the rule started", || {
         std::fs::read_to_string(path).is_ok_and(|s| s.ends_with('\n'))
     });
-    std::fs::read_to_string(path).unwrap().trim().to_owned()
+    let text = std::fs::read_to_string(path).unwrap();
+    let fields: Vec<_> = text.split_whitespace().map(str::to_owned).collect();
+    fields.try_into().unwrap()
+}
+
+/// The process group a rule wrote to `path` (see `written`).
+fn written_group(path: &Path) -> String {
+    let [group, ..] = written(path);
+    group
 }
 
 /// Whether a process of group `group` still runs. One that has ended but
@@ -333,7 +346,7 @@ fn a_slow_rule_never_holds_up_typing_and_is_killed_at_its_limit() {
     let mut sh = shell_in(
         dir.path(),
         &format!(
-            "_slow() {{ echo $BASHPID > '{}'; sleep 7.25; COMPREPLY=(late); }}\n\
+            "_slow() {{ _group_to '{}'; sleep 7.25; COMPREPLY=(late); }}\n\
              complete -F _slow slow\n",
             pid.display()
         ),
@@ -363,8 +376,8 @@ fn copies_end_with_the_line() {
     let mut sh = shell_in(
         dir.path(),
         &format!(
-            "_slow1() {{ echo $BASHPID > '{}'; sleep 7.5; }}\ncomplete -F _slow1 slowa\n\
-             _slow2() {{ echo $BASHPID > '{}'; sleep 7.75; }}\ncomplete -F _slow2 slowb\n",
+            "_slow1() {{ _group_to '{}'; sleep 7.5; }}\ncomplete -F _slow1 slowa\n\
+             _slow2() {{ _group_to '{}'; sleep 7.75; }}\ncomplete -F _slow2 slowb\n",
             first.display(),
             second.display()
         ),
@@ -380,6 +393,50 @@ fn copies_end_with_the_line() {
     assert!(group_alive(&group), "the second rule is not running");
     sh.send("\x03");
     eventually("the second rule killed", || !group_alive(&group));
+}
+
+/// A copy of the shell is not the shell's child, so the shell's end does
+/// not end it: its watcher kills it and what it started.
+#[test]
+fn a_copy_ends_with_the_shell() {
+    let dir = files();
+    let pids = tempfile::tempdir().unwrap();
+    let pid = pids.path().join("slow");
+    let mut sh = shell_in(
+        dir.path(),
+        &format!(
+            "_slow() {{ _group_to '{}'; sleep 7.5; }}\ncomplete -F _slow slow\n",
+            pid.display()
+        ),
+        "",
+    );
+    sh.send("slow ");
+    let group = written_group(&pid);
+    assert!(group_alive(&group), "the rule is not running");
+    sh.signal(libc::SIGKILL);
+    eventually("the rule killed", || !group_alive(&group));
+}
+
+/// A copy of the shell does not run long past its limit while the shell
+/// cannot kill it: its watcher kills it a second after.
+#[test]
+fn a_copy_ends_at_its_limit_while_the_shell_is_stopped() {
+    let dir = files();
+    let pids = tempfile::tempdir().unwrap();
+    let pid = pids.path().join("slow");
+    let mut sh = shell_in(
+        dir.path(),
+        &format!(
+            "_slow() {{ _group_to '{}'; sleep 7.5; }}\ncomplete -F _slow slow\n",
+            pid.display()
+        ),
+        "(setq inkline-bash-completion-timeout 300)",
+    );
+    sh.send("slow ");
+    let group = written_group(&pid);
+    sh.signal(libc::SIGSTOP);
+    eventually("the rule killed", || !group_alive(&group));
+    sh.signal(libc::SIGCONT);
 }
 
 #[test]
@@ -422,7 +479,7 @@ fn a_rule_that_exits_runs_no_trap_and_writes_no_history() {
         &format!(
             "HISTFILE={home}/hist\n\
              trap ': > {home}/trapped' EXIT\n\
-             _quit() {{ echo $BASHPID > {home}/ran; exit 0; }}\n\
+             _quit() {{ _group_to {home}/ran; exit 0; }}\n\
              complete -F _quit quit\n",
             home = home.display()
         ),
@@ -471,4 +528,47 @@ fn a_file_name_that_is_not_utf8_is_left_out() {
     let mut sh = shell_in(dir.path(), "", "");
     let s = typed_then(&mut sh, "cat bad", "c  bad-ok");
     assert_eq!(bash_rows(&s), ["c  bad-ok"], "{}", dump(&s));
+}
+
+/// A copy of the shell that ends is not one of the shell's jobs: under
+/// `set -b` nothing is drawn when it is killed at its limit, and the line
+/// keeps its grey text and its menu after.
+#[test]
+fn a_killed_copy_is_not_a_job_that_ended() {
+    let dir = files();
+    let pids = tempfile::tempdir().unwrap();
+    let pid = pids.path().join("slow");
+    let mut sh = Shell::start(Options {
+        bash_completion: true,
+        cwd: Some(dir.path().to_owned()),
+        history: vec!["slow abcdef"],
+        rc: format!(
+            "{RULES}set -b\n\
+             _slow() {{ _group_to '{}'; sleep 5; COMPREPLY=(late); }}\n\
+             complete -F _slow slow\n",
+            pid.display()
+        ),
+        init_el: Some("(setq inkline-bash-completion-timeout 1000)".to_owned()),
+        ..Options::default()
+    });
+    sh.send("slow ");
+    let [group, parent, shell] = written(&pid);
+    assert_ne!(parent, shell, "the copy is the shell's child");
+    sh.settle();
+    sh.take_output();
+    eventually("the rule killed", || !group_alive(&group));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let out = sh.take_output();
+    assert!(
+        out.is_empty(),
+        "drawn after the kill: {:?}",
+        String::from_utf8_lossy(&out)
+    );
+    sh.send("abc");
+    let s = sh.wait_for("the grey text and the menu", |s| {
+        cursor_row(s) == "$ slow abcdef" && has_row(s, "h  slow abcdef")
+    });
+    let (row, col) = s.cursor_position();
+    let grey = s.cell(row, col).map(vt100::Cell::fgcolor);
+    assert_eq!(grey, Some(vt100::Color::Idx(8)), "{}", dump(&s));
 }
