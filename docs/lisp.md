@@ -44,10 +44,10 @@ change takes effect on the next key.
   case come first. The grey text shows only when the item it comes from (the
   picked item, or else the top one) starts with the typed text in the same case;
   taking an item from the menu puts the item's own case in the line.
-- `inkline-menu-sources` (default `(history lisp mode)`): the sources the menu
-  lists, a list of the symbols `history`, `lisp` and `mode`. It limits only the
-  menu: with no item picked, the grey text still comes from the top item of all
-  the sources.
+- `inkline-menu-sources` (default `(history lisp mode bash)`): the sources the
+  menu lists, a list of the symbols `history`, `lisp`, `mode` and `bash`. It
+  limits only the menu: with no item picked, the grey text still comes from the
+  top item of all the sources.
 - `inkline-menu-min-chars` (default `0`): the menu lists an item only once you
   have typed at least this many characters of it (from where the item starts to
   the cursor: the whole line for a history item), an integer of at least 0. Like
@@ -56,6 +56,15 @@ change takes effect on the next key.
   cursor without changing the line's text hides the menu until the text changes,
   so `C-n` and `C-p` then move between the lines of a command; when non-nil, the
   menu shows again wherever the cursor stops.
+- `inkline-bash-completion` (default `t`): whether the menu gets items from
+  bash's own completion, marked `c`: what Tab would offer for the word at the
+  cursor, found in a copy of the shell. With `nil` no copy is started.
+- `inkline-command-min-chars` (default `1`): how many characters of a command
+  name you type before bash's items for it are listed, an integer of at least
+  0. Other words get bash's items at once.
+- `inkline-bash-completion-timeout` (default `2000`): how many milliseconds a
+  copy of the shell may take to answer, an integer of at least 1; after that
+  it is stopped and the word gets no `c` items.
 - `inkline-history-cursor` (default `start`): the symbol `start` or `end`,
   where `previous-line-or-history` leaves the cursor in a multi-line entry
   it recalls.
@@ -423,6 +432,7 @@ out can still give the grey text). History items come first, then the
 item from `inkline-suggestion-functions`, then a command's mode server's
 items, marked `m` (see [command modes](#command-modes) and
 [`docs/mode-protocol.md`](mode-protocol.md#completing-a-word-complete)),
+then bash's own completion, marked `c` (see `inkline-bash-completion`),
 then these.
 
 - The functions may only read the line, under the same rules as

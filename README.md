@@ -227,18 +227,18 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   entry starting with what you typed is shown in grey after the cursor. Accepted
   text can be undone with `C-_`.
 - **Completion menu.** As you type, a menu of possible completions shows under
-  the command, each row marked `h` for a past command or `l` for one your own
-  Lisp function offers, and the grey text after the cursor shows the rest of
-  one possible completion, most often the highlighted one. The top row starts
-  highlighted; `C-n` and `C-p` move the highlight, and Tab takes the
-  highlighted item. Enter does what it does without a menu. `C-g` hides the
-  menu until the line changes (Tab then completes as bash does), and moving
-  the cursor without typing hides it until you type again. A line brought back
-  from history (`C-p`, `<up>`, a search) shows no menu and no grey text until
-  you change it. With no menu, `C-n` and `C-p` move between lines and through
-  history, as `<down>` and `<up>` do. `inkline-show-menu` and
-  `inkline-show-suggestion` turn the menu and the grey text off on their own.
-  See "Completion menu" below.
+  the command, each row marked `h` for a past command, `c` for what bash's own
+  Tab would offer, or `l` for one your own Lisp function offers, and the grey
+  text after the cursor shows the rest of one possible completion, most often
+  the highlighted one. The top row starts highlighted; `C-n` and `C-p` move the
+  highlight, and Tab takes the highlighted item. Enter does what it does without
+  a menu. `C-g` hides the menu until the line changes (Tab then completes as
+  bash does), and moving the cursor without typing hides it until you type
+  again. A line brought back from history (`C-p`, `<up>`, a search) shows no
+  menu and no grey text until you change it. With no menu, `C-n` and `C-p` move
+  between lines and through history, as `<down>` and `<up>` do.
+  `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
+  text off on their own. See "Completion menu" below.
 - **Pairing.** `(`, `[`, `{` and quotes insert their closing character; typing
   the closer moves over it; Backspace between an empty pair deletes both. It
   stays out of the way after letters and digits (`don't`), after a backslash,
@@ -288,7 +288,8 @@ draw in turn.
 
 As you type, a small menu of possible completions shows under the command, and
 the grey text after the cursor shows the rest of one of them. Here `git s` is
-typed, the cursor is after it, and `witch main` is grey:
+typed, the cursor is after it, and `witch main` is grey (bash's own `c` rows,
+described below, are left out to keep the example short):
 
 ```
 $ git switch main
@@ -310,6 +311,32 @@ $ csvm 'sort am' data.csv
 m  amount      column
 m  amended_at  column
 ```
+
+A row marked `c` is what bash's own completion offers for the word at the
+cursor, as Tab would: commands, files, variables, and what the `complete`
+rules other tools install give (git's branches, for example). Each is
+written as Tab would put it on the line, with a `/` after a directory and
+a space after a finished word, and taking it puts exactly that there:
+
+```
+$ cat my
+c  my\ file.txt
+```
+
+bash's completion runs in a copy of the shell, so a slow rule never holds
+up typing: its items show when they come. A copy still running after
+`inkline-bash-completion-timeout` milliseconds (2000 by default) is
+stopped, and that word gets no `c` items. A command name gets them once
+you have typed `inkline-command-min-chars` characters of it (1 by
+default); any other word gets them at once, so `git ` lists git's
+subcommands. `inkline-bash-completion` set to `nil` turns them off.
+
+A rule runs as you type, not only when you press Tab, and some rules
+run programs from the directory you are in. bash-completion's rule for
+`make`, for example, runs `make` to read the Makefile, and a Makefile can
+run any command while it is read. So typing `make ` in a directory you do
+not trust can run code from it. Set `inkline-bash-completion` to `nil` if
+that is a concern.
 
 The menu takes at most `inkline-menu-lines` rows; when there are more
 items, the last row says how many more.
@@ -346,9 +373,10 @@ items, the last row says how many more.
 text off on their own, and `inkline-completion-style` set to `fuzzy` lets the
 letters you typed match with gaps. `inkline-completion-ignore-case` matches
 items whatever their case; `inkline-menu-sources` picks which sources the menu
-lists, and `inkline-menu-min-chars` how many characters you type before it lists
-an item. See [`docs/lisp.md`](docs/lisp.md). The menu's colours are set with the
-`menu`, `menu-selected`, `menu-source` and `menu-note` keys (see "Colours").
+lists (`history`, `lisp`, `mode` and `bash`), and `inkline-menu-min-chars` how
+many characters you type before it lists an item. See
+[`docs/lisp.md`](docs/lisp.md). The menu's colours are set with the `menu`,
+`menu-selected`, `menu-source` and `menu-note` keys (see "Colours").
 
 To pick with `M-n` and `M-p` instead, and keep `C-n` and `C-p` for moving
 between lines and through history:
@@ -727,12 +755,13 @@ entry of its own, so a commented block comes back one line at a time.
   what readline's own commands do. Pairing is only controlled by its
   bindings. Lisp commands still run while inkline is off; a message they
   show goes on a row of its own above the prompt.
-- `inkline status`: two lines — whether inkline is on, then `init.el`'s
+- `inkline status`: three lines — whether inkline is on, `init.el`'s
   status: loaded, not found, skipped (with why), failed (with the error), or
   not read (because the shell is not interactive with line editing on, or
-  has no usable `HOME`); then one line for each command mode, and one line
-  per pair of `inkline-command-mode-alist` that never takes effect (see
-  "Command modes").
+  has no usable `HOME`), then whether bash's completion is on, with how many
+  requests timed out or failed when any did (see "Completion menu"); then one
+  line for each command mode, and one line per pair of
+  `inkline-command-mode-alist` that never takes effect (see "Command modes").
 - `inkline load FILE`: read and run a file of Lisp. An error is printed to
   stderr and the command exits 1.
 - `inkline eval EXPR`: run one Lisp expression, given as a single argument;
@@ -805,6 +834,17 @@ for the whole state.
   outside `\[ \]`, a terminal readline has no cursor-up capability for (such
   as an unknown `TERM` over ssh), a locale that is not UTF-8, and, on bash
   5.1+, while readline highlights a search match or pasted text.
+- bash's items for a word are asked for once as you start it, then filtered
+  as you type. bash is asked again once typing pauses, when nothing in the
+  saved answer matches or when the answer was cut at 1000 items; otherwise a
+  file created while you type the word shows from the next word on.
+- bash's completion runs in a copy of the shell that ends after each request
+  (one word can make several), so what a rule sets up for later, such as the
+  rules bash-completion loads the first time a command is completed, is set up
+  again each time.
+- The copy asks bash's completion as it does for a list of choices
+  (`COMP_TYPE` is `?`), so a rule that answers a single Tab differently
+  shows what its list would.
 - A completion listing triggered in the same burst of typed-ahead keys as the
   text before it can leave grey suggestion text above the list.
 - Bash can print while you type: a job notice when a background job ends under

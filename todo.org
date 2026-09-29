@@ -1,5 +1,6 @@
 #+TITLE: inkline — deferred work
 #+TODO: TODO | DONE WONTFIX
+#+startup: logdrawer
 
 * Features
 
@@ -36,7 +37,10 @@ Suggested order, most payoff for the least work first:
 Keep it a separate program rather than a built-in tree-sitter mode
 inside inkline, which would grow the library every bash process loads.
 
-** TODO A completion menu under the line
+** DONE A completion menu under the line
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-09-29 Di 23:01]
+:END:
 
 As you type, a menu of possible completions shows under the command, and
 the grey text after the cursor shows the rest of one of them. One list
@@ -48,11 +52,9 @@ turned off. Built in three pieces, each adding sources to the same list:
 
 1. Done: the menu, its keys and drawing, with history (~h~) and Lisp
    (~l~, ~inkline-completion-functions~) as sources.
-2. What is left: bash's own completion (~c~): commands, files, variables
-   and the ~complete~ rules other tools install. Those rules run shell
-   code (git's calls git), so they must never hold up typing: run them in
-   a copy of the shell, with a time limit, and show a late answer when it
-   comes. ~inkline-menu-sources~ then gains a name for it.
+2. Done: bash's own completion (~c~): commands, files, variables and the
+   ~complete~ rules other tools install, run in a copy of the shell with a
+   time limit, a late answer shown when it comes.
 3. Done: mode servers (~m~), a completion request in the inkline mode
    protocol (~docs/mode-protocol.md~), which a server such as csvm can
    answer with commands, flags, functions and column names.
