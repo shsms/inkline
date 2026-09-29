@@ -243,6 +243,27 @@ fn asking_again_at_a_pause_shows_the_new_answer() {
     typed_then(&mut sh, "b", "c  banana");
 }
 
+/// An answer that came in time while the key read was not for plain
+/// editing is taken at the copy's limit, not counted as timed out.
+#[test]
+fn an_answer_that_came_during_a_search_is_not_a_time_out() {
+    let dir = files();
+    let mut sh = shell_in(
+        dir.path(),
+        "_late() { sleep 0.2; COMPREPLY=(later); }\ncomplete -F _late late\n",
+        "(setq inkline-bash-completion-timeout 1000)",
+    );
+    sh.send("late ");
+    sh.send("\x12");
+    sh.wait_for("the search", |s| find(s, "reverse-i-search").is_some());
+    std::thread::sleep(std::time::Duration::from_millis(1300));
+    sh.send("\x07\x15inkline status\r");
+    let s = sh.wait_for("the status", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).starts_with("bash completion:"))
+    });
+    assert!(has_row(&s, "bash completion: on"), "{}", dump(&s));
+}
+
 /// An error that makes bash leave a rule for its top level ends the copy
 /// alone.
 #[test]

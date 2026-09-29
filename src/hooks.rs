@@ -815,18 +815,18 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         // line: waited on only at the main prompt, for a `plain_key`, while
         // inkline is on and no Lisp runs (a line that shell code run from
         // Lisp reads counts as Lisp running).
+        let for_servers = guard(
+            || !running && plain_key && ffi::reading_command() && STATE.with_borrow(|s| s.enabled),
+            || false,
+        );
         let servers = guard(
             || {
-                if running
-                    || !plain_key
-                    || !ffi::reading_command()
-                    || !STATE.with_borrow(|s| s.enabled)
-                {
-                    Vec::new()
-                } else {
+                if for_servers {
                     let mut fds = mode_server::waiting_fds();
                     fds.extend(session::waiting_fd());
                     fds
+                } else {
+                    Vec::new()
                 }
             },
             Vec::new,
@@ -849,37 +849,44 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         };
         match signal.unwrap_or_else(|| ffi::wait_for_input(stream, wait, &servers)) {
             ffi::Wait::Ready | ffi::Wait::Error => break None,
-            // A copy's time ran out, not the pause: a pause asked for is
-            // still waited for.
-            ffi::Wait::Paused if guard(session::expire, || false) => guard(
-                || {
-                    STATE.with_borrow_mut(|s| {
-                        s.wants_pause |= for_errors;
-                        s.items_want_pause |= for_items;
-                    });
-                },
-                || (),
-            ),
-            // Typing paused with a new error or notice on the line, or with
-            // a mode server's completion items still to ask for: show the
-            // error or notice, and ask for the items.
-            ffi::Wait::Paused => {
-                pause_began = None;
-                guard(
+            ffi::Wait::Paused => match guard(session::expire, || session::Expired::No) {
+                // Typing paused with a new error or notice on the line, or
+                // with a mode server's completion items still to ask for:
+                // show the error or notice, and ask for the items.
+                session::Expired::No => {
+                    pause_began = None;
+                    guard(
+                        || {
+                            STATE.with_borrow_mut(|s| {
+                                if for_errors {
+                                    s.paused_on = ffi::line();
+                                }
+                                if for_items {
+                                    s.items_paused_on =
+                                        ffi::line().map(|line| (line, ffi::point()));
+                                }
+                            });
+                            redraw();
+                        },
+                        draw_below_notice,
+                    );
+                }
+                // A copy's time ran out, not the pause: a pause asked for is
+                // still waited for. Where the servers are waited on, the
+                // answer that came is drawn.
+                expired => guard(
                     || {
                         STATE.with_borrow_mut(|s| {
-                            if for_errors {
-                                s.paused_on = ffi::line();
-                            }
-                            if for_items {
-                                s.items_paused_on = ffi::line().map(|line| (line, ffi::point()));
-                            }
+                            s.wants_pause |= for_errors;
+                            s.items_want_pause |= for_items;
                         });
-                        redraw();
+                        if for_servers && expired == session::Expired::Came {
+                            redraw();
+                        }
                     },
                     draw_below_notice,
-                );
-            }
+                ),
+            },
             // A mode server sent something, or a copy of the shell answered:
             // paint the reply or the items, or say the server was turned off
             // once typing pauses. The redraw asks the servers again: a reply

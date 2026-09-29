@@ -201,9 +201,36 @@ pub fn until_deadline() -> Option<std::ffi::c_int> {
     })
 }
 
-/// Kills the running copy if its time is up. Whether it did.
-pub fn expire() -> bool {
-    SESSION.with_borrow_mut(Session::expire_running)
+/// What `expire` did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Expired {
+    /// No copy's time was up.
+    No,
+    /// The running copy's time was up, and its answer or its failure had
+    /// come: it was taken, and the line must be drawn again.
+    Came,
+    /// The running copy's time was up, and it was killed.
+    Killed,
+}
+
+/// Ends the running copy if its time is up: an answer or a failure that
+/// has come is taken first, and a copy still working is killed.
+pub fn expire() -> Expired {
+    SESSION.with_borrow_mut(|me| {
+        if !me
+            .running
+            .as_ref()
+            .is_some_and(|r| Instant::now() >= r.deadline)
+        {
+            Expired::No
+        } else if me.read_running() {
+            Expired::Came
+        } else if me.expire_running() {
+            Expired::Killed
+        } else {
+            Expired::No
+        }
+    })
 }
 
 /// `inkline status`'s line, with `on` from `inkline-bash-completion`. In a
