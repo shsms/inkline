@@ -218,6 +218,22 @@ fn up_goes_to_the_line_above_first() {
     sh.wait_for("the first line", |s| s.cursor_position() == (0, 6));
 }
 
+#[test]
+fn up_past_the_oldest_match_keeps_the_cursor() {
+    let mut sh = Shell::start(substring_keys(vec!["git status"]));
+    sh.send("stat");
+    sh.wait_for("the typed text", |s| cursor_row(s) == "$ stat");
+    sh.send(UP);
+    sh.wait_for("the match", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+    sh.send(UP);
+    sh.send("Z");
+    sh.wait_for("the cursor where it was", |s| {
+        cursor_row(s) == "$ git statusZ" && s.cursor_position() == (0, 13)
+    });
+}
+
 /// A walk through history places the cursor as readline does, here where
 /// `history-preserve-point` keeps it.
 #[test]
