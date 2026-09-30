@@ -1665,18 +1665,25 @@ const SUBSHELL_COMSUB: c_int = 0x04;
 /// the last character of `COMP_WORDBREAKS` before the cursor, or after the
 /// quote the word opened. The cursor stays where it is.
 pub fn completion_word_start() -> usize {
+    completion_word().0 as usize
+}
+
+/// The word at the cursor as readline's completion finds it: where it
+/// starts (see `completion_word_start`), whether readline found a quote in
+/// it, and the quote it opened (0 for none). The cursor stays where it is.
+fn completion_word() -> (c_int, c_int, c_char) {
     // SAFETY: `_rl_find_completion_word` reads the line up to the cursor
     // and leaves `rl_point` at the word's start; the cursor is put back.
     unsafe {
         let point = rl_point;
         if point <= 0 {
-            return 0;
+            return (0, 0, 0);
         }
         let (mut found, mut delimiter) = (0, 0);
-        _rl_find_completion_word(&mut found, &mut delimiter);
+        let quote = _rl_find_completion_word(&mut found, &mut delimiter);
         let start = rl_point.clamp(0, point);
         rl_point = point;
-        start as usize
+        (start, found, quote)
     }
 }
 
@@ -1755,14 +1762,7 @@ pub fn bash_matches() -> Option<BashMatches> {
     // list the functions return is freed here, as readline frees it.
     unsafe {
         let end = rl_point;
-        let (mut found, mut delimiter) = (0, 0);
-        let quote = if end > 0 {
-            _rl_find_completion_word(&mut found, &mut delimiter)
-        } else {
-            0
-        };
-        let start = rl_point.clamp(0, end);
-        rl_point = end;
+        let (start, found, quote) = completion_word();
         rl_filename_completion_desired = 0;
         rl_filename_quoting_desired = 1;
         rl_completion_type = c_int::from(b'?');

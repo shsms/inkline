@@ -110,17 +110,24 @@ impl Running {
         self.pipe.as_raw_fd()
     }
 
+    /// Whether the copy's time is up.
+    pub fn expired(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
     /// Reads what the copy has written, without waiting. A pipe that closes
     /// before the whole answer, an answer that cannot be read, and more than
     /// `answer::MOST_BYTES` are a failure.
     pub fn read(&mut self) -> Read {
         let mut chunk = [0u8; 8192];
+        let mut got = false;
         let closed = loop {
             // SAFETY: reads into `chunk`, which outlives the call.
             let n = unsafe { libc::read(self.fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
             match n {
                 0 => break true,
                 n if n > 0 => {
+                    got = true;
                     self.buf.extend_from_slice(&chunk[..n as usize]);
                     if self.buf.len() > answer::MOST_BYTES {
                         return Read::Failed;
@@ -133,6 +140,10 @@ impl Running {
                 },
             }
         };
+        // Bytes already read gave `More` the last time.
+        if !got && !closed {
+            return Read::More;
+        }
         match answer::decode(&self.buf) {
             Decoded::Done(answer) => {
                 self.ended = true;

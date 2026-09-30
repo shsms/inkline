@@ -7,7 +7,7 @@ use std::os::fd::RawFd;
 use std::time::{Duration, Instant};
 
 use super::request::{Read, Running};
-use super::{Ask, Inputs, Saved, Word, command_position, decide, fits, items};
+use super::{Ask, Inputs, Saved, Word, decide, fits, items};
 use crate::menu::{Item, Matching};
 use crate::mode_server::process;
 
@@ -28,44 +28,32 @@ impl Session {
         let Some(running) = self.running.as_mut() else {
             return false;
         };
-        let read = running.read();
-        if matches!(read, Read::More) {
-            return false;
-        }
-        let word = running.word.clone();
-        self.running = None;
-        match read {
-            Read::Came(answer) => self.saved = Some(Saved { word, answer }),
-            Read::Failed | Read::More => {
+        match running.read() {
+            Read::More => return false,
+            Read::Came(answer) => {
+                self.saved = Some(Saved {
+                    word: running.word.clone(),
+                    answer,
+                });
+            }
+            Read::Failed => {
                 self.failed += 1;
-                self.given_up = Some(word);
+                self.given_up = Some(running.word.clone());
             }
         }
+        self.running = None;
         true
     }
 
     /// Kills the running copy once its time is up; it is counted, and its
     /// word given up on. Whether it did.
     fn expire_running(&mut self) -> bool {
-        let Some(running) = self.running.take_if(|r| Instant::now() >= r.deadline) else {
+        let Some(running) = self.running.take_if(|r| r.expired()) else {
             return false;
         };
         self.timed_out += 1;
         self.given_up = Some(running.word.clone());
         true
-    }
-
-    /// Asks a copy of the shell about `word` now, in place of any copy
-    /// running. A copy that cannot start counts as failed.
-    fn start(&mut self, word: &Word, limit: Duration) {
-        self.running = None;
-        match Running::start(word.clone(), limit) {
-            Ok(running) => self.running = Some(running),
-            Err(_) => {
-                self.failed += 1;
-                self.given_up = Some(word.clone());
-            }
-        }
     }
 }
 
@@ -82,12 +70,11 @@ pub struct Settings {
     pub how: Matching,
 }
 
-/// What `prepare` decided for a word, for `found`.
+/// What `prepare` decided for a word that gets bash's items, for `found`.
 pub struct Ticket {
     word: Word,
-    listed: bool,
     /// Whether a copy is to be asked once typing pauses.
-    at_pause: bool,
+    pub at_pause: bool,
 }
 
 /// What bash's completion gives the menu for a word.
@@ -102,13 +89,13 @@ pub struct Found {
 /// Decides what bash's completion does for `word` (see `decide`): a copy
 /// of the shell is asked now, and one working on anything else is killed.
 /// `paused` says typing has paused on this line and cursor. The ticket for
-/// `found`, and whether a pause is wanted to ask again.
-pub fn prepare(word: Word, settings: &Settings, paused: bool) -> (Ticket, bool) {
-    SESSION.with_borrow_mut(|me| {
+/// `found`; None when the word gets no bash items. A copy that cannot start
+/// counts as failed.
+pub fn prepare(word: Word, settings: &Settings, paused: bool) -> Option<Ticket> {
+    let ask = SESSION.with_borrow_mut(|me| {
         me.read_running();
-        let decision = decide(&Inputs {
+        let ask = decide(&Inputs {
             word: &word,
-            command: command_position(word.line(), word.start()),
             min_chars: settings.min_chars,
             saved: me.saved.as_ref(),
             running: me.running.as_ref().map(|r| &r.word),
@@ -116,23 +103,25 @@ pub fn prepare(word: Word, settings: &Settings, paused: bool) -> (Ticket, bool) 
             paused,
             how: settings.how,
         });
-        match decision.ask {
-            // The copy works on nothing in this shell's `RefCell`s but the
-            // line: the fork holds this borrow of `SESSION` in the copy too,
-            // and the copy never uses `SESSION`.
-            Ask::Now => me.start(&word, settings.timeout),
-            Ask::InFlight => {}
-            Ask::No | Ask::AtPause => me.running = None,
+        if ask != Some(Ask::InFlight) {
+            me.running = None;
         }
-        let at_pause = decision.ask == Ask::AtPause;
-        (
-            Ticket {
-                word,
-                listed: decision.listed,
-                at_pause,
-            },
-            at_pause,
-        )
+        ask
+    })?;
+    // The fork happens with `SESSION` not borrowed, so the copy can use it.
+    if ask == Ask::Now {
+        let started = Running::start(word.clone(), settings.timeout);
+        SESSION.with_borrow_mut(|me| match started {
+            Ok(running) => me.running = Some(running),
+            Err(_) => {
+                me.failed += 1;
+                me.given_up = Some(word.clone());
+            }
+        });
+    }
+    Some(Ticket {
+        word,
+        at_pause: ask == Ask::AtPause,
     })
 }
 
@@ -161,7 +150,7 @@ pub fn found(ticket: &Ticket, deadline: Instant, interrupted: fn() -> bool) -> F
             .given_up
             .as_ref()
             .is_some_and(|w| w.same_place(&ticket.word));
-        if !ticket.listed || given_up {
+        if given_up {
             return Found::default();
         }
         Found {
@@ -188,17 +177,7 @@ pub fn waiting_fd() -> Option<RawFd> {
 /// Milliseconds until the running copy's time is up, rounded up; None with
 /// no copy running.
 pub fn until_deadline() -> Option<std::ffi::c_int> {
-    SESSION.with_borrow(|me| {
-        let left = me
-            .running
-            .as_ref()?
-            .deadline
-            .saturating_duration_since(Instant::now());
-        Some(
-            std::ffi::c_int::try_from(left.as_micros().div_ceil(1000))
-                .unwrap_or(std::ffi::c_int::MAX),
-        )
-    })
+    SESSION.with_borrow(|me| Some(process::ms_until(me.running.as_ref()?.deadline)))
 }
 
 /// What `expire` did.
@@ -217,30 +196,20 @@ pub enum Expired {
 /// has come is taken first, and a copy still working is killed.
 pub fn expire() -> Expired {
     SESSION.with_borrow_mut(|me| {
-        if !me
-            .running
-            .as_ref()
-            .is_some_and(|r| Instant::now() >= r.deadline)
-        {
+        if !me.running.as_ref().is_some_and(Running::expired) {
             Expired::No
         } else if me.read_running() {
             Expired::Came
-        } else if me.expire_running() {
-            Expired::Killed
         } else {
-            Expired::No
+            me.expire_running();
+            Expired::Killed
         }
     })
 }
 
-/// `inkline status`'s line, with `on` from `inkline-bash-completion`. In a
-/// copy of the shell, where a rule may run `inkline status` while the
-/// session is borrowed, the counts read zero.
+/// `inkline status`'s line, with `on` from `inkline-bash-completion`.
 pub fn status_line(on: bool) -> String {
-    SESSION.with(|me| match me.try_borrow() {
-        Ok(me) => super::status_line(on, me.timed_out, me.failed),
-        Err(_) => super::status_line(on, 0, 0),
-    })
+    SESSION.with_borrow(|me| super::status_line(on, me.timed_out, me.failed))
 }
 
 /// Takes the running copy's answer if it came, or notes that it failed,

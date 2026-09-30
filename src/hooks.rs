@@ -119,6 +119,14 @@ impl State {
         self.goal_column = None;
         self.search_continues = false;
     }
+
+    /// Asks again for the pause `getc` took out to wait for, new errors or
+    /// notices (`errors`) and completion items (`items`), when the wait
+    /// ended for something else.
+    fn keep_pause_wanted(&mut self, errors: bool, items: bool) {
+        self.wants_pause |= errors;
+        self.items_want_pause |= items;
+    }
 }
 
 static REGISTER: Once = Once::new();
@@ -843,10 +851,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
         // The wait also ends when a copy of the shell's time is up, so it is
         // killed while no key comes.
         let limit = guard(session::until_deadline, || None);
-        let wait = match (pause, limit) {
-            (Some(p), Some(l)) => Some(p.min(l)),
-            (p, l) => p.or(l),
-        };
+        let wait = [pause, limit].into_iter().flatten().min();
         match signal.unwrap_or_else(|| ffi::wait_for_input(stream, wait, &servers)) {
             ffi::Wait::Ready | ffi::Wait::Error => break None,
             ffi::Wait::Paused => match guard(session::expire, || session::Expired::No) {
@@ -875,12 +880,9 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                 // still waited for. Where the servers are waited on, the
                 // answer that came is drawn, and so is the line of a copy
                 // killed while bash's items show: its word gets none now.
-                expired => guard(
+                expired @ (session::Expired::Came | session::Expired::Killed) => guard(
                     || {
-                        STATE.with_borrow_mut(|s| {
-                            s.wants_pause |= for_errors;
-                            s.items_want_pause |= for_items;
-                        });
+                        STATE.with_borrow_mut(|s| s.keep_pause_wanted(for_errors, for_items));
                         if for_servers
                             && (expired == session::Expired::Came
                                 || STATE.with_borrow(shows_bash_items))
@@ -905,10 +907,7 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
                     if mode || bash {
                         redraw();
                     } else {
-                        STATE.with_borrow_mut(|s| {
-                            s.wants_pause |= for_errors;
-                            s.items_want_pause |= for_items;
-                        });
+                        STATE.with_borrow_mut(|s| s.keep_pause_wanted(for_errors, for_items));
                     }
                 },
                 draw_below_notice,
@@ -1691,13 +1690,7 @@ fn ask_mode_servers(
                 Some((c, arg, point))
             })
     });
-    let paused = at_cursor.is_some_and(|(_, _, point)| {
-        STATE.with_borrow(|s| {
-            s.items_paused_on
-                .as_ref()
-                .is_some_and(|(on, at)| on == line && *at == point)
-        })
-    });
+    let paused = at_cursor.is_some_and(|(_, _, point)| items_paused_at(line, point));
     let items_ask = at_cursor.map(|(c, arg, point)| {
         let (mode, request) = asks[c].clone();
         mode_server::ItemsAsk {
@@ -1737,7 +1730,7 @@ fn ask_mode_servers(
 /// `session::prepare`), at the main prompt while no Lisp runs. With
 /// `inkline-bash-completion` off, a copy still running is stopped and
 /// nothing is asked. A pause wanted to ask again is asked of `getc`. The
-/// ticket for `session::found`.
+/// ticket for `session::found`; None when the word gets no bash items.
 fn ask_bash(line: &str, point: usize) -> Option<session::Ticket> {
     use crate::lisp::settings;
     if !ffi::reading_command() || crate::lisp::RUNNING.load(Ordering::Relaxed) {
@@ -1748,21 +1741,26 @@ fn ask_bash(line: &str, point: usize) -> Option<session::Ticket> {
         return None;
     }
     let word = bash_complete::Word::new(line, ffi::completion_word_start(), point)?;
-    let paused = STATE.with_borrow(|s| {
-        s.items_paused_on
-            .as_ref()
-            .is_some_and(|(on, at)| on == line && *at == point)
-    });
     let wanted = session::Settings {
         min_chars: settings::command_min_chars(),
         timeout: settings::bash_completion_timeout(),
         how: settings::completion_matching(),
     };
-    let (ticket, wants_pause) = session::prepare(word, &wanted, paused);
-    if wants_pause {
+    let ticket = session::prepare(word, &wanted, items_paused_at(line, point))?;
+    if ticket.at_pause {
         STATE.with_borrow_mut(|s| s.items_want_pause = true);
     }
     Some(ticket)
+}
+
+/// Whether typing paused on `line` with the cursor at `point` while
+/// completion items waited for the pause.
+fn items_paused_at(line: &str, point: usize) -> bool {
+    STATE.with_borrow(|s| {
+        s.items_paused_on
+            .as_ref()
+            .is_some_and(|(on, at)| on == line && *at == point)
+    })
 }
 
 /// What the mode server of the command the cursor is in gave for the

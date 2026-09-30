@@ -39,18 +39,6 @@ impl Word {
         })
     }
 
-    pub fn line(&self) -> &str {
-        &self.line
-    }
-
-    pub fn start(&self) -> usize {
-        self.start
-    }
-
-    pub fn point(&self) -> usize {
-        self.point
-    }
-
     /// The word as typed, from its start to the cursor.
     pub fn typed(&self) -> &str {
         &self.line[self.start..self.point]
@@ -119,17 +107,8 @@ pub enum Ask {
     InFlight,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Decision {
-    /// Whether the word gets bash's items at all.
-    pub listed: bool,
-    pub ask: Ask,
-}
-
 pub struct Inputs<'a> {
     pub word: &'a Word,
-    /// Whether the word is a command name (`command_position`).
-    pub command: bool,
     /// `inkline-command-min-chars`.
     pub min_chars: usize,
     pub saved: Option<&'a Saved>,
@@ -152,14 +131,14 @@ pub struct Inputs<'a> {
 ///   pauses;
 /// - otherwise a copy is asked at once, unless one already asked will
 ///   serve.
-pub fn decide(i: &Inputs) -> Decision {
+///
+/// None when the word gets no bash items.
+pub fn decide(i: &Inputs) -> Option<Ask> {
     let word = i.word;
-    let too_short = i.command && word.typed().chars().count() < i.min_chars;
+    let too_short =
+        command_position(&word.line, word.start) && word.typed().chars().count() < i.min_chars;
     if too_short || i.given_up.is_some_and(|w| w.same_place(word)) {
-        return Decision {
-            listed: false,
-            ask: Ask::No,
-        };
+        return None;
     }
     let in_flight = i.running.is_some_and(|r| fits(r, word));
     let ask = match i.saved.filter(|s| fits(&s.word, word)) {
@@ -175,15 +154,26 @@ pub fn decide(i: &Inputs) -> Decision {
         Some(_) if i.paused => Ask::Now,
         Some(_) => Ask::AtPause,
     };
-    Decision { listed: true, ask }
+    Some(ask)
 }
 
-/// Whether any of `answer`'s items matches the text typed from where it
-/// starts to the cursor.
+/// Whether any of `answer`'s matches that fits the line matches the text
+/// typed from where it starts to the cursor.
 fn any_match(answer: &Answer, word: &Word, how: Matching) -> bool {
-    items(answer, word)
-        .iter()
-        .any(|item| menu::matches(how, &word.line[item.start..word.point], &item.text))
+    answer.matches.iter().any(|m| {
+        end_on(m, word).is_some() && menu::matches(how, &word.line[m.start..word.point], &m.text)
+    })
+}
+
+/// Where `m` ends on `word`'s line: `extra` bytes after the cursor. None
+/// when its range is not on the line, or not on character boundaries.
+fn end_on(m: &answer::Match, word: &Word) -> Option<usize> {
+    let end = word.point.checked_add(m.extra)?;
+    (m.start <= word.point
+        && end <= word.line.len()
+        && word.line.is_char_boundary(m.start)
+        && word.line.is_char_boundary(end))
+    .then_some(end)
 }
 
 /// `answer`'s matches as menu items for `word`'s line and cursor: each
@@ -195,15 +185,10 @@ pub fn items(answer: &Answer, word: &Word) -> Vec<Item> {
         .matches
         .iter()
         .filter_map(|m| {
-            let end = word.point.checked_add(m.extra)?;
-            (m.start <= word.point
-                && end <= word.line.len()
-                && word.line.is_char_boundary(m.start)
-                && word.line.is_char_boundary(end))
-            .then(|| Item {
+            Some(Item {
                 text: m.text.clone(),
                 start: m.start,
-                end,
+                end: end_on(m, word)?,
                 source: Source::Bash,
                 note: None,
             })
@@ -264,10 +249,9 @@ mod tests {
 
     /// `decide` for `word` as an argument (not a command name), with
     /// nothing running or given up, not paused.
-    fn ask(word: &Word, saved: Option<&Saved>) -> Decision {
+    fn ask(word: &Word, saved: Option<&Saved>) -> Option<Ask> {
         decide(&Inputs {
             word,
-            command: false,
             min_chars: 1,
             saved,
             running: None,
@@ -277,18 +261,9 @@ mod tests {
         })
     }
 
-    const NOW: Decision = Decision {
-        listed: true,
-        ask: Ask::Now,
-    };
-    const USE: Decision = Decision {
-        listed: true,
-        ask: Ask::No,
-    };
-    const AT_PAUSE: Decision = Decision {
-        listed: true,
-        ask: Ask::AtPause,
-    };
+    const NOW: Option<Ask> = Some(Ask::Now);
+    const USE: Option<Ask> = Some(Ask::No);
+    const AT_PAUSE: Option<Ask> = Some(Ask::AtPause);
 
     #[test]
     fn a_word_is_asked_about_at_once() {
@@ -309,7 +284,6 @@ mod tests {
         assert_eq!(ask(&word, Some(&s)), AT_PAUSE);
         let paused = decide(&Inputs {
             word: &word,
-            command: false,
             min_chars: 1,
             saved: Some(&s),
             running: None,
@@ -364,7 +338,6 @@ mod tests {
         for saved in [None, Some(&stale)] {
             let d = decide(&Inputs {
                 word: &word,
-                command: false,
                 min_chars: 1,
                 saved,
                 running: Some(&running),
@@ -372,7 +345,7 @@ mod tests {
                 paused: false,
                 how: PREFIX,
             });
-            assert_eq!(d.ask, Ask::InFlight);
+            assert_eq!(d, Some(Ask::InFlight));
         }
     }
 
@@ -381,7 +354,6 @@ mod tests {
         let d = |word: &Word, min_chars, given_up: Option<&Word>| {
             decide(&Inputs {
                 word,
-                command: true,
                 min_chars,
                 saved: None,
                 running: None,
@@ -390,10 +362,7 @@ mod tests {
                 how: PREFIX,
             })
         };
-        let none = Decision {
-            listed: false,
-            ask: Ask::No,
-        };
+        let none = None;
         assert_eq!(d(&w("", 0), 1, None), none);
         assert_eq!(d(&w("ls | ", 5), 1, None), none);
         assert_eq!(d(&w("ls | g", 5), 1, None), NOW);
