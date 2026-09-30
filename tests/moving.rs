@@ -211,6 +211,68 @@ fn a_multi_line_match_opens_at_its_start() {
     sh.wait_for("the older match", |s| cursor_row(s) == "$ echo older");
 }
 
+/// After Up finds a multi-line entry, Down moves through its lines and
+/// past the last one goes on with the search: back to the typed text.
+#[test]
+fn down_through_a_found_multi_line_entry_goes_on_with_the_search() {
+    let mut sh = Shell::start(substring_keys(vec!["echo older", LOOP]));
+    sh.send("echo");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 6));
+    sh.send(UP);
+    sh.wait_for("the loop", |s| {
+        row_text(s, 2) == "done" && s.cursor_position() == (0, 2)
+    });
+    sh.send(DOWN);
+    sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
+    sh.send(DOWN);
+    sh.wait_for("the third line", |s| s.cursor_position().0 == 2);
+    sh.send(DOWN);
+    sh.wait_for("the typed text back", |s| {
+        cursor_row(s).starts_with("$ echo")
+            && row_text(s, 1) != "do echo $x"
+            && s.cursor_position() == (0, 6)
+    });
+}
+
+/// Types a two-line command no history entry holds, goes Up to its first
+/// line, and Up again, where the search finds nothing; then Down to the
+/// last line and Down again. The search left the line as it was, so moving
+/// between its lines ends it, and the last Down leaves the cursor where it
+/// is.
+fn down_after_a_failed_search_stays(options: Options) {
+    let mut sh = Shell::start(options);
+    block(&mut sh, &["echo a", "echo b"]);
+    sh.send(UP);
+    sh.wait_for("the first line", |s| s.cursor_position() == (0, 6));
+    sh.send(UP);
+    let s = sh.settle();
+    assert_eq!(s.cursor_position(), (0, 6), "{}", dump(&s));
+    sh.send(DOWN);
+    sh.wait_for("the second line", |s| s.cursor_position() == (1, 6));
+    sh.send(DOWN);
+    let s = sh.settle();
+    assert_eq!(row_text(&s, 0), "$ echo a", "{}", dump(&s));
+    assert_eq!(row_text(&s, 1), "echo b", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (1, 6), "{}", dump(&s));
+}
+
+#[test]
+fn down_after_a_failed_substring_search_stays() {
+    down_after_a_failed_search_stays(substring_keys(vec!["ls"]));
+}
+
+#[test]
+fn down_after_a_failed_prefix_search_stays() {
+    down_after_a_failed_search_stays(Options {
+        rc: "bind '\"\\e[A\": previous-line-or-search'
+bind '\"\\e[B\": next-line-or-search'
+"
+        .into(),
+        history: vec!["ls"],
+        ..Options::default()
+    });
+}
+
 /// On a history entry that was changed, Down walks history: it does not
 /// search for the changed text.
 #[test]

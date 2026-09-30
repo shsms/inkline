@@ -461,26 +461,36 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
         Fallback::Search => Some(ffi::Search::Prefix),
         Fallback::SubstringSearch => Some(ffi::Search::Substring),
     };
-    let continuing_search =
-        is_run && search.is_some() && STATE.with_borrow(|s| s.search_continues) == search;
+    let continued = STATE
+        .with_borrow(|s| s.search_continues)
+        .filter(|&(kind, _)| is_run && Some(kind) == search);
+    let continuing_search = continued.is_some();
     let leave = move |n: c_int| {
+        let before = ffi::line();
         // The substring search keeps its own state.
         if !matches!(fallback, Fallback::SubstringSearch) {
             STATE.with_borrow_mut(|s| {
-                s.search_continues = search;
+                s.search_continues = search.map(|kind| (kind, false));
                 s.found_at = None;
             });
             if continuing_search {
                 ffi::continue_history_search(ffi::Search::Prefix);
             }
         }
-        match (up, fallback) {
+        let result = match (up, fallback) {
             (true, Fallback::History) => ffi::previous_history(n, key),
             (false, Fallback::History) => ffi::next_history(n, key),
             (true, Fallback::Search) => ffi::history_search_backward(n, key),
             (false, Fallback::Search) => ffi::history_search_forward(n, key),
             (_, Fallback::SubstringSearch) => substring_search(n, key, up, continuing_search),
-        }
+        };
+        let changed = ffi::line() != before;
+        STATE.with_borrow_mut(|s| {
+            if let Some((_, search_changed)) = &mut s.search_continues {
+                *search_changed = changed || continued.is_some_and(|(_, was)| was);
+            }
+        });
+        result
     };
     guard(
         || {
@@ -516,7 +526,13 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
                 };
                 point = next;
             }
-            STATE.with_borrow_mut(|s| s.search_continues = None);
+            // A move between the lines of a line a search found keeps that
+            // search going, so past its first or last line the next key
+            // continues it. Any other key before ends it, and so does a move
+            // when the search left the line as it was.
+            STATE.with_borrow_mut(|s| {
+                s.search_continues = s.search_continues.filter(|&(_, changed)| is_run && changed);
+            });
             ffi::set_point(point);
             0
         },
@@ -557,7 +573,7 @@ fn substring_search(count: c_int, key: c_int, up: bool, continuing: bool) -> c_i
         if !continuing {
             s.search_from = before.clone().map(|line| (line, point));
         }
-        s.search_continues = Some(ffi::Search::Substring);
+        s.search_continues = Some((ffi::Search::Substring, false));
         s.search_from.clone()
     });
     if continuing {

@@ -94,8 +94,10 @@ struct State {
     goal_column: Option<usize>,
     /// The kind of search the last vertical command that deferred to
     /// history did, if it searched, so a further one of the same kind
-    /// continues it instead of starting fresh.
-    search_continues: Option<ffi::Search>,
+    /// continues it instead of starting fresh; and whether a key of that
+    /// search changed the line. Only then does moving between the lines
+    /// keep that search going.
+    search_continues: Option<(ffi::Search, bool)>,
     /// The line and cursor a substring search with Up started from, for
     /// Down past the newest match.
     search_from: Option<(String, usize)>,
