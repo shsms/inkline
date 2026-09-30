@@ -141,6 +141,25 @@ fn late_items_wait_while_moving() {
     assert!(picked(&s, 1), "{}", dump(&s));
 }
 
+/// Tab with one row starts moving while the mode server's items are still
+/// coming, as more rows may come: it does not write the row and stop.
+#[test]
+fn tab_with_one_row_moves_while_items_are_coming() {
+    let mut sh = shell_with(
+        "late-complete",
+        "(inkline-unbind-defaults 'pairing)\n",
+        vec!["csvm 'sort amended'"],
+    );
+    sh.send("csvm 'sort am");
+    sh.wait_for("the history item", |s| {
+        row_text(s, 1) == "h  csvm 'sort amended'"
+    });
+    sh.send("\t");
+    sh.wait_for("the row picked", |s| {
+        picked(s, 1) && cursor_row(s) == "$ csvm 'sort amended'"
+    });
+}
+
 #[test]
 fn a_server_that_did_not_name_complete_gives_no_items() {
     let dir = tempfile::tempdir().unwrap();

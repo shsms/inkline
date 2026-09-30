@@ -683,6 +683,106 @@ fn an_after_change_edit_ends_moving() {
     assert_eq!(cursor_row(&s), "$ git status!", "{}", dump(&s));
 }
 
+/// An after-change function that changes the line and changes it back
+/// after a move leaves the line as the move wrote it, but not the undo
+/// list: moving ends there, so the next `C-n` does not undo the function's
+/// change in place of the row and write the next row over what is left.
+#[test]
+fn an_after_change_edit_put_back_ends_moving() {
+    let init = r#"(add-hook 'inkline-after-change-functions
+  (lambda (_b _e _l)
+    (when (eq this-command 'menu-next)
+      (goto-char (point-max))
+      (insert "!")
+      (delete-char -1))))"#;
+    let mut sh = two_items_with(with_init(init, vec![]));
+    sh.send(C_N);
+    sh.wait_for("the top row", |s| cursor_row(s) == "$ git status");
+    sh.settle();
+    sh.send(C_N);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+}
+
+/// No grey text shows while moving, even where the top row goes on from the
+/// row written. Grey text shows only with the cursor where the top row's
+/// part of the line ends, so the row written here is as long as the typed
+/// text: `git st` in place of `git ST`, with case ignored.
+#[test]
+fn no_grey_text_while_moving() {
+    let mut sh = menu_showing(
+        with_init(
+            "(setq inkline-completion-ignore-case t)",
+            vec!["git st", "git stash"],
+        ),
+        "git ST",
+        "h  git stash",
+    );
+    sh.send(C_P);
+    sh.wait_for("the bottom row written", |s| picked(s, 2));
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git st", "{}", dump(&s));
+}
+
+/// A draw that cannot show the menu ends moving: after a move onto a row
+/// that fills the screen, `C-g` keeps the row.
+#[test]
+fn a_draw_without_the_menu_ends_moving() {
+    let mut sh = menu_showing(
+        Options {
+            rows: 3,
+            ..with_history(vec!["for x in a\ndo echo $x\ndone", "for y"])
+        },
+        "for ",
+        "h  for y",
+    );
+    sh.send(C_P);
+    sh.wait_for("the loop written", |s| cursor_row(s) == "done");
+    sh.settle();
+    sh.send(C_G);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "done", "{}", dump(&s));
+    assert_eq!(row_text(&s, 0), "$ for x in a", "{}", dump(&s));
+}
+
+/// A count of 0 moves nowhere, and with a menu showing runs nothing else
+/// either: a menu key that had macro text does not type it.
+#[test]
+fn a_count_of_0_with_a_menu_does_nothing() {
+    let mut sh = two_items_with(Options {
+        inputrc: Some("\"\\C-t\": \"MAC\"\n".into()),
+        ..with_init("(keymap-global-set \"C-t\" 'menu-next)", vec![])
+    });
+    sh.send("\x1b0\x14");
+    let s = sh.settle();
+    assert!(!picked(&s, 1) && !picked(&s, 2), "{}", dump(&s));
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 8), "{}", dump(&s));
+}
+
+/// A count of 0 right after a move keeps the move going: the row stays
+/// picked and written, the key's macro text is not typed, and `C-g` still
+/// gives back the typed text.
+#[test]
+fn a_count_of_0_after_a_move_keeps_the_move() {
+    let mut sh = two_items_with(Options {
+        inputrc: Some("\"\\C-t\": \"MAC\"\n".into()),
+        ..with_init("(keymap-global-set \"C-t\" 'menu-next)", vec![])
+    });
+    sh.send("\x14");
+    sh.wait_for("the top row written", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status"
+    });
+    sh.send("\x1b0\x14");
+    let s = sh.settle();
+    assert!(picked(&s, 1), "{}", dump(&s));
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+    sh.send(C_G);
+    sh.wait_for("the typed text back", |s| {
+        cursor_row(s) == "$ git st" && s.cursor_position() == (0, 8)
+    });
+}
+
 /// The menu keys work in a line that `read -e` reads under shell code a Lisp
 /// command runs, where every draw happens while Lisp runs.
 #[test]
