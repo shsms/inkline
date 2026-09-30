@@ -694,3 +694,31 @@ fn a_macro_does_not_wait_for_a_copy() {
         began.elapsed()
     );
 }
+
+/// The last word a macro types is asked about as soon as the macro ends,
+/// without waiting for the pause in typing.
+#[test]
+fn a_macro_s_last_word_is_asked_about_at_once() {
+    // `PAUSE_MS` in src/hooks.rs.
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(150);
+    let dir = files();
+    let mut sh = shell_in(
+        dir.path(),
+        "_mm() { COMPREPLY=(done); }\n\
+         complete -F _mm mm\n\
+         bind '\"\\C-xg\": \"mm a b \"'\n",
+        "",
+    );
+    sh.send("\x18g");
+    sh.wait_for("the macro's text", |s| {
+        cursor_row(s).starts_with("$ mm a b")
+    });
+    let began = std::time::Instant::now();
+    sh.wait_for("the answer", |s| has_row(s, "c  done"));
+    let took = began.elapsed();
+    assert!(
+        took < PAUSE * 2 / 3,
+        "the answer took {took:?} after the macro's text: the last word \
+         waited for the pause"
+    );
+}
