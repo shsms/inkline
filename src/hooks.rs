@@ -103,8 +103,8 @@ struct State {
     /// Whether the last `menu-take` ran readline's `complete`, so a Tab
     /// right after it lists the choices as readline's second Tab does.
     completing: bool,
-    /// Moving through the menu, from the first move until another key ends
-    /// it.
+    /// Moving through the menu, from the first move until another key,
+    /// `C-g` or Enter ends it.
     moving: Option<moving::Moving>,
 }
 
@@ -2009,12 +2009,16 @@ extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
     ffi::complete(count, key)
 }
 
-/// `C-g`: hides the menu and the grey text until the line's text changes;
+/// `C-g`: while moving, puts back the typed line (see `moving::cancel`);
+/// otherwise hides the menu and the grey text until the line's text changes;
 /// with no menu, readline's `abort`, which jumps back to readline's top
 /// level, so it runs last with nothing here to drop.
 extern "C" fn menu_hide(count: c_int, key: c_int) -> c_int {
     let hidden = guard(
         || {
+            if moving::cancel() {
+                return true;
+            }
             if !showing_menu() {
                 return false;
             }

@@ -1,6 +1,6 @@
 //! Moving through the completion menu: each move writes the row into the
 //! line, and the menu keeps the rows it had at the first move until another
-//! key ends the moving.
+//! key, `C-g` or Enter ends the moving.
 
 use std::ffi::c_void;
 
@@ -132,6 +132,28 @@ pub(super) fn tab(down: bool) -> bool {
         return true;
     }
     advance(Moving::start(menu), down, 1)
+}
+
+/// `C-g` while moving: takes back the row written, puts back the cursor as
+/// typed, and hides the menu on the typed text. Whether the moving state
+/// was live.
+pub(super) fn cancel() -> bool {
+    let Some(moving) = take_live() else {
+        return false;
+    };
+    ffi::do_undo();
+    ffi::set_point(moving.menu.point);
+    STATE.with_borrow_mut(|s| {
+        s.hidden_on = Some(moving.menu.line);
+        s.menu = None;
+    });
+    true
+}
+
+/// Enter while moving: keeps the row and ends the moving. Whether the
+/// moving state was live.
+pub(super) fn stop() -> bool {
+    take_live().is_some()
 }
 
 /// For a draw in plain editing: the menu of the moving state when it is

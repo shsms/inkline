@@ -395,6 +395,19 @@ fn keys_sent_together_move_through_the_rows() {
     });
 }
 
+#[test]
+fn a_kept_row_is_one_undo_step() {
+    let mut sh = two_items();
+    sh.send(&format!("{C_N}{C_N}\r"));
+    sh.wait_for("the row kept", |s| {
+        cursor_row(s) == "$ git stash" && s.cursor_position() == (0, 11)
+    });
+    sh.send(UNDO);
+    sh.wait_for("the typed text back", |s| {
+        cursor_row(s).starts_with("$ git st") && s.cursor_position() == (0, 8)
+    });
+}
+
 /// Tab moves to the top row when there are more rows; the next Tab goes on.
 #[test]
 fn tab_moves_through_the_rows() {
@@ -418,6 +431,25 @@ fn tab_with_one_row_writes_it() {
         cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
     });
     assert!(!picked(&s, 1), "{}", dump(&s));
+}
+
+/// While moving, Tab with one row moves onto that same row: the line stays
+/// and the row stays picked.
+#[test]
+fn tab_while_moving_with_one_row_stays_on_it() {
+    let mut sh = menu_showing(with_history(vec!["git status"]), "git st", "h  git status");
+    sh.send(C_N);
+    sh.wait_for("the row written", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+    sh.send("\t");
+    let s = sh.settle();
+    assert!(picked(&s, 1), "{}", dump(&s));
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 12), "{}", dump(&s));
+    // Still moving: C-g takes the row back.
+    sh.send(C_G);
+    sh.wait_for("the typed text back", |s| s.cursor_position() == (0, 8));
 }
 
 /// A shell in a directory holding `zzfile`, with `history`.
@@ -460,6 +492,31 @@ fn ctrl_g_then_two_tabs_list_the_choices() {
     });
 }
 
+#[test]
+fn enter_keeps_the_row_without_running() {
+    let mut sh = menu_showing(
+        with_history(vec!["echo one-two", "echo oh"]),
+        "echo o",
+        "h  echo oh",
+    );
+    sh.send(C_P);
+    sh.wait_for("the bottom written", |s| {
+        picked(s, 2) && cursor_row(s) == "$ echo one-two"
+    });
+    sh.send("\r");
+    let s = sh.wait_for("the row kept", |s| {
+        cursor_row(s) == "$ echo one-two" && !picked(s, 2)
+    });
+    assert_eq!(
+        s.cursor_position(),
+        (0, 14),
+        "the line did not run: {}",
+        dump(&s)
+    );
+    sh.send("\r");
+    sh.wait_for("the output", |s| row_text(s, 1) == "one-two");
+}
+
 /// With no move, Enter runs the line as typed.
 #[test]
 fn enter_with_no_move_runs_the_line_as_typed() {
@@ -470,6 +527,52 @@ fn enter_with_no_move_runs_the_line_as_typed() {
     );
     sh.send("\r");
     sh.wait_for("the output", |s| row_text(s, 1) == "o");
+}
+
+/// `M-RET` while moving runs the line as written.
+#[test]
+fn alt_enter_while_moving_runs_the_written_line() {
+    let mut sh = menu_showing(
+        with_history(vec!["echo one-two", "echo oh"]),
+        "echo o",
+        "h  echo oh",
+    );
+    sh.send(C_P);
+    sh.wait_for("the bottom written", |s| cursor_row(s) == "$ echo one-two");
+    sh.send(ALT_ENTER);
+    sh.wait_for("the output", |s| {
+        has_row(s, "one-two") && row_text(s, 1) == "one-two"
+    });
+}
+
+/// Where Enter is readline's `accept-line` (the multi-line group unbound),
+/// it runs the written row at once.
+#[test]
+fn enter_as_accept_line_runs_the_written_row() {
+    let mut sh = menu_showing(
+        with_init(
+            "(inkline-unbind-defaults 'multi-line)",
+            vec!["echo one-two", "echo oh"],
+        ),
+        "echo o",
+        "h  echo oh",
+    );
+    sh.send(C_P);
+    sh.wait_for("the bottom written", |s| cursor_row(s) == "$ echo one-two");
+    sh.send("\r");
+    sh.wait_for("the output", |s| row_text(s, 1) == "one-two");
+}
+
+#[test]
+fn ctrl_g_while_moving_puts_back_the_typed_text() {
+    let mut sh = two_items();
+    sh.send(&format!("{C_N}{C_N}"));
+    sh.wait_for("the second row", |s| cursor_row(s) == "$ git stash");
+    sh.send(C_G);
+    let s = sh.wait_for("the typed text, no menu", |s| {
+        cursor_row(s) == "$ git st" && s.cursor_position() == (0, 8) && row_text(s, 1).is_empty()
+    });
+    assert!(!picked(&s, 1), "{}", dump(&s));
 }
 
 /// A letter after a move goes after the row, and the menu for the new text
@@ -489,6 +592,23 @@ fn a_letter_after_a_move_keeps_the_row() {
     sh.wait_for("the new menu", |s| {
         row_text(s, 1) == "h  git status -s" && !picked(s, 1) && s.cursor_position() == (0, 13)
     });
+}
+
+/// A key that changes nothing still ends moving: `C-g` after it does not
+/// take the row back.
+#[test]
+fn a_key_that_changes_nothing_ends_moving() {
+    let mut sh = two_items();
+    sh.send(C_N);
+    sh.wait_for("the top row", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+    // `C-f` at the end of the line, with no grey text, moves nothing.
+    sh.send("\x06");
+    sh.settle();
+    sh.send(C_G);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
 }
 
 /// A Lisp command can move, after a draw it made; the row it wrote is kept
@@ -538,6 +658,30 @@ fn a_lisp_command_that_edits_then_moves_leaves_a_whole_line() {
     sh.wait_for("the typed text back", |s| {
         cursor_row(s).starts_with("$ git st") && s.cursor_position() == (0, 8)
     });
+}
+
+/// An after-change function that changes the line after a move ends
+/// moving there. The function acts only after a move, so it would not put
+/// its change back after a `C-g` that took it back.
+#[test]
+fn an_after_change_edit_ends_moving() {
+    let init = r#"(add-hook 'inkline-after-change-functions
+  (lambda (_b _e _l)
+    (when (eq this-command 'menu-next)
+      (goto-char (point-max))
+      (insert "!"))))"#;
+    let mut sh = menu_showing(
+        with_init(init, vec!["git stash", "git status"]),
+        "git st",
+        "h  git status",
+    );
+    sh.send(C_N);
+    sh.wait_for("the row and the hook's change", |s| {
+        cursor_row(s) == "$ git status!"
+    });
+    sh.send(C_G);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git status!", "{}", dump(&s));
 }
 
 /// The menu keys work in a line that `read -e` reads under shell code a Lisp

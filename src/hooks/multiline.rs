@@ -44,7 +44,8 @@ fn finish(then: Then, count: c_int, key: c_int) -> c_int {
     }
 }
 
-/// Enter: adds a line to an unfinished command, and accepts any other.
+/// Enter: while moving through the menu, keeps the row; adds a line to an
+/// unfinished command, and accepts any other.
 pub(super) extern "C" fn accept_or_newline(count: c_int, key: c_int) -> c_int {
     let then = guard(
         || {
@@ -53,6 +54,9 @@ pub(super) extern "C" fn accept_or_newline(count: c_int, key: c_int) -> c_int {
             // that line away, so the accept hook does not run.
             if ffi::interrupted() {
                 return Then::Done(ffi::accept_line(count, key));
+            }
+            if super::moving::stop() {
+                return Then::Done(0);
             }
             let Some(line) = active_line() else {
                 return Then::Accept;
