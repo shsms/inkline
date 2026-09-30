@@ -1919,13 +1919,13 @@ extern "C" fn accept_suggestion(count: c_int, key: c_int) -> c_int {
 }
 
 /// `C-n`: moves to the next row of the menu, writing it into the line; with
-/// no menu, runs the key's own command (see `menu_fallback`).
+/// no menu, see `menu_fallback`.
 pub(super) extern "C" fn menu_next(count: c_int, key: c_int) -> c_int {
     move_pick(count, key, true)
 }
 
 /// `C-p`: moves to the row above in the menu, writing it into the line; with
-/// no menu, runs the key's own command (see `menu_fallback`).
+/// no menu, see `menu_fallback`.
 pub(super) extern "C" fn menu_previous(count: c_int, key: c_int) -> c_int {
     move_pick(count, key, false)
 }
@@ -1947,19 +1947,17 @@ fn move_pick(count: c_int, key: c_int, down: bool) -> c_int {
     }
 }
 
-/// What `menu-next` (`down`) or `menu-previous` runs with no menu: what the key
-/// had before inkline bound it. Readline's `next-history` and
-/// `previous-history` become `next-line-or-history` and
-/// `previous-line-or-history`, and `history-search-forward` and
-/// `history-search-backward` become `next-line-or-search` and
-/// `previous-line-or-search`, as on Down and Up; a key that had nothing, or a
-/// run from Lisp, moves a line or through history too. Another command ends a
-/// run of Up and Down, and runs last, as readline may jump from it back to its
-/// top level. When the last key was also `menu-next` or `menu-previous` and
-/// ran its key's own command (`ran_before`), readline sees that command as
-/// the last one, as when its own key ran it, so a search goes on from where
-/// it stopped; and after one of readline's history searches, the line it
-/// finds counts as found by a search (see `ran_history_search`).
+/// What `menu-next` (`down`) or `menu-previous` runs with no menu. While the
+/// multi-line group is bound, the Up or Down command `menu_key_fallback`
+/// picks from what the key had before inkline bound it. Otherwise, or when
+/// it picks none, what the key had: a command, which runs last (readline may
+/// jump from it back to its top level) and ends a run of Up and Down, or
+/// macro text; a key that had nothing rings the bell. When the last key was
+/// also `menu-next` or `menu-previous` and ran its key's own command
+/// (`ran_before`), readline sees that command as the last one, as when its
+/// own key ran it, so a search goes on from where it stopped; and after one
+/// of readline's history searches, the line it finds counts as found by a
+/// search (see `ran_history_search`).
 fn menu_fallback(
     count: c_int,
     key: c_int,
@@ -1967,20 +1965,29 @@ fn menu_fallback(
     ran_before: Option<ffi::CommandFn>,
 ) -> c_int {
     use crate::lisp::keys::{self, Fallback};
+    use crate::lisp::layout::{self, Group};
     let own: ffi::CommandFn = if down { menu_next } else { menu_previous };
-    match guard(|| keys::saved_binding_of(own), || Fallback::Nothing) {
-        Fallback::Command(f) if ffi::is_next_history(f) => {
-            multiline::next_line_or_history(count, key)
+    let (saved, lines) = guard(
+        || {
+            (
+                keys::saved_binding_of(own),
+                keys::group_bound(Group::MultiLine),
+            )
+        },
+        || (Fallback::Nothing, true),
+    );
+    if lines {
+        let had = match &saved {
+            Fallback::Command(f) => ffi::Binding::Command(*f),
+            // Macro text gives no Up or Down command, whatever it is.
+            Fallback::Macro(_) => ffi::Binding::Macro(Vec::new()),
+            Fallback::Nothing => ffi::Binding::Unbound,
+        };
+        if let Some(f) = layout::menu_key_fallback(down, &had).and_then(ffi::named_command) {
+            return ffi::run_command(f, count, key);
         }
-        Fallback::Command(f) if ffi::is_previous_history(f) => {
-            multiline::previous_line_or_history(count, key)
-        }
-        Fallback::Command(f) if ffi::is_history_search_forward(f) => {
-            multiline::next_line_or_search(count, key)
-        }
-        Fallback::Command(f) if ffi::is_history_search_backward(f) => {
-            multiline::previous_line_or_search(count, key)
-        }
+    }
+    match saved {
         Fallback::Command(f) => {
             let before = ran_before.filter(|_| is_menu_key(ffi::last_command()));
             guard(
@@ -2001,8 +2008,10 @@ fn menu_fallback(
             ffi::push_macro_input(text);
             0
         }
-        Fallback::Nothing if down => multiline::next_line_or_history(count, key),
-        Fallback::Nothing => multiline::previous_line_or_history(count, key),
+        Fallback::Nothing => {
+            ffi::ding();
+            0
+        }
     }
 }
 

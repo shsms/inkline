@@ -185,8 +185,8 @@ fn unbind_defaults_gives_back_a_group() {
 }
 
 /// With the menu group unbound and the multi-line group still bound, `C-p`
-/// and `C-n` move between the lines of a command again, and past the first
-/// or last line through history.
+/// and `C-n` move between the lines of a command, and past the first or
+/// last line search history by substring.
 #[test]
 fn unbinding_the_menu_gives_ctrl_p_and_ctrl_n_back_to_multi_line() {
     let mut sh = Shell::start(Options {
@@ -206,7 +206,7 @@ fn unbinding_the_menu_gives_ctrl_p_and_ctrl_n_back_to_multi_line() {
     sh.wait_for("the bindings", |s| {
         (0..s.size().0).any(|r| {
             row_text(s, r).starts_with("C-p")
-                && row_text(s, r).ends_with("previous-line-or-history")
+                && row_text(s, r).ends_with("previous-line-or-substring-search")
         })
     });
 }

@@ -1308,26 +1308,6 @@ pub fn undo_command(f: CommandFn) -> Option<Undo> {
     }
 }
 
-/// Whether `f` is readline's `next-history`.
-pub fn is_next_history(f: CommandFn) -> bool {
-    std::ptr::fn_addr_eq(f, rl_get_next_history as CommandFn)
-}
-
-/// Whether `f` is readline's `previous-history`.
-pub fn is_previous_history(f: CommandFn) -> bool {
-    std::ptr::fn_addr_eq(f, rl_get_previous_history as CommandFn)
-}
-
-/// Whether `f` is readline's `history-search-forward`.
-pub fn is_history_search_forward(f: CommandFn) -> bool {
-    std::ptr::fn_addr_eq(f, rl_history_search_forward as CommandFn)
-}
-
-/// Whether `f` is readline's `history-search-backward`.
-pub fn is_history_search_backward(f: CommandFn) -> bool {
-    std::ptr::fn_addr_eq(f, rl_history_search_backward as CommandFn)
-}
-
 /// Sets whether the running command counts as given a count by the user,
 /// and returns the old setting.
 pub fn replace_explicit_count(explicit: bool) -> bool {

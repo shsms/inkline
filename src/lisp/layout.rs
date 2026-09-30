@@ -138,14 +138,21 @@ pub const LAYOUT: &[Entry] = &[
     e(Menu, "C-g", "menu-hide", &["abort"]),
 ];
 
-/// What `menu-next` and `menu-previous` run on `C-n` and `C-p` with no menu.
-/// When the menu group is unbound and the multi-line group is not, a key that
-/// still runs one of these menu commands runs its fallback instead, as a
-/// multi-line key.
-pub const MENU_FALLBACKS: [(&str, &str); 2] = [
-    ("menu-next", "next-line-or-history"),
-    ("menu-previous", "previous-line-or-history"),
-];
+/// `menu_key_fallback` for a key that had the readline command named `had`
+/// (None when it had nothing).
+fn named_fallback(down: bool, had: Option<&str>) -> Option<&'static str> {
+    match (down, had) {
+        (true, None | Some("next-history" | "history-substring-search-forward")) => {
+            Some("next-line-or-substring-search")
+        }
+        (false, None | Some("previous-history" | "history-substring-search-backward")) => {
+            Some("previous-line-or-substring-search")
+        }
+        (true, Some("history-search-forward")) => Some("next-line-or-search"),
+        (false, Some("history-search-backward")) => Some("previous-line-or-search"),
+        _ => None,
+    }
+}
 
 #[cfg(not(test))]
 mod bash {
@@ -196,10 +203,23 @@ mod bash {
             }
         }
     }
+
+    /// The Up or Down command that `menu-next` (`down`) or `menu-previous`
+    /// runs with no menu, from what its key had before inkline bound it
+    /// (`saved`). None when what the key had runs as it is, as for macro
+    /// text or a command readline has no name for.
+    pub fn menu_key_fallback(down: bool, saved: &ffi::Binding) -> Option<&'static str> {
+        let had = match saved {
+            ffi::Binding::Unbound => None,
+            ffi::Binding::Command(f) => Some(ffi::command_name(*f)?),
+            ffi::Binding::Macro(_) => return None,
+        };
+        named_fallback(down, had.as_deref())
+    }
 }
 
 #[cfg(not(test))]
-pub use bash::{bind_defaults, prepare_readline};
+pub use bash::{bind_defaults, menu_key_fallback, prepare_readline};
 
 #[cfg(test)]
 mod tests {
@@ -222,5 +242,37 @@ mod tests {
         for g in Group::ALL {
             assert!(LAYOUT.iter().any(|e| e.group == g));
         }
+    }
+
+    #[test]
+    fn a_menu_keys_fallback_follows_what_the_key_had() {
+        use super::named_fallback as f;
+        assert_eq!(f(false, None), Some("previous-line-or-substring-search"));
+        assert_eq!(
+            f(false, Some("previous-history")),
+            Some("previous-line-or-substring-search")
+        );
+        assert_eq!(
+            f(false, Some("history-substring-search-backward")),
+            Some("previous-line-or-substring-search")
+        );
+        assert_eq!(
+            f(false, Some("history-search-backward")),
+            Some("previous-line-or-search")
+        );
+        assert_eq!(f(true, None), Some("next-line-or-substring-search"));
+        assert_eq!(
+            f(true, Some("next-history")),
+            Some("next-line-or-substring-search")
+        );
+        assert_eq!(
+            f(true, Some("history-search-forward")),
+            Some("next-line-or-search")
+        );
+        assert_eq!(f(true, Some("backward-char")), None);
+        assert_eq!(
+            f(false, Some("non-incremental-reverse-search-history")),
+            None
+        );
     }
 }

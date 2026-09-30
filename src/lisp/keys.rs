@@ -8,7 +8,7 @@ use tulisp::{Error, TulispContext, TulispObject};
 use super::buffer::refuse_when_read_only;
 use super::commands::{self, Command, LispCommand};
 use super::keydesc;
-use super::layout::{Group, MENU_FALLBACKS};
+use super::layout::{self, Group};
 use crate::ffi;
 
 /// The Lisp command a sequence runs.
@@ -262,25 +262,32 @@ pub fn unset(desc: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether inkline still owns a key of `group`.
+pub fn group_bound(group: Group) -> bool {
+    TABLE.with_borrow(|t| t.iter().any(|b| b.group == Some(group) && still_ours(b)))
+}
+
 /// Puts back the sequences the default layout bound for `groups`. When the
 /// menu group goes and the multi-line group stays, a key that still runs
-/// `menu-next` or `menu-previous` runs its fallback from `MENU_FALLBACKS`
-/// instead, as a multi-line key, and keeps what it had before inkline first
-/// bound it.
+/// `menu-next` or `menu-previous` runs its Up or Down command from
+/// `menu_key_fallback` instead, as a multi-line key, and keeps what it had
+/// before inkline first bound it. A key whose saved binding gives no such
+/// command gets that binding back.
 pub fn unset_groups(groups: &[Group]) {
-    let multi_line_stays = !groups.contains(&Group::MultiLine)
-        && TABLE.with_borrow(|t| {
-            t.iter()
-                .any(|b| b.group == Some(Group::MultiLine) && still_ours(b))
-        });
+    let multi_line_stays = !groups.contains(&Group::MultiLine) && group_bound(Group::MultiLine);
     let fallbacks: Vec<(Vec<u8>, String, &'static str)> =
         if groups.contains(&Group::Menu) && multi_line_stays {
             TABLE.with_borrow(|t| {
                 t.iter()
                     .filter(|b| b.group == Some(Group::Menu) && still_ours(b))
                     .filter_map(|b| {
-                        let (_, back) = MENU_FALLBACKS.iter().find(|(c, _)| *c == b.command)?;
-                        Some((b.seq.clone(), b.key.clone(), *back))
+                        let down = match b.command.as_str() {
+                            "menu-next" => true,
+                            "menu-previous" => false,
+                            _ => return None,
+                        };
+                        let back = layout::menu_key_fallback(down, &b.saved.binding)?;
+                        Some((b.seq.clone(), b.key.clone(), back))
                     })
                     .collect()
             })

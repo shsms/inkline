@@ -743,16 +743,17 @@ fn ctrl_g_hide_ends_when_the_text_changes_and_comes_back() {
     });
 }
 
+/// With no menu, `C-p` searches history for entries holding the typed text.
 #[test]
-fn ctrl_p_walks_history_without_a_menu() {
+fn ctrl_p_without_a_menu_finds_entries_holding_the_text() {
     let mut sh = Shell::start(with_init(
         "(setq inkline-show-menu nil)",
-        vec!["echo old", "ls"],
+        vec!["an echo old", "ls"],
     ));
     sh.send("echo");
-    sh.wait_for("the grey text", |s| cursor_row(s) == "$ echo old");
+    sh.settle();
     sh.send(C_P);
-    sh.wait_for("the newest entry", |s| cursor_row(s) == "$ ls");
+    sh.wait_for("the match", |s| cursor_row(s) == "$ an echo old");
 }
 
 #[test]
@@ -853,9 +854,10 @@ fn a_recalled_line_shows_no_menu_until_it_changes() {
     });
 }
 
-/// Whether `C-p` walked history from `git st`, the line a search left: to
-/// the entry before it or, where readline puts its history place back after
-/// a search (before 8.3), to the newest entry. No menu row is picked.
+/// Whether `C-p` went back from `git st`, the line a search left: to the
+/// entry before it, by walking history or by a new search for `git st`, or,
+/// where readline puts its history place back after a search (before 8.3)
+/// and `C-p` walks, to the newest entry. No menu row is picked.
 fn walked_back_from_the_search(s: &vt100::Screen) -> bool {
     let row = cursor_row(s);
     (row == "$ ls" || row == "$ git status")
@@ -865,8 +867,8 @@ fn walked_back_from_the_search(s: &vt100::Screen) -> bool {
 
 /// A line that Up found with `previous-line-or-search` counts as brought
 /// back from history: after `C-e` it shows no menu and no grey text, and
-/// `C-p` walks history. inkline binds Up to `previous-line-or-search` where
-/// inputrc binds it to `history-search-backward`.
+/// `C-p` goes back from it. inkline binds Up to `previous-line-or-search`
+/// where inputrc binds it to `history-search-backward`.
 #[test]
 fn a_line_found_with_previous_line_or_search_shows_no_menu() {
     let mut sh = Shell::start(Options {
@@ -989,8 +991,8 @@ fn menu_previous_on_a_history_search_key_moves_through_the_matches() {
 
 /// Keys that ran readline's substring searches also move through the
 /// matches on each press with no menu, in both directions, as when both are
-/// bound to the searches. Another key in between, even one that runs
-/// `menu-previous` to move through history, starts a new search.
+/// bound to the searches. A new search for the whole line, and `C-p` going
+/// on with it, find nothing older and leave the line and cursor as they are.
 #[test]
 fn menu_keys_on_substring_search_keys_move_through_the_matches() {
     let mut sh = Shell::start(Options {
@@ -1021,14 +1023,12 @@ fn menu_keys_on_substring_search_keys_move_through_the_matches() {
     sh.send("\x05\x1bp");
     let s = sh.settle();
     assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
-    // `C-p` moves through history; the new search after it finds nothing
-    // older either.
+    // `C-p` runs the same Up command, so it goes on with that search and
+    // finds nothing older either.
     sh.send("\x10");
-    sh.wait_for("another entry", |s| cursor_row(s) != "$ git status");
-    let moved = cursor_row(&sh.settle());
-    sh.send("\x1bp");
     let s = sh.settle();
-    assert_eq!(cursor_row(&s), moved, "{}", dump(&s));
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 12), "{}", dump(&s));
 }
 
 /// With no menu, a key that had macro text types it.
@@ -1061,8 +1061,8 @@ fn menu_keys_that_had_nothing_move_between_lines() {
 }
 
 /// A key that already ran `menu-next` before inkline bound it to
-/// `menu-next` moves a line or through history with no menu, as a key that
-/// had nothing.
+/// `menu-next` runs the Down command with no menu, as a key that had
+/// nothing.
 #[test]
 fn menu_next_on_a_key_that_already_ran_it_does_not_loop() {
     let mut sh = Shell::start(Options {
@@ -1074,6 +1074,21 @@ inkline eval \"(keymap-global-set \\\"C-t\\\" 'menu-next)\"
     });
     sh.send("xy\x14z");
     sh.wait_for("the shell still up", |s| cursor_row(s) == "$ xyz");
+}
+
+/// With no menu, a key that had a shell command from `bind -x` runs it.
+#[test]
+fn menu_next_on_a_bind_x_key_runs_its_shell_command() {
+    let mut sh = Shell::start(Options {
+        rc: "bind -x '\"\\C-t\": echo BX'
+inkline eval \"(keymap-global-set \\\"C-t\\\" 'menu-next)\"
+"
+        .into(),
+        ..Options::default()
+    });
+    sh.settle();
+    sh.send("\x14");
+    sh.wait_for("the command's output", |s| has_row(s, "BX"));
 }
 
 /// Ignoring case, an item of another case is listed, with no grey text, and
