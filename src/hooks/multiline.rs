@@ -661,11 +661,7 @@ fn back_to_search_start() {
     }
     if ffi::line().as_deref() != Some(line.as_str()) {
         let end = ffi::line().map_or(0, |l| l.len());
-        ffi::begin_undo_group();
-        ffi::delete_text(0, end);
-        ffi::set_point(0);
-        ffi::insert_text(&line);
-        ffi::end_undo_group();
+        ffi::replace_text(0, end, &line);
     }
     ffi::set_point(point);
 }
@@ -745,11 +741,7 @@ pub(super) extern "C" fn comment_lines(count: c_int, key: c_int) -> c_int {
             };
             let begin = ffi::variable(c"comment-begin").unwrap_or_else(|| "#".to_owned());
             let commented = lines::comment(&line, &begin, ffi::explicit_count());
-            ffi::begin_undo_group();
-            ffi::delete_text(0, line.len());
-            ffi::set_point(0);
-            ffi::insert_text(&commented);
-            ffi::end_undo_group();
+            ffi::replace_text(0, line.len(), &commented);
             super::repaint_now();
             ffi::accept_line(1, c_int::from(b'\n'))
         },

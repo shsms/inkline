@@ -1019,6 +1019,16 @@ pub fn end_undo_group() {
     unsafe { rl_end_undo_group() };
 }
 
+/// Replaces bytes `start..end` of the line with `text` as one undo group,
+/// leaving the cursor at the end of `text`.
+pub fn replace_text(start: usize, end: usize, text: &str) {
+    begin_undo_group();
+    delete_text(start, end);
+    set_point(start);
+    insert_text(text);
+    end_undo_group();
+}
+
 pub fn set_point(point: usize) {
     unsafe { rl_point = point as c_int }
 }

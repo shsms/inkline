@@ -76,11 +76,7 @@ fn resume() -> Option<Moving> {
 /// Writes `item` into the line as one undo group: it replaces its part of
 /// the line, and the cursor goes to its end.
 fn write(item: &Item) {
-    ffi::begin_undo_group();
-    ffi::delete_text(item.start, item.end);
-    ffi::set_point(item.start);
-    ffi::insert_text(&item.text);
-    ffi::end_undo_group();
+    ffi::replace_text(item.start, item.end, &item.text);
 }
 
 /// Moves the pick `count` rows, down or up, and writes the row into the
