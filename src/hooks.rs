@@ -99,6 +99,10 @@ struct State {
     /// The line and cursor a substring search with Up started from, for
     /// Down past the newest match.
     search_from: Option<(String, usize)>,
+    /// readline's history place just after a substring search found the
+    /// line. While the place stays there, the line (changed or not) counts
+    /// as found by a search, not brought back by walking.
+    found_at: Option<c_int>,
     /// The command the last `menu-next` or `menu-previous` ran as its key's
     /// own command (see `menu_fallback`); None when it did anything else. It
     /// stays across other keys, but counts only while readline's last command
@@ -221,6 +225,7 @@ thread_local! {
         goal_column: None,
         search_continues: None,
         search_from: None,
+        found_at: None,
         menu_key_ran: None,
         completing: false,
         moving: None,
@@ -1080,6 +1085,7 @@ extern "C" fn pre_input() -> c_int {
                 s.goal_column = None;
                 s.search_continues = None;
                 s.search_from = None;
+                s.found_at = None;
                 s.menu = None;
                 s.moving = None;
                 s.hidden_on = None;

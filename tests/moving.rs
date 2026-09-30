@@ -235,6 +235,40 @@ fn up_goes_to_the_line_above_first() {
     sh.wait_for("the first line", |s| s.cursor_position() == (0, 6));
 }
 
+/// Up on a line a search found and that was then changed searches again,
+/// for the changed text, as it does on a typed line.
+#[test]
+fn up_on_a_changed_found_line_searches_again() {
+    let mut sh = Shell::start(substring_keys(vec![
+        "echo statX older",
+        "git status",
+        "ls",
+        "echo stat",
+    ]));
+    sh.send("stat");
+    sh.wait_for("the typed text", |s| cursor_row(s) == "$ stat");
+    sh.send(UP);
+    sh.wait_for("the match", |s| cursor_row(s) == "$ echo stat");
+    sh.send("X");
+    // The rest of "echo statX older" shows after the cursor as a suggestion.
+    sh.wait_for("the change", |s| {
+        cursor_row(s).starts_with("$ echo statX") && s.cursor_position() == (0, 12)
+    });
+    // Going on with the search for "stat" would give "git status", and a
+    // walk "ls".
+    sh.send(UP);
+    sh.wait_for("the match for the changed text", |s| {
+        cursor_row(s) == "$ echo statX older" && s.cursor_position() == (0, 18)
+    });
+    // Nothing older holds "echo statX": the line and cursor stay, so Y
+    // goes at the end.
+    sh.send(UP);
+    sh.send("Y");
+    sh.wait_for("the line as it was", |s| {
+        cursor_row(s) == "$ echo statX olderY" && s.cursor_position() == (0, 19)
+    });
+}
+
 #[test]
 fn up_past_the_oldest_match_keeps_the_cursor() {
     let mut sh = Shell::start(substring_keys(vec!["git status"]));
