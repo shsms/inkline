@@ -433,20 +433,33 @@ pub fn line_done() -> bool {
     unsafe { rl_done != 0 }
 }
 
+/// The line of the history entry numbered `offset` as `history_get` numbers
+/// them, from `history_base` for the oldest, whether or not it is valid
+/// UTF-8; None when no entry has that number.
+///
+/// # Safety
+///
+/// History must not change while the line is borrowed.
+unsafe fn entry_line<'a>(offset: c_int) -> Option<&'a CStr> {
+    // SAFETY: history_get gives NULL for an offset out of range, else a
+    // valid entry whose line is NULL or a C string, which stays valid
+    // while history does not change (the caller's promise).
+    unsafe {
+        let entry = history_get(offset);
+        if entry.is_null() {
+            return None;
+        }
+        c_str((*entry).line)
+    }
+}
+
 /// Calls `f` on the history entries from newest to oldest, until it returns
 /// Some. Entries that are not valid UTF-8 are skipped.
 pub fn history_find_map<T>(mut f: impl FnMut(&str) -> Option<T>) -> Option<T> {
     let (base, length) = unsafe { (history_base, history_length) };
     for offset in (base..base + length).rev() {
-        // SAFETY: offsets history_base .. history_base + history_length - 1 are
-        // valid, and history does not change while `f` runs.
-        let text = unsafe {
-            let entry = history_get(offset);
-            if entry.is_null() {
-                continue;
-            }
-            c_str((*entry).line)
-        };
+        // SAFETY: history does not change while `f` runs.
+        let text = unsafe { entry_line(offset) };
         let Some(Ok(text)) = text.map(CStr::to_str) else {
             continue;
         };
@@ -455,6 +468,18 @@ pub fn history_find_map<T>(mut f: impl FnMut(&str) -> Option<T>) -> Option<T> {
         }
     }
     None
+}
+
+/// Calls `f` with a reader of the history entries' bytes, whether or not
+/// they are valid UTF-8. The reader takes an entry's index counted from the
+/// oldest entry as readline's history place is, and gives None past the
+/// ends. The bytes borrow history, which does not change while `f` runs.
+pub fn with_history_entries<T>(
+    f: impl for<'h> FnOnce(&'h (dyn Fn(c_int) -> Option<&'h [u8]> + 'h)) -> T,
+) -> T {
+    let base = unsafe { history_base };
+    // SAFETY: history does not change while `f` runs.
+    f(&|index| unsafe { entry_line(base.saturating_add(index)) }.map(CStr::to_bytes))
 }
 
 /// Whether readline's history position is on an entry, not past the newest
@@ -474,13 +499,6 @@ pub fn history_entry_here_is(text: &str) -> bool {
 pub fn on_history_entry() -> bool {
     // SAFETY: current_history gives NULL past the newest entry.
     unsafe { !current_history().is_null() }
-}
-
-/// How many entries history holds, which is also readline's history place
-/// past the newest one.
-pub fn history_len() -> c_int {
-    // SAFETY: reads history's own counter.
-    unsafe { history_length }
 }
 
 unsafe extern "C" {
@@ -751,8 +769,6 @@ unsafe extern "C" {
     fn rl_get_next_history(count: c_int, key: c_int) -> c_int;
     fn rl_history_search_backward(count: c_int, key: c_int) -> c_int;
     fn rl_history_search_forward(count: c_int, key: c_int) -> c_int;
-    fn rl_history_substr_search_backward(count: c_int, key: c_int) -> c_int;
-    fn rl_history_substr_search_forward(count: c_int, key: c_int) -> c_int;
 }
 
 /// The command readline ran for the previous key.
@@ -780,35 +796,12 @@ pub fn history_search_forward(count: c_int, key: c_int) -> c_int {
     unsafe { rl_history_search_forward(count, key) }
 }
 
-/// readline's `history-substring-search-backward`.
-pub fn history_substring_search_backward(count: c_int, key: c_int) -> c_int {
-    unsafe { rl_history_substr_search_backward(count, key) }
-}
-
-/// readline's `history-substring-search-forward`.
-pub fn history_substring_search_forward(count: c_int, key: c_int) -> c_int {
-    unsafe { rl_history_substr_search_forward(count, key) }
-}
-
-/// One of readline's history searches for the text before the cursor.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Search {
-    /// Entries that start with it.
-    Prefix,
-    /// Entries that hold it.
-    Substring,
-}
-
-/// Marks the history search about to run as a continuation of the last one:
+/// Marks the prefix search about to run as a continuation of the last one:
 /// readline tells the two apart by checking whether `rl_last_func` is one of
-/// its own functions for that search, which it is not once a call reaches it
+/// its own prefix search functions, which it is not once a call reaches it
 /// through one of this crate's own commands.
-pub fn continue_history_search(search: Search) {
-    let f: CommandFn = match search {
-        Search::Prefix => rl_history_search_backward,
-        Search::Substring => rl_history_substr_search_backward,
-    };
-    unsafe { rl_last_func = Some(f) };
+pub fn continue_prefix_search() {
+    unsafe { rl_last_func = Some(rl_history_search_backward) };
 }
 
 /// Makes readline see `f` as the last command, for a command about to run

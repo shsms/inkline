@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 libc = "0.2"
+memchr = "2"
 # src/syntax.rs works around how these exact versions recover from errors;
 # its tests hold it to tests/data/syntax-cases.txt, and tests/syntax_corpus.rs
 # holds that file to bash. Update the two crates together and rerun the tests.

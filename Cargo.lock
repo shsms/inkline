@@ -135,6 +135,7 @@ version = "0.1.0"
 dependencies = [
  "cc",
  "libc",
+ "memchr",
  "portable-pty",
  "tempfile",
  "tree-sitter",

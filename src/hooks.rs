@@ -92,19 +92,20 @@ struct State {
     items_want_pause: bool,
     /// The column a run of Up and Down keeps to.
     goal_column: Option<usize>,
-    /// The kind of search the last vertical command that deferred to
-    /// history did, if it searched, so a further one of the same kind
-    /// continues it instead of starting fresh; and whether a key of that
-    /// search changed the line. Only then does moving between the lines
-    /// keep that search going.
-    search_continues: Option<(ffi::Search, bool)>,
-    /// The line and cursor a substring search with Up started from, for
-    /// Down past the newest match.
-    search_from: Option<(String, usize)>,
-    /// readline's history place just after a substring search found the
-    /// line. While the place stays there, the line (changed or not) counts
-    /// as found by a search, not brought back by walking.
-    found_at: Option<c_int>,
+    /// Some when the last vertical command that deferred to history ran
+    /// readline's prefix search, so a further one continues it instead of
+    /// starting fresh: whether a key of that search changed the line. Only
+    /// then does moving between the lines keep that search going.
+    search_continues: Option<bool>,
+    /// The last substring search Up started. Its `going_on` says whether
+    /// the run of Up and Down goes on with it, as `search_continues` does
+    /// for the prefix search.
+    substring: Option<crate::history_search::SubstringSearch>,
+    /// Where an Up or Down key's own search, by prefix or by substring,
+    /// last changed the line to an entry it found; while readline's history
+    /// place has not moved from there, the line counts as found, and Up
+    /// with the substring search starts a new search on it.
+    found_at: Option<multiline::Found>,
     /// The command the last `menu-next` or `menu-previous` ran as its key's
     /// own command (see `menu_fallback`); None when it did anything else. It
     /// stays across other keys, but counts only while readline's last command
@@ -132,6 +133,9 @@ impl State {
     fn end_vertical_run(&mut self) {
         self.goal_column = None;
         self.search_continues = None;
+        if let Some(search) = &mut self.substring {
+            search.going_on = false;
+        }
     }
 
     /// Asks again for the pause `getc` took out to wait for, new errors or
@@ -226,7 +230,7 @@ thread_local! {
         items_want_pause: false,
         goal_column: None,
         search_continues: None,
-        search_from: None,
+        substring: None,
         found_at: None,
         menu_key_ran: None,
         completing: false,
@@ -1097,7 +1101,7 @@ extern "C" fn pre_input() -> c_int {
                 s.items_want_pause = false;
                 s.goal_column = None;
                 s.search_continues = None;
-                s.search_from = None;
+                s.substring = None;
                 s.found_at = None;
                 s.menu = None;
                 s.moving = None;
@@ -1618,8 +1622,11 @@ fn recalled(line: &str) -> bool {
 
 /// Whether the key just handled ran a history search that puts a history
 /// entry in the line: readline's prefix, substring and non-incremental
-/// searches; an Up or Down command that went on to a search; or a
-/// `menu-next` or `menu-previous` that ran one of these.
+/// searches; an Up or Down command that went on to readline's prefix
+/// search; or a `menu-next` or `menu-previous` that ran one of these. The
+/// substring search of the Up and Down commands is not one: it walks to the
+/// entry it finds, so `recalled` sees that entry at readline's history
+/// place.
 fn ran_history_search() -> bool {
     let last = ffi::last_command();
     if multiline::is_vertical(last) {

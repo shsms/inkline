@@ -380,9 +380,18 @@ items, the last row says how many more.
   the cursor stops.
 - A line brought back from history (`C-p`, `<up>`, a search) shows no menu
   and no grey text until you change it. With no menu, `C-p`/`<up>` search
-  history for commands holding what you typed before the cursor (plain
-  history on an empty line), and `C-n`/`<down>` go back; `<down>` past the
-  newest match gives back what you typed.
+  history, newest first, for commands holding the text before the cursor
+  anywhere in them, passing over those that repeat the line or the last
+  match, and `C-n`/`<down>` go back to newer matches; `<down>` past the
+  newest match puts back the line and cursor as they were when the search
+  started. With nothing older, `C-p`/`<up>` ring the bell and leave the
+  line. With nothing before the cursor, or on a command brought back by
+  walking history or by `C-r`, they walk history instead; on a command the
+  up and down keys' own search found, by substring or by prefix, they start
+  a new search. Where inputrc binds `<up>` to `history-search-backward`,
+  `<up>` searches by prefix and goes on with that search, and only `C-p`
+  starts a new substring search. With readline 8.3's `search-ignore-case`
+  on, case is ignored.
 
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
 text off on their own, and `inkline-completion-style` set to `fuzzy` lets the

@@ -6,6 +6,7 @@ pub mod bash_complete;
 pub mod colors;
 pub mod commands;
 pub mod highlight;
+pub mod history_search;
 pub mod indent;
 pub mod lexer;
 pub mod lines;
