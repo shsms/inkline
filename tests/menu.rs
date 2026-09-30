@@ -305,6 +305,7 @@ const C_N: &str = "\x0e";
 const C_P: &str = "\x10";
 const C_G: &str = "\x07";
 const UNDO: &str = "\x1f";
+const SHIFT_TAB: &str = "\x1b[Z";
 
 /// Whether row `row` is drawn in reverse video.
 fn picked(s: &vt100::Screen, row: u16) -> bool {
@@ -1151,5 +1152,49 @@ fn menu_on_move_keeps_the_menu_while_the_cursor_moves() {
     sh.send("\x1b[A");
     sh.wait_for("the first line and its menu", |s| {
         s.cursor_position().0 == 0 && has_row(s, "l  switch")
+    });
+}
+
+#[test]
+fn shift_tab_moves_up_through_the_rows() {
+    let mut sh = two_items();
+    sh.send(SHIFT_TAB);
+    sh.wait_for("the bottom row", |s| {
+        picked(s, 2) && cursor_row(s) == "$ git stash"
+    });
+    sh.send(SHIFT_TAB);
+    sh.wait_for("the top row", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status"
+    });
+}
+
+/// With no menu, Shift-Tab does what it did before inkline bound it: here
+/// nothing, so the line stays.
+#[test]
+fn shift_tab_without_a_menu_changes_nothing() {
+    let mut sh = Shell::start(with_history(vec!["echo old"]));
+    sh.send("zzz");
+    sh.wait_for("the typed text", |s| cursor_row(s) == "$ zzz");
+    sh.send(SHIFT_TAB);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ zzz", "{}", dump(&s));
+}
+
+/// With no menu, Shift-Tab runs what inputrc bound it to before inkline
+/// did.
+#[test]
+fn shift_tab_without_a_menu_runs_its_own_binding() {
+    let mut sh = Shell::start(Options {
+        inputrc: Some("\"\\e[Z\": backward-char\n".into()),
+        history: vec!["echo old"],
+        ..Options::default()
+    });
+    sh.send("zzz");
+    sh.wait_for("the typed text", |s| {
+        cursor_row(s) == "$ zzz" && s.cursor_position() == (0, 5)
+    });
+    sh.send(SHIFT_TAB);
+    sh.wait_for("the cursor back one", |s| {
+        cursor_row(s) == "$ zzz" && s.cursor_position() == (0, 4)
     });
 }

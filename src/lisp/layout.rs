@@ -134,6 +134,7 @@ pub const LAYOUT: &[Entry] = &[
     e(Menu, "C-n", "menu-next", &["next-history"]),
     e(Menu, "C-p", "menu-previous", &["previous-history"]),
     e(Menu, "TAB", "menu-take", &["complete"]),
+    e(Menu, "<backtab>", "menu-take-previous", &[""]),
     e(Menu, "C-g", "menu-hide", &["abort"]),
 ];
 

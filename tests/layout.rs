@@ -441,3 +441,18 @@ fn reload_takes_del_and_c_u_again() {
     assert!(listed("DEL", "delete-pair"), "{}", dump(&s));
     assert!(listed("C-u", "kill-to-line-start"), "{}", dump(&s));
 }
+
+#[test]
+fn backtab_is_bound_to_menu_take_previous() {
+    let mut sh = Shell::start(Options {
+        rows: 40,
+        ..Options::default()
+    });
+    sh.send("inkline keys\r");
+    sh.wait_for("the binding", |s| {
+        (0..s.size().0).any(|r| {
+            row_text(s, r).starts_with("<backtab>")
+                && row_text(s, r).ends_with("menu-take-previous")
+        })
+    });
+}

@@ -4,7 +4,7 @@
 
 use std::ffi::c_void;
 
-use super::{STATE, menu_next, menu_previous, menu_take};
+use super::{STATE, menu_take, menu_take_previous};
 use crate::ffi;
 use crate::menu::{Item, Menu};
 
@@ -42,10 +42,11 @@ impl Moving {
     }
 }
 
-/// Whether `f` is one of the commands that move through the menu.
+/// Whether `f` is one of the commands that move through the menu: the menu
+/// keys, Tab and Shift-Tab.
 pub(super) fn is_move(f: Option<ffi::CommandFn>) -> bool {
-    let moves: [ffi::CommandFn; 3] = [menu_next, menu_previous, menu_take];
-    f.is_some_and(|f| moves.iter().any(|&m| std::ptr::fn_addr_eq(m, f)))
+    let tabs: [ffi::CommandFn; 2] = [menu_take, menu_take_previous];
+    super::is_menu_key(f) || f.is_some_and(|f| tabs.iter().any(|&t| std::ptr::fn_addr_eq(t, f)))
 }
 
 /// The moving state, taken out of the hook state, when it is live; one that

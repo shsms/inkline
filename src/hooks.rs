@@ -265,6 +265,7 @@ pub fn load() {
                 ffi::add_command(c"menu-next", menu_next);
                 ffi::add_command(c"menu-previous", menu_previous);
                 ffi::add_command(c"menu-take", menu_take);
+                ffi::add_command(c"menu-take-previous", menu_take_previous);
                 ffi::add_command(c"menu-hide", menu_hide);
                 ffi::add_command(c"inkline-lisp-key", crate::lisp::commands::SHARED);
             });
@@ -2007,6 +2008,35 @@ extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
         ffi::continue_completion();
     }
     ffi::complete(count, key)
+}
+
+/// Shift-Tab: moves up through the menu, or writes its only row (see
+/// `moving::tab`). With no menu, runs what the key had before inkline bound
+/// it, or rings the bell when it had nothing.
+extern "C" fn menu_take_previous(count: c_int, key: c_int) -> c_int {
+    use crate::lisp::keys::{self, Fallback};
+    let saved = guard(
+        || {
+            if moving::tab(false) {
+                STATE.with_borrow_mut(|s| s.completing = false);
+                return None;
+            }
+            Some(keys::saved_binding_of(menu_take_previous))
+        },
+        || Some(Fallback::Nothing),
+    );
+    match saved {
+        None => 0,
+        Some(Fallback::Command(f)) => ffi::run_command(f, count, key),
+        Some(Fallback::Macro(text)) => {
+            ffi::push_macro_input(text);
+            0
+        }
+        Some(Fallback::Nothing) => {
+            ffi::ding();
+            0
+        }
+    }
 }
 
 /// `C-g`: while moving, puts back the typed line (see `moving::cancel`);
