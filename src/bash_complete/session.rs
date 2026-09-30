@@ -45,15 +45,21 @@ impl Session {
         true
     }
 
-    /// Kills the running copy once its time is up; it is counted, and its
-    /// word given up on. Whether it did.
-    fn expire_running(&mut self) -> bool {
-        let Some(running) = self.running.take_if(|r| r.expired()) else {
-            return false;
-        };
-        self.timed_out += 1;
-        self.given_up = Some(running.word.clone());
-        true
+    /// Ends the running copy once its time is up: an answer or a failure
+    /// that has come is taken, and a copy still working is killed, counted
+    /// and its word given up on.
+    fn expire(&mut self) -> Expired {
+        if !self.running.as_ref().is_some_and(Running::expired) {
+            Expired::No
+        } else if self.read_running() {
+            Expired::Came
+        } else {
+            if let Some(running) = self.running.take() {
+                self.timed_out += 1;
+                self.given_up = Some(running.word.clone());
+            }
+            Expired::Killed
+        }
     }
 }
 
@@ -103,11 +109,14 @@ pub fn prepare(word: Word, settings: &Settings, paused: bool) -> Option<Ticket> 
             paused,
             how: settings.how,
         });
-        if ask != Some(Ask::InFlight) {
+        if ask != Ask::InFlight {
             me.running = None;
         }
         ask
-    })?;
+    });
+    if ask == Ask::Nothing {
+        return None;
+    }
     // The fork happens with `SESSION` not borrowed, so the copy can use it.
     if ask == Ask::Now {
         let started = Running::start(word.clone(), settings.timeout);
@@ -133,7 +142,7 @@ pub fn found(ticket: &Ticket, deadline: Instant, interrupted: fn() -> bool) -> F
     SESSION.with_borrow_mut(|me| {
         loop {
             me.read_running();
-            me.expire_running();
+            me.expire();
             let Some(fd) = me
                 .running
                 .as_ref()
@@ -193,18 +202,9 @@ pub enum Expired {
 }
 
 /// Ends the running copy if its time is up: an answer or a failure that
-/// has come is taken first, and a copy still working is killed.
+/// has come is taken, and a copy still working is killed.
 pub fn expire() -> Expired {
-    SESSION.with_borrow_mut(|me| {
-        if !me.running.as_ref().is_some_and(Running::expired) {
-            Expired::No
-        } else if me.read_running() {
-            Expired::Came
-        } else {
-            me.expire_running();
-            Expired::Killed
-        }
-    })
+    SESSION.with_borrow_mut(Session::expire)
 }
 
 /// `inkline status`'s line, with `on` from `inkline-bash-completion`.

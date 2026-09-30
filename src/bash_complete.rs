@@ -96,10 +96,14 @@ pub struct Saved {
     pub answer: Answer,
 }
 
-/// Whether to ask a copy of the shell for the word's matches.
+/// What bash's completion does for the word at the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
-    No,
+    /// The word gets no bash items, and no copy is asked.
+    Nothing,
+    /// The saved answer serves the word; no copy is asked.
+    Saved,
+    /// A copy is asked now.
     Now,
     /// Once typing pauses on this line and cursor.
     AtPause,
@@ -131,30 +135,27 @@ pub struct Inputs<'a> {
 ///   pauses;
 /// - otherwise a copy is asked at once, unless one already asked will
 ///   serve.
-///
-/// None when the word gets no bash items.
-pub fn decide(i: &Inputs) -> Option<Ask> {
+pub fn decide(i: &Inputs) -> Ask {
     let word = i.word;
     let too_short =
         command_position(&word.line, word.start) && word.typed().chars().count() < i.min_chars;
     if too_short || i.given_up.is_some_and(|w| w.same_place(word)) {
-        return None;
+        return Ask::Nothing;
     }
     let in_flight = i.running.is_some_and(|r| fits(r, word));
-    let ask = match i.saved.filter(|s| fits(&s.word, word)) {
+    match i.saved.filter(|s| fits(&s.word, word)) {
         None if in_flight => Ask::InFlight,
         None => Ask::Now,
         Some(s)
             if s.word.typed() == word.typed()
                 || (!s.answer.cut && any_match(&s.answer, word, i.how)) =>
         {
-            Ask::No
+            Ask::Saved
         }
         Some(_) if in_flight => Ask::InFlight,
         Some(_) if i.paused => Ask::Now,
         Some(_) => Ask::AtPause,
-    };
-    Some(ask)
+    }
 }
 
 /// Whether any of `answer`'s matches that fits the line matches the text
@@ -249,7 +250,7 @@ mod tests {
 
     /// `decide` for `word` as an argument (not a command name), with
     /// nothing running or given up, not paused.
-    fn ask(word: &Word, saved: Option<&Saved>) -> Option<Ask> {
+    fn ask(word: &Word, saved: Option<&Saved>) -> Ask {
         decide(&Inputs {
             word,
             min_chars: 1,
@@ -261,27 +262,23 @@ mod tests {
         })
     }
 
-    const NOW: Option<Ask> = Some(Ask::Now);
-    const USE: Option<Ask> = Some(Ask::No);
-    const AT_PAUSE: Option<Ask> = Some(Ask::AtPause);
-
     #[test]
     fn a_word_is_asked_about_at_once() {
-        assert_eq!(ask(&w("gg ", 3), None), NOW);
+        assert_eq!(ask(&w("gg ", 3), None), Ask::Now);
     }
 
     #[test]
     fn the_saved_answer_serves_as_the_word_grows() {
         let s = saved("gg ", 3, &["switch ", "show "], false);
-        assert_eq!(ask(&w("gg ", 3), Some(&s)), USE);
-        assert_eq!(ask(&w("gg sw", 3), Some(&s)), USE);
+        assert_eq!(ask(&w("gg ", 3), Some(&s)), Ask::Saved);
+        assert_eq!(ask(&w("gg sw", 3), Some(&s)), Ask::Saved);
     }
 
     #[test]
     fn nothing_matching_asks_again_once_typing_pauses() {
         let s = saved("gg ", 3, &["switch ", "show "], false);
         let word = w("gg x", 3);
-        assert_eq!(ask(&word, Some(&s)), AT_PAUSE);
+        assert_eq!(ask(&word, Some(&s)), Ask::AtPause);
         let paused = decide(&Inputs {
             word: &word,
             min_chars: 1,
@@ -291,43 +288,43 @@ mod tests {
             paused: true,
             how: PREFIX,
         });
-        assert_eq!(paused, NOW);
+        assert_eq!(paused, Ask::Now);
     }
 
     #[test]
     fn another_place_on_the_line_asks_at_once() {
         let s = saved("gg ", 3, &["switch "], false);
         // The line before the word changed.
-        assert_eq!(ask(&w("hh s", 3), Some(&s)), NOW);
+        assert_eq!(ask(&w("hh s", 3), Some(&s)), Ask::Now);
         // The line after the cursor changed.
         let after = Word::new("gg s x", 3, 4).unwrap();
-        assert_eq!(ask(&after, Some(&s)), NOW);
+        assert_eq!(ask(&after, Some(&s)), Ask::Now);
     }
 
     #[test]
     fn a_new_directory_or_a_shorter_word_asks_at_once() {
         let s = saved("cat ", 4, &["src/", "alpha.txt "], false);
-        assert_eq!(ask(&w("cat src/", 4), Some(&s)), NOW);
+        assert_eq!(ask(&w("cat src/", 4), Some(&s)), Ask::Now);
         let s = saved("cat src/", 4, &["src/main.rs "], false);
-        assert_eq!(ask(&w("cat src/m", 4), Some(&s)), USE);
+        assert_eq!(ask(&w("cat src/m", 4), Some(&s)), Ask::Saved);
         let s = saved("cat sr", 4, &["src/"], false);
-        assert_eq!(ask(&w("cat s", 4), Some(&s)), NOW);
+        assert_eq!(ask(&w("cat s", 4), Some(&s)), Ask::Now);
     }
 
     /// A rule may give flags only for a word that starts with `-`.
     #[test]
     fn a_first_dash_asks_at_once() {
         let s = saved("fl ", 3, &["build ", "test "], false);
-        assert_eq!(ask(&w("fl -", 3), Some(&s)), NOW);
+        assert_eq!(ask(&w("fl -", 3), Some(&s)), Ask::Now);
         let s = saved("fl -", 3, &["--verbose ", "--version "], false);
-        assert_eq!(ask(&w("fl --verb", 3), Some(&s)), USE);
+        assert_eq!(ask(&w("fl --verb", 3), Some(&s)), Ask::Saved);
     }
 
     #[test]
     fn a_cut_answer_asks_again_at_a_pause_for_a_longer_word() {
         let s = saved("cat f", 4, &["f0000 ", "f0001 "], true);
-        assert_eq!(ask(&w("cat f", 4), Some(&s)), USE);
-        assert_eq!(ask(&w("cat f0", 4), Some(&s)), AT_PAUSE);
+        assert_eq!(ask(&w("cat f", 4), Some(&s)), Ask::Saved);
+        assert_eq!(ask(&w("cat f0", 4), Some(&s)), Ask::AtPause);
     }
 
     #[test]
@@ -345,7 +342,7 @@ mod tests {
                 paused: false,
                 how: PREFIX,
             });
-            assert_eq!(d, Some(Ask::InFlight));
+            assert_eq!(d, Ask::InFlight);
         }
     }
 
@@ -362,11 +359,11 @@ mod tests {
                 how: PREFIX,
             })
         };
-        let none = None;
+        let none = Ask::Nothing;
         assert_eq!(d(&w("", 0), 1, None), none);
         assert_eq!(d(&w("ls | ", 5), 1, None), none);
-        assert_eq!(d(&w("ls | g", 5), 1, None), NOW);
-        assert_eq!(d(&w("ls | ", 5), 0, None), NOW);
+        assert_eq!(d(&w("ls | g", 5), 1, None), Ask::Now);
+        assert_eq!(d(&w("ls | ", 5), 0, None), Ask::Now);
         // Characters, not bytes.
         assert_eq!(d(&w("é", 0), 2, None), none);
         let slow = w("slow ", 5);
