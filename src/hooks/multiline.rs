@@ -524,16 +524,26 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
 /// Up (`up`) or Down past the first or last line with the substring search.
 /// A run of Up and Down that searched this way goes on with its search
 /// (`continuing`). Otherwise Up starts a search for the text before the
-/// cursor, and Down walks history. A found entry gets the cursor as
-/// `place_on_found` says; an entry brought back by walking (a search with
-/// nothing before the cursor) gets it as `previous-line-or-history` gives
-/// it.
+/// cursor, unless the line is a history entry brought back by walking;
+/// there, and for any other Down, the key walks history. A found entry gets
+/// the cursor as `place_on_found` says; an entry brought back by walking
+/// (also a search with nothing before the cursor) gets it as
+/// `previous-line-or-history` gives it.
 fn substring_search(count: c_int, key: c_int, up: bool, continuing: bool) -> c_int {
     let before = ffi::line();
     let point = ffi::point();
-    if !continuing && !up {
+    let searching = continuing || (up && !ffi::on_history_entry());
+    if !searching {
         STATE.with_borrow_mut(|s| s.search_continues = None);
-        return ffi::next_history(count, key);
+        let result = if up {
+            ffi::previous_history(count, key)
+        } else {
+            ffi::next_history(count, key)
+        };
+        if up && ffi::line() != before {
+            open_at_start();
+        }
+        return result;
     }
     let from = STATE.with_borrow_mut(|s| {
         if !continuing {

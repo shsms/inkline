@@ -217,3 +217,25 @@ fn up_goes_to_the_line_above_first() {
     sh.send(UP);
     sh.wait_for("the first line", |s| s.cursor_position() == (0, 6));
 }
+
+/// A walk through history places the cursor as readline does, here where
+/// `history-preserve-point` keeps it.
+#[test]
+fn a_walk_keeps_readlines_cursor_place() {
+    let mut options = substring_keys(vec!["echo one", "echo two"]);
+    options
+        .rc
+        .push_str("bind 'set history-preserve-point on'\n");
+    let mut sh = Shell::start(options);
+    sh.settle();
+    sh.send(UP);
+    sh.wait_for("the newest entry", |s| {
+        cursor_row(s) == "$ echo two" && s.cursor_position() == (0, 10)
+    });
+    sh.send("\x02");
+    sh.wait_for("the cursor back one", |s| s.cursor_position() == (0, 9));
+    sh.send(UP);
+    sh.wait_for("the older entry, cursor kept", |s| {
+        cursor_row(s) == "$ echo one" && s.cursor_position() == (0, 9)
+    });
+}

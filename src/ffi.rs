@@ -470,6 +470,12 @@ pub fn history_entry_here_is(text: &str) -> bool {
     }
 }
 
+/// Whether readline's history place is on an entry, not past the newest.
+pub fn on_history_entry() -> bool {
+    // SAFETY: current_history gives NULL past the newest entry.
+    unsafe { !current_history().is_null() }
+}
+
 unsafe extern "C" {
     static mut rl_signal_event_hook: Option<unsafe extern "C" fn() -> c_int>;
     fn rl_check_signals();
