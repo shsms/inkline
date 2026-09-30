@@ -447,7 +447,8 @@ pub(super) fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
 /// `-or-substring-search` presses would restart the search from the newest
 /// entry every time instead of moving through the matches.
 /// `search_continues` is only trusted when the last key ran one of the Up
-/// and Down commands (`is_vertical`), the same condition `goal_column` uses.
+/// and Down commands (`is_vertical`), the same condition `goal_column` uses,
+/// and only for the kind of search it names.
 fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
     let (count, up) = if count < 0 {
         (-count, !up)
@@ -455,12 +456,17 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
         (count, up)
     };
     let is_run = is_vertical(ffi::last_command());
-    let searches = !matches!(fallback, Fallback::History);
-    let continuing_search = is_run && searches && STATE.with_borrow(|s| s.search_continues);
+    let search = match fallback {
+        Fallback::History => None,
+        Fallback::Search => Some(ffi::Search::Prefix),
+        Fallback::SubstringSearch => Some(ffi::Search::Substring),
+    };
+    let continuing_search =
+        is_run && search.is_some() && STATE.with_borrow(|s| s.search_continues) == search;
     let leave = move |n: c_int| {
         // The substring search keeps its own state.
         if !matches!(fallback, Fallback::SubstringSearch) {
-            STATE.with_borrow_mut(|s| s.search_continues = searches);
+            STATE.with_borrow_mut(|s| s.search_continues = search);
             if continuing_search {
                 ffi::continue_history_search(ffi::Search::Prefix);
             }
@@ -507,7 +513,7 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
                 };
                 point = next;
             }
-            STATE.with_borrow_mut(|s| s.search_continues = false);
+            STATE.with_borrow_mut(|s| s.search_continues = None);
             ffi::set_point(point);
             0
         },
@@ -526,14 +532,14 @@ fn substring_search(count: c_int, key: c_int, up: bool, continuing: bool) -> c_i
     let before = ffi::line();
     let point = ffi::point();
     if !continuing && !up {
-        STATE.with_borrow_mut(|s| s.search_continues = false);
+        STATE.with_borrow_mut(|s| s.search_continues = None);
         return ffi::next_history(count, key);
     }
     let from = STATE.with_borrow_mut(|s| {
         if !continuing {
             s.search_from = Some(point);
         }
-        s.search_continues = true;
+        s.search_continues = Some(ffi::Search::Substring);
         s.search_from
     });
     if continuing {

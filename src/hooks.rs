@@ -92,9 +92,10 @@ struct State {
     items_want_pause: bool,
     /// The column a run of Up and Down keeps to.
     goal_column: Option<usize>,
-    /// Whether the last vertical command that deferred to history did a
-    /// search, so a further one continues it instead of starting fresh.
-    search_continues: bool,
+    /// The kind of search the last vertical command that deferred to
+    /// history did, if it searched, so a further one of the same kind
+    /// continues it instead of starting fresh.
+    search_continues: Option<ffi::Search>,
     /// The cursor a substring search with Up started from. With nothing
     /// before it, readline walks history instead of searching.
     search_from: Option<usize>,
@@ -124,7 +125,7 @@ impl State {
     /// column and a new history search.
     fn end_vertical_run(&mut self) {
         self.goal_column = None;
-        self.search_continues = false;
+        self.search_continues = None;
     }
 
     /// Asks again for the pause `getc` took out to wait for, new errors or
@@ -218,7 +219,7 @@ thread_local! {
         items_paused_on: None,
         items_want_pause: false,
         goal_column: None,
-        search_continues: false,
+        search_continues: None,
         search_from: None,
         menu_key_ran: None,
         completing: false,
@@ -1077,7 +1078,7 @@ extern "C" fn pre_input() -> c_int {
                 s.items_paused_on = None;
                 s.items_want_pause = false;
                 s.goal_column = None;
-                s.search_continues = false;
+                s.search_continues = None;
                 s.search_from = None;
                 s.menu = None;
                 s.moving = None;
@@ -1598,7 +1599,7 @@ fn ran_history_search() -> bool {
     let last = ffi::last_command();
     if multiline::is_vertical(last) {
         return STATE.with_borrow(|s| {
-            s.search_continues
+            s.search_continues.is_some()
                 || (is_menu_key(last) && s.menu_key_ran.is_some_and(is_history_search))
         });
     }
