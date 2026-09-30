@@ -368,6 +368,8 @@ mod tests {
         assert_eq!(d(&w("é", 0), 2, None), none);
         let slow = w("slow ", 5);
         assert_eq!(d(&w("slow abc", 5), 0, Some(&slow)), none);
+        // Another word on the line is asked about again.
+        assert_eq!(d(&w("slow abc x", 9), 0, Some(&slow)), Ask::Now);
     }
 
     #[test]

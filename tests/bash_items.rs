@@ -394,7 +394,8 @@ fn copies_end_with_the_line() {
             first.display(),
             second.display()
         ),
-        "",
+        // Longer than the test waits, so only what the test checks ends it.
+        "(setq inkline-bash-completion-timeout 60000)",
     );
     sh.send("slowa ");
     let group = written_group(&first);
@@ -421,7 +422,8 @@ fn a_copy_ends_with_the_shell() {
             "_slow() {{ _group_to '{}'; sleep 7.5; }}\ncomplete -F _slow slow\n",
             pid.display()
         ),
-        "",
+        // Longer than the test waits, so only what the test checks ends it.
+        "(setq inkline-bash-completion-timeout 60000)",
     );
     sh.send("slow ");
     let group = written_group(&pid);
