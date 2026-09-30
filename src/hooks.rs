@@ -95,6 +95,9 @@ struct State {
     /// Whether the last vertical command that deferred to history did a
     /// search, so a further one continues it instead of starting fresh.
     search_continues: bool,
+    /// The cursor a substring search with Up started from. With nothing
+    /// before it, readline walks history instead of searching.
+    search_from: Option<usize>,
     /// The command the last `menu-next` or `menu-previous` ran as its key's
     /// own command (see `menu_fallback`); None when it did anything else. It
     /// stays across other keys, but counts only while readline's last command
@@ -216,6 +219,7 @@ thread_local! {
         items_want_pause: false,
         goal_column: None,
         search_continues: false,
+        search_from: None,
         menu_key_ran: None,
         completing: false,
         moving: None,
@@ -256,6 +260,14 @@ pub fn load() {
                     multiline::previous_line_or_search,
                 );
                 ffi::add_command(c"next-line-or-search", multiline::next_line_or_search);
+                ffi::add_command(
+                    c"previous-line-or-substring-search",
+                    multiline::previous_line_or_substring_search,
+                );
+                ffi::add_command(
+                    c"next-line-or-substring-search",
+                    multiline::next_line_or_substring_search,
+                );
                 ffi::add_command(c"line-start", multiline::line_start);
                 ffi::add_command(c"line-end", multiline::line_end);
                 ffi::add_command(c"kill-to-line-end", multiline::kill_to_line_end);
@@ -1066,6 +1078,7 @@ extern "C" fn pre_input() -> c_int {
                 s.items_want_pause = false;
                 s.goal_column = None;
                 s.search_continues = false;
+                s.search_from = None;
                 s.menu = None;
                 s.moving = None;
                 s.hidden_on = None;

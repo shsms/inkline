@@ -389,6 +389,9 @@ enum Fallback {
     /// readline's history search for entries starting with the text before
     /// the cursor.
     Search,
+    /// A search for entries holding the text before the cursor (see
+    /// `substring_search`).
+    SubstringSearch,
 }
 
 pub(super) extern "C" fn previous_line_or_history(count: c_int, key: c_int) -> c_int {
@@ -407,16 +410,26 @@ pub(super) extern "C" fn next_line_or_search(count: c_int, key: c_int) -> c_int 
     vertical(count, key, false, Fallback::Search)
 }
 
+pub(super) extern "C" fn previous_line_or_substring_search(count: c_int, key: c_int) -> c_int {
+    vertical(count, key, true, Fallback::SubstringSearch)
+}
+
+pub(super) extern "C" fn next_line_or_substring_search(count: c_int, key: c_int) -> c_int {
+    vertical(count, key, false, Fallback::SubstringSearch)
+}
+
 /// Whether `f` is one of the Up and Down commands, so a run of them keeps
 /// its column. `menu-next` and `menu-previous` count too, since with no menu
 /// they may run these commands. Before they run any other command, they end
 /// the run.
 pub(super) fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
-    let ours: [ffi::CommandFn; 6] = [
+    let ours: [ffi::CommandFn; 8] = [
         previous_line_or_history,
         next_line_or_history,
         previous_line_or_search,
         next_line_or_search,
+        previous_line_or_substring_search,
+        next_line_or_substring_search,
         super::menu_previous,
         super::menu_next,
     ];
@@ -424,16 +437,17 @@ pub(super) fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
 }
 
 /// Moves the cursor `count` lines up or down, keeping its column. Past the
-/// first or last line it runs `fallback` for the lines left over.
+/// first or last line it runs `fallback` for the lines left over: history,
+/// the prefix search, or the substring search (`substring_search`).
 ///
-/// Readline's own history search decides whether to continue the last search
-/// or start a new one by checking `rl_last_func`, which after this command's
-/// own dispatch holds this command, never the search function it called
-/// directly; without `continuing_search` a run of `-or-search` presses would
-/// restart the search from the newest entry every time instead of moving
-/// through the matches. `search_continues` is only trusted when the last key
-/// ran one of the Up and Down commands (`is_vertical`), the same condition
-/// `goal_column` uses.
+/// Readline's own history searches decide whether to continue the last
+/// search or start a new one by checking `rl_last_func`, which after this
+/// command's own dispatch holds this command, never the search function it
+/// called directly; without `continuing_search` a run of `-or-search` or
+/// `-or-substring-search` presses would restart the search from the newest
+/// entry every time instead of moving through the matches.
+/// `search_continues` is only trusted when the last key ran one of the Up
+/// and Down commands (`is_vertical`), the same condition `goal_column` uses.
 fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
     let (count, up) = if count < 0 {
         (-count, !up)
@@ -441,18 +455,22 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
         (count, up)
     };
     let is_run = is_vertical(ffi::last_command());
-    let continuing_search =
-        is_run && STATE.with_borrow(|s| s.search_continues) && matches!(fallback, Fallback::Search);
+    let searches = !matches!(fallback, Fallback::History);
+    let continuing_search = is_run && searches && STATE.with_borrow(|s| s.search_continues);
     let leave = move |n: c_int| {
-        STATE.with_borrow_mut(|s| s.search_continues = matches!(fallback, Fallback::Search));
-        if continuing_search {
-            ffi::continue_history_search();
+        // The substring search keeps its own state.
+        if !matches!(fallback, Fallback::SubstringSearch) {
+            STATE.with_borrow_mut(|s| s.search_continues = searches);
+            if continuing_search {
+                ffi::continue_history_search(ffi::Search::Prefix);
+            }
         }
         match (up, fallback) {
             (true, Fallback::History) => ffi::previous_history(n, key),
             (false, Fallback::History) => ffi::next_history(n, key),
             (true, Fallback::Search) => ffi::history_search_backward(n, key),
             (false, Fallback::Search) => ffi::history_search_forward(n, key),
+            (_, Fallback::SubstringSearch) => substring_search(n, key, up, continuing_search),
         }
     };
     guard(
@@ -495,6 +513,57 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
         },
         || leave(count),
     )
+}
+
+/// Up (`up`) or Down past the first or last line with the substring search.
+/// A run of Up and Down that searched this way goes on with its search
+/// (`continuing`). Otherwise Up starts a search for the text before the
+/// cursor, and Down walks history. A found entry gets the cursor as
+/// `place_on_found` says; an entry brought back by walking (a search with
+/// nothing before the cursor) gets it as `previous-line-or-history` gives
+/// it.
+fn substring_search(count: c_int, key: c_int, up: bool, continuing: bool) -> c_int {
+    let before = ffi::line();
+    let point = ffi::point();
+    if !continuing && !up {
+        STATE.with_borrow_mut(|s| s.search_continues = false);
+        return ffi::next_history(count, key);
+    }
+    let from = STATE.with_borrow_mut(|s| {
+        if !continuing {
+            s.search_from = Some(point);
+        }
+        s.search_continues = true;
+        s.search_from
+    });
+    if continuing {
+        ffi::continue_history_search(ffi::Search::Substring);
+    }
+    let result = if up {
+        ffi::history_substring_search_backward(count, key)
+    } else {
+        ffi::history_substring_search_forward(count, key)
+    };
+    if ffi::line() != before {
+        // With nothing before the cursor readline walks history instead.
+        let walked = from.is_none_or(|point| point == 0);
+        if !walked {
+            place_on_found(up);
+        } else if up {
+            open_at_start();
+        }
+    }
+    result
+}
+
+/// Puts the cursor on an entry Up or Down brought: at the end of the line,
+/// or for Up in a multi-line entry at its start (see `open_at_start`).
+fn place_on_found(up: bool) {
+    let Some(line) = ffi::line() else { return };
+    ffi::set_point(line.len());
+    if up {
+        open_at_start();
+    }
 }
 
 pub(super) extern "C" fn line_start(count: c_int, key: c_int) -> c_int {
@@ -575,9 +644,11 @@ pub(super) extern "C" fn comment_lines(count: c_int, key: c_int) -> c_int {
 }
 
 /// Puts the cursor at the start of a multi-line history entry just recalled,
-/// so the next Up leaves it at once. `inkline-history-cursor` set to `end`,
-/// readline's `history-preserve-point` and an entry taller than the screen
-/// keep readline's placement.
+/// by Up on the first line or by `place_on_found`, so the next Up leaves it
+/// at once. `inkline-history-cursor` set to `end`, readline's
+/// `history-preserve-point` and an entry taller than the screen leave the
+/// cursor where it is: where readline's walk put it, or at the end of the
+/// entry for `place_on_found`.
 fn open_at_start() {
     let Some(line) = ffi::line() else { return };
     if !line.contains('\n')

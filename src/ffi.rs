@@ -738,6 +738,8 @@ unsafe extern "C" {
     fn rl_get_next_history(count: c_int, key: c_int) -> c_int;
     fn rl_history_search_backward(count: c_int, key: c_int) -> c_int;
     fn rl_history_search_forward(count: c_int, key: c_int) -> c_int;
+    fn rl_history_substr_search_backward(count: c_int, key: c_int) -> c_int;
+    fn rl_history_substr_search_forward(count: c_int, key: c_int) -> c_int;
 }
 
 /// The command readline ran for the previous key.
@@ -765,12 +767,35 @@ pub fn history_search_forward(count: c_int, key: c_int) -> c_int {
     unsafe { rl_history_search_forward(count, key) }
 }
 
+/// readline's `history-substring-search-backward`.
+pub fn history_substring_search_backward(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_history_substr_search_backward(count, key) }
+}
+
+/// readline's `history-substring-search-forward`.
+pub fn history_substring_search_forward(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_history_substr_search_forward(count, key) }
+}
+
+/// One of readline's history searches for the text before the cursor.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Search {
+    /// Entries that start with it.
+    Prefix,
+    /// Entries that hold it.
+    Substring,
+}
+
 /// Marks the history search about to run as a continuation of the last one:
 /// readline tells the two apart by checking whether `rl_last_func` is one of
-/// its own search functions, which it is not once a call reaches it through
-/// one of this crate's own commands.
-pub fn continue_history_search() {
-    unsafe { rl_last_func = Some(rl_history_search_backward) };
+/// its own functions for that search, which it is not once a call reaches it
+/// through one of this crate's own commands.
+pub fn continue_history_search(search: Search) {
+    let f: CommandFn = match search {
+        Search::Prefix => rl_history_search_backward,
+        Search::Substring => rl_history_substr_search_backward,
+    };
+    unsafe { rl_last_func = Some(f) };
 }
 
 /// Makes readline see `f` as the last command, for a command about to run

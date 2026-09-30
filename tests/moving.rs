@@ -139,3 +139,81 @@ fn up_can_search_history() {
     sh.send(UP);
     sh.wait_for("the next match", |s| row_text(s, 0) == "$ git status");
 }
+
+/// A shell whose Up and Down run the substring search commands.
+fn substring_keys(history: Vec<&'static str>) -> Options {
+    Options {
+        rc: "bind '\"\\e[A\": previous-line-or-substring-search'
+bind '\"\\e[B\": next-line-or-substring-search'
+"
+        .into(),
+        history,
+        ..Options::default()
+    }
+}
+
+#[test]
+fn up_finds_entries_holding_the_typed_text() {
+    let mut sh = Shell::start(substring_keys(vec!["git status", "ls", "echo stat", "pwd"]));
+    sh.send("stat");
+    sh.wait_for("the typed text", |s| cursor_row(s) == "$ stat");
+    sh.send(UP);
+    sh.wait_for("the newest match", |s| {
+        cursor_row(s) == "$ echo stat" && s.cursor_position() == (0, 11)
+    });
+    sh.send(UP);
+    let s = sh.wait_for("the match before it", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+    assert_eq!(row_text(&s, 1), "", "no menu on a found line: {}", dump(&s));
+}
+
+#[test]
+fn up_on_an_empty_line_walks_history() {
+    let mut sh = Shell::start(substring_keys(vec!["echo one", "echo two", "echo three"]));
+    sh.settle();
+    for row in ["$ echo three", "$ echo two", "$ echo one"] {
+        sh.send(UP);
+        sh.wait_for(row, |s| cursor_row(s) == row);
+    }
+}
+
+#[test]
+fn a_multi_line_match_opens_at_its_start() {
+    let mut sh = Shell::start(substring_keys(vec!["echo older", LOOP]));
+    sh.send("echo");
+    // The rest of "echo older" shows after the cursor as a suggestion.
+    sh.wait_for("the typed text", |s| {
+        cursor_row(s).starts_with("$ echo") && s.cursor_position() == (0, 6)
+    });
+    sh.send(UP);
+    sh.wait_for("the loop", |s| {
+        row_text(s, 2) == "done" && s.cursor_position() == (0, 2)
+    });
+    sh.send(UP);
+    sh.wait_for("the older match", |s| cursor_row(s) == "$ echo older");
+}
+
+/// On a history entry that was changed, Down walks history: it does not
+/// search for the changed text.
+#[test]
+fn down_on_a_changed_history_entry_walks_history() {
+    let mut sh = Shell::start(substring_keys(vec!["echo one", "echo two"]));
+    sh.settle();
+    sh.send(UP);
+    sh.wait_for("the newest entry", |s| cursor_row(s) == "$ echo two");
+    sh.send(UP);
+    sh.wait_for("the older entry", |s| cursor_row(s) == "$ echo one");
+    sh.send("X");
+    sh.wait_for("the change", |s| cursor_row(s) == "$ echo oneX");
+    sh.send(DOWN);
+    sh.wait_for("the newer entry", |s| cursor_row(s) == "$ echo two");
+}
+
+#[test]
+fn up_goes_to_the_line_above_first() {
+    let mut sh = Shell::start(substring_keys(vec!["echo old"]));
+    block(&mut sh, &["echo a", "echo b"]);
+    sh.send(UP);
+    sh.wait_for("the first line", |s| s.cursor_position() == (0, 6));
+}
