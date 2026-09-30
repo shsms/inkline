@@ -679,13 +679,24 @@ fn is_on() -> bool {
         .unwrap_or(true)
 }
 
-/// Runs what this key had before inkline first bound it: the saved
-/// command or macro text, or the bell when nothing was saved. The saved
-/// command runs last, with nothing in this frame to drop, as readline may
-/// jump from it back to its top level.
+/// Runs what this key had before inkline first bound it (see
+/// `run_fallback`).
 fn run_saved_binding(slot: Option<usize>, count: c_int, key: c_int) -> c_int {
     use crate::lisp::keys::{self, Fallback};
-    match guard(|| keys::saved_binding(slot), || Fallback::Nothing) {
+    run_fallback(
+        guard(|| keys::saved_binding(slot), || Fallback::Nothing),
+        count,
+        key,
+    )
+}
+
+/// Runs `saved`, what a key had before inkline first bound it: the saved
+/// command or macro text, or the bell when nothing was saved. The saved
+/// command runs last, with nothing in the caller's frame to drop, as
+/// readline may jump from it back to its top level.
+fn run_fallback(saved: crate::lisp::keys::Fallback, count: c_int, key: c_int) -> c_int {
+    use crate::lisp::keys::Fallback;
+    match saved {
         Fallback::Command(f) => ffi::run_command(f, count, key),
         Fallback::Macro(text) => {
             ffi::push_macro_input(text);
@@ -2010,14 +2021,7 @@ fn menu_fallback(
             }
             ffi::run_command(f, count, key)
         }
-        Fallback::Macro(text) => {
-            ffi::push_macro_input(text);
-            0
-        }
-        Fallback::Nothing => {
-            ffi::ding();
-            0
-        }
+        saved @ (Fallback::Macro(_) | Fallback::Nothing) => run_fallback(saved, count, key),
     }
 }
 
@@ -2052,28 +2056,20 @@ extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
 /// it, or rings the bell when it had nothing.
 extern "C" fn menu_take_previous(count: c_int, key: c_int) -> c_int {
     use crate::lisp::keys::{self, Fallback};
-    let saved = guard(
+    let (moved, saved) = guard(
         || {
             if moving::tab(false) {
                 STATE.with_borrow_mut(|s| s.completing = false);
-                return None;
+                return (true, Fallback::Nothing);
             }
-            Some(keys::saved_binding_of(menu_take_previous))
+            (false, keys::saved_binding_of(menu_take_previous))
         },
-        || Some(Fallback::Nothing),
+        || (false, Fallback::Nothing),
     );
-    match saved {
-        None => 0,
-        Some(Fallback::Command(f)) => ffi::run_command(f, count, key),
-        Some(Fallback::Macro(text)) => {
-            ffi::push_macro_input(text);
-            0
-        }
-        Some(Fallback::Nothing) => {
-            ffi::ding();
-            0
-        }
+    if moved {
+        return 0;
     }
+    run_fallback(saved, count, key)
 }
 
 /// `C-g`: while moving, puts back the typed line (see `moving::cancel`);
