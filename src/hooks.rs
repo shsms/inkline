@@ -24,6 +24,7 @@ use crate::render::{self, MenuView, Repaint};
 use crate::suggest;
 use crate::syntax::{self, Checker, Status};
 
+mod moving;
 mod multiline;
 
 /// The readline functions inkline replaced. Kept apart from `State` in a
@@ -102,6 +103,9 @@ struct State {
     /// Whether the last `menu-take` ran readline's `complete`, so a Tab
     /// right after it lists the choices as readline's second Tab does.
     completing: bool,
+    /// Moving through the menu, from the first move until another key ends
+    /// it.
+    moving: Option<moving::Moving>,
 }
 
 impl State {
@@ -214,6 +218,7 @@ thread_local! {
         search_continues: false,
         menu_key_ran: None,
         completing: false,
+        moving: None,
     });
 }
 
@@ -410,6 +415,7 @@ fn disable() {
         s.try_borrow_mut().map(|mut s| {
             s.suggestion = None;
             s.menu = None;
+            s.moving = None;
             s.hidden_on = None;
             std::mem::replace(&mut s.enabled, false)
         })
@@ -1060,6 +1066,7 @@ extern "C" fn pre_input() -> c_int {
                 s.goal_column = None;
                 s.search_continues = false;
                 s.menu = None;
+                s.moving = None;
                 s.hidden_on = None;
                 s.drawn_at = None;
                 s.cursor_moved = false;
@@ -1279,7 +1286,7 @@ fn repaint_now() {
 /// when the cursor is at the end and the completion menu under it. Outside
 /// plain editing (a count prefix, a search) the stored suggestion and menu are
 /// kept, so `M-3 C-f` can still take from the suggestion and `M-2 C-n` can
-/// move the menu's pick; `accept` checks the suggestion against the line
+/// move through the menu; `accept` checks the suggestion against the line
 /// before using it.
 fn draw() {
     if !repaint_line() {
@@ -1304,6 +1311,14 @@ fn repaint_line() -> bool {
     let editing = ffi::normal_editing();
     let line = ffi::line();
     let point = ffi::point();
+    // While moving through the menu, its rows are drawn as they were at the
+    // first move, and nothing is gathered.
+    let moving_menu = if editing {
+        moving::menu_to_draw()
+    } else {
+        None
+    };
+    let moving = moving_menu.is_some();
     // A search that found nothing leaves the line as it was, which is then
     // no history entry.
     let searched = editing
@@ -1326,8 +1341,8 @@ fn repaint_line() -> bool {
                 s.searched = None;
             }
             s.suggestion = None;
-            // A kept menu, and its pick, belong to one text of the line and
-            // one cursor place; `C-g` hides the menu until the text changes.
+            // A kept menu belongs to one text of the line and one cursor
+            // place; `C-g` hides the menu until the text changes.
             let text = line.as_deref();
             if s.menu
                 .as_ref()
@@ -1365,7 +1380,8 @@ fn repaint_line() -> bool {
     let show_suggestion = crate::lisp::settings::show_suggestion();
     // With no menu to show and no grey text possible (it shows only with the
     // cursor at the end), nothing is gathered.
-    let gather = editing
+    let gather = !moving
+        && editing
         && !line.is_empty()
         && (show_menu || (show_suggestion && point == line.len()))
         && !is_hidden(&line)
@@ -1379,10 +1395,11 @@ fn repaint_line() -> bool {
     let bash_items = bash
         .map(|ticket| session::found(&ticket, began + mode_server::WAIT, stop_waiting_for_bash))
         .unwrap_or_default();
-    let menu = gather.then(|| menu_for(&line, point, mode_items, bash_items));
+    let menu =
+        moving_menu.or_else(|| gather.then(|| menu_for(&line, point, mode_items, bash_items)));
     let suggestion = menu
         .as_ref()
-        .filter(|_| show_suggestion)
+        .filter(|_| show_suggestion && !moving)
         .and_then(|m| m.grey_item())
         .and_then(|item| menu::grey(&line, point, item))
         .map(str::to_owned);
@@ -1421,7 +1438,7 @@ fn repaint_line() -> bool {
             message: message.as_deref(),
             menu: menu.as_ref().filter(|_| show_menu).map(|m| MenuView {
                 items: &m.items,
-                highlighted: m.highlighted(),
+                highlighted: m.picked,
                 max_rows: menu_lines,
             }),
             rows,
@@ -1435,10 +1452,15 @@ fn repaint_line() -> bool {
         s.message_rows = out.message_rows;
         s.menu_rows = out.menu_rows;
         if editing {
-            s.menu = menu.map(|mut m| {
-                m.shown = out.menu_rows.is_some();
-                m
-            });
+            let shown = out.menu_rows.is_some();
+            if let Some(m) = s.moving.as_mut().filter(|_| moving) {
+                m.menu.shown = shown;
+            } else {
+                s.menu = menu.map(|mut m| {
+                    m.shown = shown;
+                    m
+                });
+            }
         }
         s.underlined = error;
         if let (Some(_), Some(rest)) = (out.suggestion_col, suggestion) {
@@ -1449,13 +1471,11 @@ fn repaint_line() -> bool {
 }
 
 /// The menu for `line` with the cursor at `point`: the one kept in `STATE` when
-/// it was made for the same line and cursor (so a pick stays), else a new one
-/// gathered from the sources: history and the suggestion hook when the cursor
-/// is at the end of the line, then the mode server's items (`mode`), then
-/// bash's own completion (`bash`), then the completion hook. It lists only
-/// the items `settings::menu_listed` allows; its grey text comes from all of
-/// them. A new menu for the same line and cursor keeps the pick on the item
-/// with the same text and range, if it is still listed.
+/// it was made for the same line and cursor, else a new one gathered from
+/// the sources: history and the suggestion hook when the cursor is at the
+/// end of the line, then the mode server's items (`mode`), then bash's own
+/// completion (`bash`), then the completion hook. It lists only the items
+/// `settings::menu_listed` allows; its grey text comes from all of them.
 fn menu_for(line: &str, point: usize, mode: ModeItems, bash: session::Found) -> Menu {
     let lisp_runs = crate::lisp::RUNNING.load(Ordering::Relaxed);
     let waiting = mode.waiting;
@@ -1534,16 +1554,7 @@ fn menu_for(line: &str, point: usize, mode: ModeItems, bash: session::Found) -> 
             ..Menu::new(line, point, items)
         }
     };
-    let picked = kept
-        .as_ref()
-        .and_then(|m| m.items.get(m.picked?))
-        .and_then(|was| {
-            menu.items
-                .iter()
-                .position(|i| i.text == was.text && i.start == was.start && i.end == was.end)
-        });
     Menu {
-        picked,
         lisp_ran: lisp_runs,
         mode_waiting: waiting,
         bash_waiting,
@@ -1610,6 +1621,20 @@ fn is_history_search(f: ffi::CommandFn) -> bool {
         })
         .iter()
         .any(|&g| std::ptr::fn_addr_eq(f, g))
+}
+
+/// The menu the last draw in plain editing showed, when it is for the line
+/// and cursor as they are.
+fn shown_menu() -> Option<Menu> {
+    let (Some(line), point) = (ffi::line(), ffi::point()) else {
+        return None;
+    };
+    STATE.with_borrow(|s| {
+        s.menu
+            .as_ref()
+            .filter(|m| m.shown && m.is_for(&line, point))
+            .cloned()
+    })
 }
 
 /// Whether the last draw in plain editing showed the menu, and it is for
@@ -1870,36 +1895,25 @@ extern "C" fn accept_suggestion(count: c_int, key: c_int) -> c_int {
     accept(count, key, suggest::all, multiline::end_of_line)
 }
 
-/// `C-n`: picks the next item of the menu the last draw in plain editing
-/// showed; with no menu, runs the key's own command (see `menu_fallback`).
+/// `C-n`: moves to the next row of the menu, writing it into the line; with
+/// no menu, runs the key's own command (see `menu_fallback`).
 pub(super) extern "C" fn menu_next(count: c_int, key: c_int) -> c_int {
     move_pick(count, key, true)
 }
 
-/// `C-p`: picks the item above in the menu the last draw in plain editing
-/// showed; with no menu, runs the key's own command (see `menu_fallback`).
+/// `C-p`: moves to the row above in the menu, writing it into the line; with
+/// no menu, runs the key's own command (see `menu_fallback`).
 pub(super) extern "C" fn menu_previous(count: c_int, key: c_int) -> c_int {
     move_pick(count, key, false)
 }
 
-/// Moves the menu's pick `count` rows, or runs `menu_fallback` when no menu
-/// shows for the line and cursor as they are. A pick move ends a run of Up
-/// and Down: the next one starts from the cursor's own column and a new
-/// history search.
+/// Moves through the menu `count` rows (see `moving::step`), or runs
+/// `menu_fallback` when there is nothing to move through.
 fn move_pick(count: c_int, key: c_int, down: bool) -> c_int {
     let (moved, ran_before) = guard(
         || {
             let ran_before = STATE.with_borrow_mut(|s| s.menu_key_ran.take());
-            let moved = showing_menu()
-                && STATE.with_borrow_mut(|s| {
-                    let Some(menu) = s.menu.as_mut() else {
-                        return false;
-                    };
-                    menu.step(down, i64::from(count));
-                    s.end_vertical_run();
-                    true
-                });
-            (moved, ran_before)
+            (moving::step(down, i64::from(count)), ran_before)
         },
         || (false, None),
     );
@@ -1969,23 +1983,24 @@ fn menu_fallback(
     }
 }
 
-/// Tab: takes the highlighted item into the line. With no menu, or right
-/// after another Tab, readline's `complete`, which may jump back to
+/// Tab: moves through the menu, or writes its only row (see `moving::tab`).
+/// With no menu, readline's `complete`, and right after a Tab that ran it,
+/// the listing of readline's second Tab. `complete` may jump back to
 /// readline's or bash's top level, so it runs last with nothing here to
 /// drop.
 extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
-    let (took, again) = guard(
+    let (done, again) = guard(
         || {
             let right_after = ffi::last_command()
                 .is_some_and(|f| std::ptr::fn_addr_eq(f, menu_take as ffi::CommandFn));
             let again = right_after && STATE.with_borrow(|s| s.completing);
-            let took = !right_after && take_highlighted();
-            STATE.with_borrow_mut(|s| s.completing = !took);
-            (took, again)
+            let done = moving::tab(true);
+            STATE.with_borrow_mut(|s| s.completing = !done);
+            (done, again)
         },
         || (false, false),
     );
-    if took {
+    if done {
         return 0;
     }
     if again {
@@ -2013,26 +2028,6 @@ extern "C" fn menu_hide(count: c_int, key: c_int) -> c_int {
         || false,
     );
     if hidden { 0 } else { ffi::abort(count, key) }
-}
-
-/// Takes the highlighted item into the line, as one undo step, when the
-/// menu on screen is for the line and cursor as they are: the item replaces
-/// its part of the line and the cursor goes to its end. Whether it did.
-fn take_highlighted() -> bool {
-    if !showing_menu() {
-        return false;
-    }
-    let Some(item) =
-        STATE.with_borrow(|s| s.menu.as_ref().and_then(|m| m.highlighted_item().cloned()))
-    else {
-        return false;
-    };
-    ffi::begin_undo_group();
-    ffi::delete_text(item.start, item.end);
-    ffi::set_point(item.start);
-    ffi::insert_text(&item.text);
-    ffi::end_undo_group();
-    true
 }
 
 /// Inserts the part of the suggestion `take` picks. Without a suggestion for

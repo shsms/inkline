@@ -369,10 +369,9 @@ pub struct Menu {
     /// The items the menu lists.
     pub items: Vec<Item>,
     /// The top item of all those it was made from, listed or not: the grey
-    /// text's item when none is picked.
+    /// text's item.
     pub top: Option<Item>,
-    /// The picked item's index; None until `C-n` or `C-p`, while the top
-    /// item is highlighted.
+    /// The picked item's index; None until a move.
     pub picked: Option<usize>,
     /// Whether the last draw in plain editing put the menu on screen.
     pub shown: bool,
@@ -407,36 +406,30 @@ impl Menu {
         self.point == point && self.line == line
     }
 
-    /// Moves the pick `count` rows down from the highlighted row, or up
-    /// when `down` is false (a negative count goes the other way), wrapping
-    /// at either end.
+    /// Moves the pick `count` rows down, or up when `down` is false (a
+    /// negative count goes the other way), wrapping at either end. With no
+    /// pick, one row down is the top row and one row up the bottom one.
     pub fn step(&mut self, down: bool, count: i64) {
-        let Some(from) = self.highlighted() else {
-            return;
-        };
         let total = self.items.len() as i64;
+        if total == 0 || count == 0 {
+            return;
+        }
         let delta = if down { count } else { -count };
-        self.picked = Some((from as i64 + delta).rem_euclid(total) as usize);
+        let from = match self.picked {
+            Some(p) => p as i64,
+            None if delta > 0 => -1,
+            None => total,
+        };
+        self.picked = Some((from + delta).rem_euclid(total) as usize);
     }
 
     pub fn picked_item(&self) -> Option<&Item> {
         self.items.get(self.picked?)
     }
 
-    /// The highlighted row: the picked one, else the top one.
-    pub fn highlighted(&self) -> Option<usize> {
-        self.picked
-            .or_else(|| (!self.items.is_empty()).then_some(0))
-    }
-
-    /// The item Tab takes.
-    pub fn highlighted_item(&self) -> Option<&Item> {
-        self.items.get(self.highlighted()?)
-    }
-
-    /// The item the grey text comes from: the picked one, else `top`.
+    /// The item the grey text comes from: the top one.
     pub fn grey_item(&self) -> Option<&Item> {
-        self.picked_item().or(self.top.as_ref())
+        self.top.as_ref()
     }
 }
 
@@ -910,25 +903,38 @@ mod tests {
     }
 
     #[test]
-    fn the_top_item_is_highlighted_until_a_pick() {
-        let mut m = menu_of(3);
-        assert_eq!(m.picked, None);
-        assert_eq!(m.highlighted(), Some(0));
-        assert_eq!(m.highlighted_item().map(|i| i.text.as_str()), Some("w0"));
-        m.step(true, 2);
-        assert_eq!(m.highlighted(), Some(2));
-        assert_eq!(menu_of(0).highlighted(), None);
+    fn no_row_is_picked_until_a_move() {
+        let menu = menu_of(3);
+        assert_eq!(menu.picked, None);
+        assert_eq!(menu.picked_item(), None);
     }
 
     #[test]
-    fn stepping_down_starts_after_the_top_and_wraps() {
-        let mut m = menu_of(3);
-        m.step(true, 1);
-        assert_eq!(m.picked, Some(1));
-        m.step(true, 2);
-        assert_eq!(m.picked, Some(0));
-        m.step(true, 1);
-        assert_eq!(m.picked, Some(1));
+    fn stepping_down_starts_at_the_top_and_wraps() {
+        let mut menu = menu_of(3);
+        menu.step(true, 1);
+        assert_eq!(menu.picked, Some(0));
+        menu.step(true, 1);
+        assert_eq!(menu.picked, Some(1));
+        menu.step(true, 2);
+        assert_eq!(menu.picked, Some(0));
+    }
+
+    #[test]
+    fn a_count_from_no_pick_goes_that_many_rows() {
+        let mut menu = menu_of(3);
+        menu.step(true, 2);
+        assert_eq!(menu.picked, Some(1));
+        let mut menu = menu_of(3);
+        menu.step(false, 2);
+        assert_eq!(menu.picked, Some(1));
+    }
+
+    #[test]
+    fn a_count_of_zero_leaves_the_pick() {
+        let mut menu = menu_of(3);
+        menu.step(true, 0);
+        assert_eq!(menu.picked, None);
     }
 
     #[test]
@@ -953,24 +959,12 @@ mod tests {
     }
 
     #[test]
-    fn the_grey_item_is_the_pick_or_the_top() {
-        let mut m = menu_of(2);
-        assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w0"));
-        assert!(m.picked_item().is_none());
-        m.step(false, 1);
-        assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w1"));
-        assert_eq!(m.picked_item().map(|i| i.text.as_str()), Some("w1"));
-    }
-
-    /// The menu may list fewer items than it was made from; with no pick, the
-    /// grey text still comes from the top item of them all.
-    #[test]
-    fn the_grey_item_comes_from_every_item() {
-        let mut m = menu_of(3);
-        m.items.retain(|i| i.text != "w0");
-        assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w0"));
-        m.step(true, 1);
-        assert_eq!(m.grey_item().map(|i| i.text.as_str()), Some("w2"));
+    fn the_grey_item_is_the_top_one_whatever_is_picked() {
+        let mut menu = menu_of(3);
+        let top = menu.items[0].clone();
+        assert_eq!(menu.grey_item(), Some(&top));
+        menu.step(true, 2);
+        assert_eq!(menu.grey_item(), Some(&top));
     }
 
     #[test]

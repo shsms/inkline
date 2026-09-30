@@ -319,37 +319,50 @@ fn two_items() -> Shell {
     )
 }
 
-#[test]
-fn ctrl_n_and_ctrl_p_move_the_pick() {
-    let mut sh = two_items();
-    let s = sh.screen();
-    assert!(
-        picked(&s, 1) && !picked(&s, 2),
-        "the top starts highlighted"
-    );
-    sh.send(C_N);
-    let s = sh.wait_for("the second picked", |s| picked(s, 2) && !picked(s, 1));
-    assert_eq!(
-        cursor_row(&s),
-        "$ git stash",
-        "the grey text follows the pick"
-    );
-    sh.send(C_P);
-    sh.wait_for("back to the top", |s| picked(s, 1));
-}
-
-/// A count moves the pick that many rows, though the menu is off the screen
-/// while the count is typed.
-#[test]
-fn a_count_moves_the_pick_that_many_rows() {
-    let mut sh = menu_showing(
+/// A shell with `git st` typed and three history rows: `git status`,
+/// `git stash`, `git stage`, top to bottom.
+fn three_items() -> Shell {
+    menu_showing(
         with_history(vec!["git stage", "git stash", "git status"]),
         "git st",
         "h  git status",
+    )
+}
+
+#[test]
+fn no_row_is_highlighted_before_a_move() {
+    let sh = two_items();
+    let s = sh.screen();
+    assert!(!picked(&s, 1) && !picked(&s, 2), "{}", dump(&s));
+    assert_eq!(
+        cursor_row(&s),
+        "$ git status",
+        "the grey text is the top row"
     );
-    sh.send(&format!("\x1b2{C_N}"));
-    sh.wait_for("the third picked", |s| {
-        picked(s, 3) && !picked(s, 1) && cursor_row(s) == "$ git stage"
+    assert_eq!(s.cursor_position(), (0, 8));
+}
+
+#[test]
+fn ctrl_n_and_ctrl_p_write_each_row_into_the_line() {
+    let mut sh = two_items();
+    sh.send(C_N);
+    sh.wait_for("the top row written", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+    sh.send(C_N);
+    sh.wait_for("the second row written", |s| {
+        picked(s, 2)
+            && !picked(s, 1)
+            && cursor_row(s) == "$ git stash"
+            && s.cursor_position() == (0, 11)
+    });
+    sh.send(C_N);
+    sh.wait_for("back at the top", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status"
+    });
+    sh.send(C_P);
+    sh.wait_for("up wraps to the bottom", |s| {
+        picked(s, 2) && cursor_row(s) == "$ git stash"
     });
 }
 
@@ -357,51 +370,54 @@ fn a_count_moves_the_pick_that_many_rows() {
 fn ctrl_p_starts_at_the_bottom() {
     let mut sh = two_items();
     sh.send(C_P);
-    sh.wait_for("the bottom picked", |s| picked(s, 2));
-}
-
-/// Enter runs the line as typed, whatever item is picked.
-#[test]
-fn enter_runs_the_line_as_typed() {
-    let mut sh = menu_showing(
-        with_history(vec!["echo one-two", "echo oh"]),
-        "echo o",
-        "h  echo oh",
-    );
-    sh.send(C_P);
-    sh.wait_for("the bottom picked", |s| picked(s, 2) && !picked(s, 1));
-    sh.send("\r");
-    sh.wait_for("the output", |s| row_text(s, 1) == "o");
-}
-
-/// Keys typed ahead in one burst still take the picked item.
-#[test]
-fn a_typed_ahead_pick_and_tab_take_the_item() {
-    let mut sh = Shell::start(with_history(vec!["git stash", "git status"]));
-    sh.send(&format!("git st{C_N}\t"));
-    sh.wait_for("the item in the line", |s| {
-        cursor_row(s) == "$ git stash" && s.cursor_position() == (0, 11)
+    sh.wait_for("the bottom written", |s| {
+        picked(s, 2) && cursor_row(s) == "$ git stash"
     });
 }
 
+/// A count moves that many rows; the first row down is the top one.
 #[test]
-fn tab_takes_the_picked_item_and_undo_takes_it_back() {
-    let mut sh = two_items();
-    sh.send(&format!("{C_N}\t"));
-    sh.wait_for("the item in the line", |s| {
-        cursor_row(s) == "$ git stash" && s.cursor_position() == (0, 11)
+fn a_count_moves_the_pick_that_many_rows() {
+    let mut sh = three_items();
+    sh.send(&format!("\x1b2{C_N}"));
+    sh.wait_for("the second row", |s| {
+        picked(s, 2) && !picked(s, 1) && cursor_row(s) == "$ git stash"
     });
-    sh.send(UNDO);
-    sh.wait_for("the line back", |s| s.cursor_position() == (0, 8));
 }
 
+/// Keys sent together chain: each acts on the rows of the first move.
 #[test]
-fn tab_takes_the_top_item_at_once() {
+fn keys_sent_together_move_through_the_rows() {
+    let mut sh = Shell::start(with_history(vec!["git stage", "git stash", "git status"]));
+    sh.send(&format!("git st{C_N}{C_N}\t"));
+    sh.wait_for("the third row", |s| {
+        cursor_row(s) == "$ git stage" && s.cursor_position() == (0, 11)
+    });
+}
+
+/// Tab moves to the top row when there are more rows; the next Tab goes on.
+#[test]
+fn tab_moves_through_the_rows() {
     let mut sh = two_items();
     sh.send("\t");
-    sh.wait_for("the item in the line", |s| {
+    sh.wait_for("the top row", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+    sh.send("\t");
+    sh.wait_for("the second row", |s| {
+        picked(s, 2) && cursor_row(s) == "$ git stash"
+    });
+}
+
+/// With one row, Tab writes it and does not start moving.
+#[test]
+fn tab_with_one_row_writes_it() {
+    let mut sh = menu_showing(with_history(vec!["git status"]), "git st", "h  git status");
+    sh.send("\t");
+    let s = sh.wait_for("the row written", |s| {
         cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
     });
+    assert!(!picked(&s, 1), "{}", dump(&s));
 }
 
 /// A shell in a directory holding `zzfile`, with `history`.
@@ -424,52 +440,61 @@ fn ctrl_g_then_tab_completes_as_bash_does() {
     });
 }
 
-/// A second Tab right after one that took an item completes as bash does,
-/// though the menu for the new text shows.
+/// With no menu, Tab completes as bash does, and a second Tab lists the
+/// choices. The typed `zzf` is all the files have in common, so the first
+/// Tab leaves the line as it is: readline lists on a second Tab only after
+/// one that changed nothing.
 #[test]
-fn a_second_tab_after_a_take_completes_as_bash_does() {
+fn ctrl_g_then_two_tabs_list_the_choices() {
     let dir = tempfile::tempdir().unwrap();
-    let mut sh = menu_showing(
-        with_zzfile(&dir, vec!["ls zzf -l", "ls zzf"]),
-        "ls z",
-        "h  ls zzf",
-    );
-    sh.send("\t");
-    sh.wait_for("the item and its own menu", |s| {
-        cursor_row(s) == "$ ls zzf -l" && row_text(s, 1) == "h  ls zzf -l"
+    let opts = with_zzfile(&dir, vec!["ls zzf-old"]);
+    std::fs::write(dir.path().join("zzfoo"), "").unwrap();
+    let mut sh = menu_showing(opts, "ls zzf", "h  ls zzf-old");
+    sh.send(&format!("{C_G}\t"));
+    sh.wait_for("no menu", |s| {
+        cursor_row(s) == "$ ls zzf" && row_text(s, 1).is_empty()
     });
     sh.send("\t");
-    sh.wait_for("the file name", |s| {
-        cursor_row(s).starts_with("$ ls zzfile")
+    sh.wait_for("the listing", |s| {
+        find(s, "zzfoo").is_some() && find(s, "zzfile").is_some()
     });
 }
 
-/// A third Tab lists the choices, as bash's second Tab does, though a menu
+/// With no move, Enter runs the line as typed.
+#[test]
+fn enter_with_no_move_runs_the_line_as_typed() {
+    let mut sh = menu_showing(
+        with_history(vec!["echo one-two", "echo oh"]),
+        "echo o",
+        "h  echo oh",
+    );
+    sh.send("\r");
+    sh.wait_for("the output", |s| row_text(s, 1) == "o");
+}
+
+/// A letter after a move goes after the row, and the menu for the new text
 /// shows.
 #[test]
-fn a_third_tab_after_a_take_lists_the_choices() {
-    let dir = tempfile::tempdir().unwrap();
-    let opts = with_zzfile(&dir, vec!["ls zzf -l", "ls zzf"]);
-    std::fs::write(dir.path().join("zzfoo"), "").unwrap();
-    let mut sh = menu_showing(opts, "ls z", "h  ls zzf");
-    sh.send("\t");
-    sh.wait_for("the item and its own menu", |s| {
-        cursor_row(s) == "$ ls zzf -l" && row_text(s, 1) == "h  ls zzf -l"
+fn a_letter_after_a_move_keeps_the_row() {
+    let mut sh = menu_showing(
+        with_history(vec!["git status -s", "git status"]),
+        "git st",
+        "h  git status",
+    );
+    sh.send(C_N);
+    sh.wait_for("the top row", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
     });
-    sh.send("\t\t");
-    sh.wait_for("the listing and the prompt under it", |s| {
-        find(s, "zzfoo").is_some()
-            && s.cursor_position().0 > 1
-            && cursor_row(s).starts_with("$ ls zzf")
+    sh.send(" ");
+    sh.wait_for("the new menu", |s| {
+        row_text(s, 1) == "h  git status -s" && !picked(s, 1) && s.cursor_position() == (0, 13)
     });
-    let s = sh.settle();
-    assert_eq!(s.cursor_position().1, 8, "no item taken: {}", dump(&s));
 }
 
-/// The menu keys work in a Lisp command after a draw it made, here under
-/// `y-or-n-p`'s question: the kept menu stays in use while Lisp runs.
+/// A Lisp command can move, after a draw it made; the row it wrote is kept
+/// once it returns.
 #[test]
-fn a_lisp_command_picks_after_its_own_question() {
+fn a_lisp_command_moves_after_its_own_question() {
     let init = r#"(keymap-global-set "C-x w"
   (lambda () (interactive)
     (y-or-n-p "Q? ")
@@ -482,10 +507,36 @@ fn a_lisp_command_picks_after_its_own_question() {
     sh.send("\x18w");
     sh.wait_for("the question", |s| has_row(s, "Q? (y or n)"));
     sh.send("n");
-    sh.wait_for("the second item picked", |s| picked(s, 2));
-    sh.send("\t");
-    sh.wait_for("the item in the line", |s| {
-        cursor_row(s) == "$ git stash" && s.cursor_position() == (0, 11)
+    sh.wait_for("the top row written", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+}
+
+/// A Lisp command that changes the line and then moves leaves one undo
+/// step: the next `C-n` does not undo part of it, and `C-_` takes all of
+/// it back.
+#[test]
+fn a_lisp_command_that_edits_then_moves_leaves_a_whole_line() {
+    let init = r#"(keymap-global-set "C-x w"
+  (lambda () (interactive)
+    (insert "a")
+    (y-or-n-p "Q? ")
+    (call-interactively 'menu-next)))"#;
+    let mut sh = menu_showing(
+        with_init(init, vec!["git stash", "git status"]),
+        "git st",
+        "h  git status",
+    );
+    sh.send("\x18w");
+    sh.wait_for("the question", |s| has_row(s, "Q? (y or n)"));
+    sh.send("n");
+    sh.wait_for("the top row written", |s| cursor_row(s) == "$ git status");
+    sh.send(C_N);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+    sh.send(UNDO);
+    sh.wait_for("the typed text back", |s| {
+        cursor_row(s).starts_with("$ git st") && s.cursor_position() == (0, 8)
     });
 }
 
@@ -511,7 +562,9 @@ fn the_menu_keys_work_in_read_e_under_lisp() {
     });
     let row = s.cursor_position().0;
     sh.send(C_N);
-    sh.wait_for("the second item picked", |s| picked(s, row + 2));
+    sh.wait_for("the top row written", |s| {
+        picked(s, row + 1) && cursor_row(s) == "name? echo help-me"
+    });
     sh.send("\t");
     sh.wait_for("the item in the line", |s| {
         cursor_row(s) == "name? echo hello-world"
@@ -592,10 +645,10 @@ fn up_after_a_pick_keeps_the_cursors_column() {
     sh.send("\x1b[B");
     sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
     sh.send(" s");
-    let s = sh.wait_for("the menu", |s| row_text(s, 2) == "l  switch");
-    let col = s.cursor_position().1;
+    sh.wait_for("the menu", |s| row_text(s, 2) == "l  switch");
     sh.send(C_N);
-    sh.wait_for("the pick", |s| picked(s, 3));
+    let s = sh.wait_for("the pick", |s| picked(s, 2));
+    let col = s.cursor_position().1;
     sh.send("\x1b[A");
     let s = sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
     assert_eq!(s.cursor_position(), (0, col), "{}", dump(&s));
@@ -728,8 +781,8 @@ fn a_search_that_finds_nothing_keeps_the_menu() {
     assert_eq!(row_text(&s, 1), "l  switch", "{}", dump(&s));
 }
 
-/// `menu-next` works on any key: with a menu it moves the pick, and with none
-/// the key does what it did before (`C-t` swaps two characters).
+/// `menu-next` works on any key: with a menu it moves, and with none the
+/// key does what it did before (`C-t` swaps two characters).
 #[test]
 fn menu_next_on_another_key_keeps_that_keys_own_job() {
     let mut sh = menu_showing(
@@ -741,7 +794,9 @@ fn menu_next_on_another_key_keeps_that_keys_own_job() {
         "h  git status",
     );
     sh.send("\x14");
-    sh.wait_for("the second picked", |s| picked(s, 2));
+    sh.wait_for("the top row", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status"
+    });
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
     sh.send("xy\x14");
@@ -905,8 +960,8 @@ fn menu_sources_limit_the_menu_but_not_the_grey_text() {
     assert_eq!(cursor_row(&s), "$ git status");
     assert_eq!(row_text(&s, 2), "l  show");
     assert_eq!(row_text(&s, 3), "");
-    // Tab takes the highlighted row, not the grey text's item.
-    assert!(picked(&s, 1), "{}", dump(&s));
+    assert!(!picked(&s, 1), "{}", dump(&s));
+    // Tab moves to the menu's top row, not the grey text's item.
     sh.send("\t");
     sh.wait_for("the item in the line", |s| cursor_row(s) == "$ git switch");
 }

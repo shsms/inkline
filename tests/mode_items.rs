@@ -115,8 +115,10 @@ fn late_items_show_without_a_key() {
     sh.wait_for("the late items", |s| find(s, "m  amount").is_some());
 }
 
+/// While moving, the menu keeps the rows it had at the first move: items
+/// that come later are not added.
 #[test]
-fn a_pick_stays_when_late_items_come() {
+fn late_items_wait_while_moving() {
     // Without pairing, the cursor stays at the end of the line, so the
     // history item shows at once.
     let mut sh = shell_with(
@@ -129,10 +131,14 @@ fn a_pick_stays_when_late_items_come() {
         row_text(s, 1) == "h  csvm 'sort amended'"
     });
     sh.send(C_N);
-    sh.wait_for("the pick", |s| picked(s, 1));
-    let s = sh.wait_for("the late items", |s| find(s, "m  amount").is_some());
+    sh.wait_for("the pick", |s| {
+        picked(s, 1) && cursor_row(s) == "$ csvm 'sort amended'"
+    });
+    // The late reply comes 0.5 s after the request.
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let s = sh.settle();
+    assert!(find(&s, "m  amount").is_none(), "{}", dump(&s));
     assert!(picked(&s, 1), "{}", dump(&s));
-    assert_eq!(row_text(&s, 1), "h  csvm 'sort amended'");
 }
 
 #[test]

@@ -124,6 +124,22 @@ fn files_and_directories_are_taken_as_tab_would() {
     });
 }
 
+/// Tab with one row on a directory writes it with its `/`, and the menu then
+/// lists what is inside.
+#[test]
+fn tab_with_one_row_on_a_directory_lists_what_is_inside() {
+    let dir = files();
+    let mut sh = shell_in(dir.path(), "", "");
+    let s = typed_then(&mut sh, "cd s", "c  src/");
+    assert_eq!(bash_rows(&s), ["c  src/"], "{}", dump(&s));
+    sh.send("\t");
+    sh.wait_for("the directory written and its files", |s| {
+        cursor_row(s).starts_with("$ cd src/")
+            && s.cursor_position() == (0, 9)
+            && has_row(s, "c  src/main.rs")
+    });
+}
+
 /// Pairing closed the quote after the cursor; readline's own closing quote
 /// takes its place.
 #[test]
