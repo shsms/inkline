@@ -263,9 +263,7 @@ fn an_answer_that_came_during_a_search_is_not_a_time_out() {
     sh.wait_for("the search", |s| find(s, "reverse-i-search").is_some());
     std::thread::sleep(std::time::Duration::from_millis(1300));
     sh.send("\x07\x15inkline status\r");
-    let s = sh.wait_for("the status", |s| {
-        (0..s.size().0).any(|r| row_text(s, r).starts_with("bash completion:"))
-    });
+    let s = sh.wait_for("the status", |s| find(s, "bash completion:").is_some());
     assert!(has_row(&s, "bash completion: on"), "{}", dump(&s));
 }
 
@@ -317,11 +315,7 @@ fn a_rule_s_error_ends_only_the_copy() {
 
 /// Waits up to 5 s for `done`.
 fn eventually(what: &str, done: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !done() {
-        assert!(std::time::Instant::now() < deadline, "never: {what}");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    assert!(poll(|| done().then_some(())).is_some(), "never: {what}");
 }
 
 /// The process group, the parent and the shell a rule wrote to `path` with

@@ -431,7 +431,7 @@ pub fn wait_same(a: &Shell, b: &Shell, what: &str) {
 }
 
 /// Calls `poll_for` with a 5-second limit.
-fn poll<T>(attempt: impl FnMut() -> Option<T>) -> Option<T> {
+pub fn poll<T>(attempt: impl FnMut() -> Option<T>) -> Option<T> {
     poll_for(Duration::from_secs(5), attempt)
 }
 
