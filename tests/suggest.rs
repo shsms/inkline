@@ -297,3 +297,28 @@ fn every_row_erased_when_the_line_stops_matching() {
     let s = sh.settle();
     assert!(find(&s, "done").is_none(), "{}", dump(&s));
 }
+
+/// Up whose only match is the typed text itself leaves the typed line as
+/// it is. The line is then not taken for a history entry brought back, so
+/// its grey text (here from Lisp) still shows.
+#[test]
+fn kept_when_up_finds_only_the_typed_text() {
+    let mut sh = showing(
+        Options {
+            init_el: Some(
+                r#"(setq inkline-show-menu nil)
+                   (add-hook 'inkline-suggestion-functions
+                     (lambda (line) (when (string-prefix-p line "cat zzfile") "cat zzfile")))"#
+                    .into(),
+            ),
+            ..with_history(vec!["cat zz", "ls"])
+        },
+        "cat zz",
+        "$ cat zzfile",
+    );
+    sh.send(UP);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ cat zzfile", "{}", dump(&s));
+    assert_eq!(fg(&s, "file"), Color::Idx(8), "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 8), "{}", dump(&s));
+}

@@ -63,7 +63,7 @@ struct State {
     /// `inkline-menu-on-move` is set, no menu shows until a draw in plain
     /// editing finds another text.
     cursor_moved: bool,
-    /// The line text a history search left, while it stays unchanged: such
+    /// The line text a history search put in the line, while it stays: such
     /// a line counts as brought back from history. Readline before 8.3 puts
     /// its history place back after a search, so `recalled` cannot tell it
     /// from that place alone.
@@ -1342,10 +1342,15 @@ fn repaint_line() -> bool {
         None
     };
     let moving = moving_menu.is_some();
-    // A search that found nothing leaves the line as it was, which is then
-    // no history entry.
+    // Whether the line changed since the last draw.
+    let changed =
+        STATE.with_borrow(|s| s.drawn_at.as_ref().map(|(was, _)| was.as_str()) != line.as_deref());
+    // Whether the key ran a history search that changed the line to a
+    // history entry's text. A search that found nothing leaves the typed
+    // line, which may be an entry's text too.
     let searched = editing
         && ran_history_search()
+        && changed
         && line
             .as_deref()
             .is_some_and(|l| ffi::history_find_map(|entry| (entry == l).then_some(())).is_some());
@@ -1358,6 +1363,7 @@ fn repaint_line() -> bool {
             if let Some(m) = &mut s.menu {
                 m.shown = false;
             }
+            // A line a search found stays found while its text stays.
             if searched {
                 s.searched.clone_from(&line);
             } else if s.searched != line {
