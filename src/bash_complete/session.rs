@@ -94,10 +94,11 @@ pub struct Found {
 
 /// Decides what bash's completion does for `word` (see `decide`): a copy
 /// of the shell is asked now, and one working on anything else is killed.
-/// `paused` says typing has paused on this line and cursor. The ticket for
-/// `found`; None when the word gets no bash items. A copy that cannot start
-/// counts as failed.
-pub fn prepare(word: Word, settings: &Settings, paused: bool) -> Option<Ticket> {
+/// `paused` says typing has paused on this line and cursor. While more keys
+/// are still to come (`more_keys`), as in a macro or a paste, a copy is
+/// asked once typing pauses instead. The ticket for `found`; None when
+/// the word gets no bash items. A copy that cannot start counts as failed.
+pub fn prepare(word: Word, settings: &Settings, paused: bool, more_keys: bool) -> Option<Ticket> {
     let ask = SESSION.with_borrow_mut(|me| {
         me.read_running();
         let ask = decide(&Inputs {
@@ -112,7 +113,10 @@ pub fn prepare(word: Word, settings: &Settings, paused: bool) -> Option<Ticket> 
         if ask != Ask::InFlight {
             me.running = None;
         }
-        ask
+        match ask {
+            Ask::Now if more_keys => Ask::AtPause,
+            ask => ask,
+        }
     });
     if ask == Ask::Nothing {
         return None;

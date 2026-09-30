@@ -1377,7 +1377,7 @@ fn repaint_line() -> bool {
     // Mode server items are asked for only when a menu is gathered.
     let (found, mode_items) = ask_mode_servers(&line, &path, gather.then_some(point), began);
     let bash_items = bash
-        .map(|ticket| session::found(&ticket, began + mode_server::WAIT, ffi::signal_to_act_on))
+        .map(|ticket| session::found(&ticket, began + mode_server::WAIT, stop_waiting_for_bash))
         .unwrap_or_default();
     let menu = gather.then(|| menu_for(&line, point, mode_items, bash_items));
     let suggestion = menu
@@ -1746,11 +1746,22 @@ fn ask_bash(line: &str, point: usize) -> Option<session::Ticket> {
         timeout: settings::bash_completion_timeout(),
         how: settings::completion_matching(),
     };
-    let ticket = session::prepare(word, &wanted, items_paused_at(line, point))?;
+    let ticket = session::prepare(
+        word,
+        &wanted,
+        items_paused_at(line, point),
+        ffi::more_keys_coming(),
+    )?;
     if ticket.at_pause {
         STATE.with_borrow_mut(|s| s.items_want_pause = true);
     }
     Some(ticket)
+}
+
+/// Whether the draw stops waiting for a copy of the shell: a signal must be
+/// acted on, or more keys are still to come, as in a macro or a paste.
+fn stop_waiting_for_bash() -> bool {
+    ffi::signal_to_act_on() || ffi::more_keys_coming()
 }
 
 /// Whether typing paused on `line` with the cursor at `point` while

@@ -632,3 +632,63 @@ fn a_rule_s_full_quoting_is_kept() {
     };
     typed_then(&mut sh, "fq f", row);
 }
+
+/// A macro types many words at once: a copy of the shell is asked once the
+/// macro ends, not for each word.
+#[test]
+fn a_macro_asks_once_it_ends() {
+    let dir = files();
+    let log = tempfile::tempdir().unwrap();
+    let asked = log.path().join("asked");
+    let mut sh = shell_in(
+        dir.path(),
+        &format!(
+            "_mm() {{ echo \"$COMP_LINE\" >> '{}'; COMPREPLY=(done); }}\n\
+             complete -F _mm mm\n\
+             bind '\"\\C-xg\": \"mm a b c d e f g h i j \"'\n",
+            asked.display()
+        ),
+        "",
+    );
+    sh.send("\x18g");
+    sh.wait_for("the answer", |s| has_row(s, "c  done"));
+    let lines = std::fs::read_to_string(&asked).unwrap();
+    assert_eq!(lines.lines().count(), 1, "asked for:\n{lines}");
+}
+
+/// While a macro types, the draw does not wait for a copy of the shell
+/// working on the word.
+#[test]
+fn a_macro_does_not_wait_for_a_copy() {
+    let dir = files();
+    let pids = tempfile::tempdir().unwrap();
+    let pid = pids.path().join("slow");
+    let many = "a".repeat(150);
+    let mut sh = shell_in(
+        dir.path(),
+        &format!(
+            "_slow() {{ _group_to '{}'; sleep 7.5; }}\n\
+             complete -F _slow slow\n\
+             bind '\"\\C-xa\": \"{many}\"'\n",
+            pid.display()
+        ),
+        "(setq inkline-bash-completion-timeout 60000)",
+    );
+    sh.send("slow ");
+    let group = written_group(&pid);
+    assert!(group_alive(&group), "the rule is not running");
+    let began = std::time::Instant::now();
+    sh.send("\x18a");
+    let line = format!("$ slow {many}");
+    sh.wait_for("the macro's text", |s| {
+        (0..s.size().0)
+            .map(|r| row_text(s, r))
+            .collect::<String>()
+            .contains(&line)
+    });
+    assert!(
+        began.elapsed() < std::time::Duration::from_secs(1),
+        "the draw waited for the copy: {:?}",
+        began.elapsed()
+    );
+}

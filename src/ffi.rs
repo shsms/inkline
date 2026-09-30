@@ -850,9 +850,24 @@ pub fn replaying_macro() -> bool {
 }
 
 /// Whether more input is already waiting: typed ahead, pasted without
-/// bracketed paste, or coming from a macro.
+/// bracketed paste, or coming from a macro. A macro counts until readline
+/// ends it, which is only at the next read after its last key (see
+/// `more_keys_coming`).
 pub fn input_waiting() -> bool {
     replaying_macro() || key_waiting()
+}
+
+unsafe extern "C" {
+    fn _rl_peek_macro_key() -> c_int;
+}
+
+/// Whether more keys are still to come: typed ahead, pasted without
+/// bracketed paste, or left in a macro. A macro that has handed out its last
+/// key counts as done, though readline ends it only at the next read; one run
+/// from inside another macro counts as done only once readline ends it.
+pub fn more_keys_coming() -> bool {
+    // SAFETY: `_rl_peek_macro_key` only reads the macro being replayed.
+    key_waiting() || (replaying_macro() && unsafe { _rl_peek_macro_key() } != 0)
 }
 
 /// Whether a key is already waiting: typed ahead, pasted without bracketed
