@@ -45,8 +45,6 @@ lines of your own after `enable -f`; they run after inkline's and win.
 | multi-line | `RET` | `accept-or-newline` | `accept-line` |
 | multi-line | `C-j` | `insert-newline` | `accept-line` |
 | multi-line | `M-RET` | `accept-as-is` | unbound or `vi-editing-mode` |
-| multi-line | `<up>` | `previous-line-or-history` | `previous-history` |
-| multi-line | `<down>` | `next-line-or-history` | `next-history` |
 | multi-line | `C-a`, `<home>` | `line-start` | `beginning-of-line` |
 | multi-line | `C-k` | `kill-to-line-end` | `kill-line` |
 | multi-line | `C-u` | `kill-to-line-start` | `unix-line-discard` |
@@ -56,16 +54,23 @@ lines of your own after `enable -f`; they run after inkline's and win.
 | pairing | `DEL` | `delete-pair` | `backward-delete-char` |
 | menu | `C-n` | `menu-next` | `next-history` |
 | menu | `C-p` | `menu-previous` | `previous-history` |
+| menu | `<down>` | `menu-next` | `next-history` |
+| menu | `<up>` | `menu-previous` | `previous-history` |
+| menu | `<backtab>` (Shift-Tab) | `menu-take-previous` | unbound |
 | menu | `TAB` | `menu-take` | `complete` |
 | menu | `C-g` | `menu-hide` | `abort` |
 
 `<right>`, `<end>`, `<home>`, `<up>` and `<down>` are also taken when they are
 unbound (many terminals send sequences for them that plain bash never binds
 on its own); `M-RET` is taken when it is unbound or bound to
-`vi-editing-mode`. If `inputrc` binds `<up>`/`<down>` to
-`history-search-backward`/`history-search-forward`, inkline binds
-`previous-line-or-search`/`next-line-or-search` there instead: they move
-between lines the same way, and search past the first or last line.
+`vi-editing-mode`. `<up>` and `<down>` are also taken when `inputrc` binds
+them to readline's prefix or substring history searches. With no menu,
+`C-p`/`<up>` and `C-n`/`<down>` run `previous-line-or-substring-search` and
+`next-line-or-substring-search`: they move between the lines of a command,
+and past the first or last line search history for commands holding the
+text before the cursor. Where `inputrc` had the prefix search on the key,
+they run `previous-line-or-search` and `next-line-or-search` instead, which
+search for commands starting with it.
 
 Turn part of the layout off in `init.el`, naming one of its groups
 (`suggestions`, `multi-line`, `pairing`, `menu`):
@@ -77,8 +82,9 @@ Turn part of the layout off in `init.el`, naming one of its groups
 
 `(inkline-unbind-defaults)` with no argument gives back the whole layout; a
 single group name also works, as `(inkline-unbind-defaults 'pairing)`. With
-`menu` turned off and `multi-line` kept, `C-n` and `C-p` move between the lines
-of a command, and past the first or last line through history.
+`menu` turned off and `multi-line` kept, `C-n`, `C-p`, `<down>` and `<up>` run
+those commands. With `multi-line` turned off and `menu` kept, they run
+readline's own command when no menu shows.
 
 `C-u` and Backspace need `bind-tty-special-chars off`: otherwise readline binds
 the terminal's kill and erase characters back to `unix-line-discard` and
@@ -230,13 +236,10 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   the command, each row marked `h` for a past command, `c` for what bash's own
   Tab would offer, or `l` for one your own Lisp function offers, and the grey
   text after the cursor shows the rest of one possible completion, most often
-  the highlighted one. The top row starts highlighted; `C-n` and `C-p` move the
-  highlight, and Tab takes the highlighted item. Enter does what it does without
-  a menu. `C-g` hides the menu until the line changes (Tab then completes as
-  bash does), and moving the cursor without typing hides it until you type
-  again. A line brought back from history (`C-p`, `<up>`, a search) shows no
-  menu and no grey text until you change it. With no menu, `C-n` and `C-p` move
-  between lines and through history, as `<down>` and `<up>` do.
+  the top one. `C-n`/`<down>` and `C-p`/`<up>` (and Tab/Shift-Tab) move
+  through the rows, writing each into the line; Enter keeps it and `C-g` puts
+  back what you typed. With no menu, `C-p`/`<up>` search history for commands
+  holding what you typed.
   `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
   text off on their own. See "Completion menu" below.
 - **Pairing.** `(`, `[`, `{` and quotes insert their closing character; typing
@@ -262,9 +265,9 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   terminals need Option set as Meta), press Esc then Enter. An Enter typed
   while a command is still running arrives as `C-j`, so it adds a line to the
   next command instead of running it, like pasted text. Up and Down move
-  between the lines and into history from the first and last line; a
-  multi-line entry recalled with `previous-line-or-history` opens on its
-  first line, so the next Up goes on through history. `C-a`, `C-e`, `C-k`
+  between the lines, and from the first and last line into history; a
+  multi-line entry Up brings back opens on its first line, so the next Up
+  goes on through history. `C-a`, `C-e`, `C-k`
   and `C-u` act on the current line, and `C-k` and `C-u` join lines at its
   edges. `M-#` comments out every line. Pasted text keeps its own spacing.
 - **Syntax errors.** A command bash would reject is underlined in wavy red
@@ -341,33 +344,45 @@ that is a concern.
 The menu takes at most `inkline-menu-lines` rows; when there are more
 items, the last row says how many more.
 
-- The top row starts highlighted. `C-n` and `C-p` move the highlight to the
-  next or the previous item, wrapping at either end. The grey text is the
-  rest of the highlighted item, with one exception: when
-  `inkline-menu-sources` or `inkline-menu-min-chars` leaves the top item of
-  all the sources out of the menu, the grey text shows the rest of that item
-  until you press `C-n` or `C-p`, while Tab takes the menu's top row, or
-  completes as bash does when no menu is left. Inside a quoted script the
-  grey text does not show, since the closing quote there follows the cursor
-  and the grey text is only drawn at the end of the line; Tab still takes
-  the item.
-- Tab takes the highlighted item into the line, as one step that `C-_`
-  undoes. With no menu, Tab completes as bash does, and so does a Tab right
-  after another Tab, even with a menu showing: after a Tab that took an
-  item, a second Tab completes and a third lists the choices, as bash's
-  second Tab does.
-- Enter does what it does without a menu, whatever row is highlighted: it
-  runs a finished command and adds a line to an unfinished one.
-- `C-g` hides the menu and the grey text until the line's text changes, so
-  `C-g` then Tab completes as bash does. With no menu, `C-g` is readline's
-  `abort`.
-- Moving the cursor without changing the text (`<left>`, `<up>`, `C-a`, …) hides
-  the menu until you type again, so `C-n` and `C-p` then move between the lines
-  of a command. Set `inkline-menu-on-move` to keep the menu wherever the cursor
-  stops.
+- No row is highlighted until you move. The grey text shows the rest of the
+  top item of all the sources, even when `inkline-menu-sources` or
+  `inkline-menu-min-chars` leaves it out of the menu. Inside a quoted
+  script the grey text does not show, since the closing quote there follows
+  the cursor.
+- `C-n`, `<down>` and Tab move to the next row, `C-p`, `<up>` and Shift-Tab
+  to the previous one, wrapping at either end: the first move down goes to
+  the top row, the first move up to the bottom one. Each move writes the row
+  into the line, and the menu keeps its rows while you move. A count typed
+  with Meta and digits, as in `M-2 C-n`, moves that many rows, and you go on
+  moving. A count from readline's `universal-argument` (if you bind it to a
+  key) moves too, but the moving ends after that move: `C-g` and Enter then
+  act as with no move.
+- Tab or Shift-Tab with only one row, and no more items still coming, writes
+  it and does not start moving, so `cd s` Tab gives `cd src/` and the menu
+  then lists what is inside. While bash's copy of the shell or a mode server
+  is still working, more items may come, so the key starts moving instead.
+- With no menu, Tab completes as bash does, and a second Tab lists the choices.
+  With no menu, Shift-Tab runs what the key had before inkline bound it, or
+  rings the bell when it had nothing.
+- Enter keeps the row and stops moving, without running the line; a second
+  Enter runs it. With no move, Enter does what it does without a menu: it
+  runs a finished command and adds a line to an unfinished one. Enter keeps
+  the row only while it runs `accept-or-newline` (the `multi-line` group).
+  `M-RET` runs the line as it is.
+- `C-g` after a move puts back what you typed and hides the menu until the
+  line's text changes; with no move it just hides the menu, so `C-g` then Tab
+  completes as bash does. With no menu, `C-g` is readline's `abort`. Any other
+  key after a move keeps the row and does its own job.
+- The row a move writes is one undo step: `C-_` gives back what you typed.
+- Moving the cursor without changing the text (`<left>`, `C-a`, …) hides the
+  menu until you type again, so the arrows and `C-n`/`C-p` then move between
+  the lines of a command. Set `inkline-menu-on-move` to keep the menu wherever
+  the cursor stops.
 - A line brought back from history (`C-p`, `<up>`, a search) shows no menu
-  and no grey text until you change it. With no menu, `C-n` and `C-p` move
-  between lines and through history, as `<down>` and `<up>` do.
+  and no grey text until you change it. With no menu, `C-p`/`<up>` search
+  history for commands holding what you typed before the cursor (plain
+  history on an empty line), and `C-n`/`<down>` go back; `<down>` past the
+  newest match gives back what you typed.
 
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
 text off on their own, and `inkline-completion-style` set to `fuzzy` lets the
@@ -378,15 +393,17 @@ many characters you type before it lists an item. See
 [`docs/lisp.md`](docs/lisp.md). The menu's colours are set with the `menu`,
 `menu-selected`, `menu-source` and `menu-note` keys (see "Colours").
 
-To pick with `M-n` and `M-p` instead, and keep `C-n` and `C-p` for moving
-between lines and through history:
+To move with `M-n` and `M-p` instead, and keep `C-n`, `C-p` and the arrows
+for moving between lines and through history:
 
 ```elisp
 ;; ~/.config/inkline/init.el
 (keymap-global-set "M-n" 'menu-next)
 (keymap-global-set "M-p" 'menu-previous)
-(keymap-global-set "C-n" 'next-line-or-history)
-(keymap-global-set "C-p" 'previous-line-or-history)
+(keymap-global-set "C-n" 'next-line-or-substring-search)
+(keymap-global-set "C-p" 'previous-line-or-substring-search)
+(keymap-global-set "<down>" 'next-line-or-substring-search)
+(keymap-global-set "<up>" 'previous-line-or-substring-search)
 ```
 
 With no menu, `M-n` and `M-p` then do what they did before: readline's
@@ -714,9 +731,12 @@ changes.
   by default, for bash code and inside a program's script (see "Command
   modes"); `0` turns off both indenting new lines and moving closing words
   back out, and a closer put on its own line keeps its line's indentation.
-- `inkline-history-cursor`: where `previous-line-or-history` leaves the
-  cursor in a multi-line entry it recalls: the symbol `start` (the default)
-  or `end`, where readline puts it.
+- `inkline-history-cursor`: where `previous-line-or-history` and
+  `previous-line-or-substring-search` leave the cursor in a multi-line entry
+  they bring back, also when a menu key with no menu runs one of them: the
+  symbol `start` (the default) or `end`. With `end`, an entry brought back
+  by walking history keeps the cursor where readline puts it, and an entry
+  the substring search finds has it at its end.
 - `inkline-suggestion-lines`: the most lines of a multi-line suggestion to
   show, an integer of at least 1, 5 by default. It applies only while no menu
   or message shows under the line; with one, a multi-line suggestion takes

@@ -23,8 +23,8 @@ change takes effect on the next key.
 - `inkline-show-menu` (default `t`): whether the completion menu shows. A
   line brought back from history (with `C-p`, `<up>`, a search and the like)
   shows no menu and no grey text until you change it. With no menu, `C-n`
-  and `C-p` move between lines and through history, as `<down>` and `<up>`
-  do.
+  and `C-p` move between lines and search history by substring, as `<down>`
+  and `<up>` do.
 - `inkline-show-suggestion` (default `t`): whether the grey suggestion text
   shows.
 - `inkline-menu-lines` (default `8`): the most rows the completion menu
@@ -40,22 +40,22 @@ change takes effect on the next key.
   `` `first name` ``.
 - `inkline-completion-ignore-case` (default `nil`): when non-nil, the text you
   typed matches items whatever their case, in both styles, so `am` also finds
-  `Amount`. Within each source, items that start with the typed text in the same
-  case come first. The grey text shows only when the item it comes from (the
-  picked item, or else the top one) starts with the typed text in the same case;
-  taking an item from the menu puts the item's own case in the line.
+  `Amount`. Within each source, items that start with the typed text in the
+  same case come first. The grey text shows only when the top item starts with
+  the typed text in the same case; taking an item from the menu puts the
+  item's own case in the line.
 - `inkline-menu-sources` (default `(history lisp mode bash)`): the sources the
   menu lists, a list of the symbols `history`, `lisp`, `mode` and `bash`. It
-  limits only the menu: with no item picked, the grey text still comes from the
-  top item of all the sources.
+  limits only the menu: the grey text still comes from the top item of all the
+  sources.
 - `inkline-menu-min-chars` (default `0`): the menu lists an item only once you
   have typed at least this many characters of it (from where the item starts to
   the cursor: the whole line for a history item), an integer of at least 0. Like
   `inkline-menu-sources`, it limits only the menu.
 - `inkline-menu-on-move` (default `nil`): when `nil`, a key that moves the
-  cursor without changing the line's text hides the menu until the text changes,
-  so `C-n` and `C-p` then move between the lines of a command; when non-nil, the
-  menu shows again wherever the cursor stops.
+  cursor without changing the line's text hides the menu until the text
+  changes, so `C-n`, `C-p` and the arrows then move between the lines of a
+  command; when non-nil, the menu shows again wherever the cursor stops.
 - `inkline-bash-completion` (default `t`): whether the menu gets items from
   bash's own completion, marked `c`: what Tab would offer for the word at the
   cursor, found in a copy of the shell. With `nil` no copy is started.
@@ -66,8 +66,10 @@ change takes effect on the next key.
   copy of the shell may take to answer, an integer of at least 1; after that
   it is stopped and the word gets no `c` items.
 - `inkline-history-cursor` (default `start`): the symbol `start` or `end`,
-  where `previous-line-or-history` leaves the cursor in a multi-line entry
-  it recalls.
+  where `previous-line-or-history` and `previous-line-or-substring-search`
+  leave the cursor in a multi-line entry they bring back. With `end`, an
+  entry brought back by walking history keeps the cursor where readline puts
+  it, and an entry the substring search finds has it at its end.
 - `inkline-colors` (default `nil`): the colours inkline draws with, as an
   alist of `(NAME . "VALUE")` pairs, or a string in `LS_COLORS`'s format. A
   value is SGR codes or colour words, such as `"bold magenta"` or
@@ -94,26 +96,25 @@ change takes effect on the next key.
   `'accept-line` or `'insert-pair`) or a Lisp function, or a lambda (see
   [Commands](#commands)). After `enable -d inkline`, and after an internal
   error turned inkline off until `inkline on`, a key bound to a Lisp command
-  runs what it had before inkline first bound it (a readline command or
-  macro text), or rings the bell when it had nothing. A key bound to
-  `menu-next` or `menu-previous` runs, while no menu shows, what it had
-  before inkline first bound it; readline's `next-history` and
-  `previous-history` become `next-line-or-history` and
-  `previous-line-or-history`, `history-search-forward` and
+  runs what it had before inkline first bound it (a readline command or macro
+  text), or rings the bell when it had nothing. A key bound to `menu-next` or
+  `menu-previous` runs, while no menu shows, what it had before inkline first
+  bound it; readline's `next-history`, `previous-history` and substring
+  searches, and nothing, become `next-line-or-substring-search` and
+  `previous-line-or-substring-search`, and `history-search-forward` and
   `history-search-backward` become `next-line-or-search` and
-  `previous-line-or-search`, and a key that had nothing moves a line or
-  through history. When the key runs another of readline's history searches
-  this way, the line that search finds shows no menu until you change it.
-  `KEY` is an Emacs key
-  description: keys separated by spaces. Each key is a character or one of
-  `RET`, `TAB`, `DEL`, `SPC`, `ESC`, with an optional `M-` prefix (`M-RET`);
-  a letter, `SPC`, or one of `@ [ \ ] ^ _ ?` may also take a `C-` prefix
-  (`C-x`, `C-M-a`). A key may also be one of `<up>`, `<down>`, `<left>`,
-  `<right>`, `<home>`, `<end>`, `<delete>`, `<backtab>`, which take no
-  prefix. A named key stands for every sequence terminals send for it (four
-  for `<home>` and `<end>`, two for each arrow), and a `KEY` may stand for
-  at most 16 sequences. A `KEY` whose first keys run a command, such as
-  `C-a C-b`, is refused. Binding `DEL`, `C-h`, `C-u`, `C-v` or `C-w` turns
+  `previous-line-or-search` (with the `multi-line` group unbound, the key's
+  own command runs as it is). When the key runs another of readline's history
+  searches this way, the line that search finds shows no menu until you change
+  it. `KEY` is an Emacs key description: keys separated by spaces. Each key is
+  a character or one of `RET`, `TAB`, `DEL`, `SPC`, `ESC`, with an optional
+  `M-` prefix (`M-RET`); a letter, `SPC`, or one of `@ [ \ ] ^ _ ?` may also
+  take a `C-` prefix (`C-x`, `C-M-a`). A key may also be one of `<up>`,
+  `<down>`, `<left>`, `<right>`, `<home>`, `<end>`, `<delete>`, `<backtab>`,
+  which take no prefix. A named key stands for every sequence terminals send
+  for it (four for `<home>` and `<end>`, two for each arrow), and a `KEY` may
+  stand for at most 16 sequences. A `KEY` whose first keys run a command, such
+  as `C-a C-b`, is refused. Binding `DEL`, `C-h`, `C-u`, `C-v` or `C-w` turns
   `bind-tty-special-chars` off. If `stty` gives the terminal other erase,
   kill, word-erase or literal-next characters, binding those keys does not;
   turn it off yourself with `inkline-set-readline-variable`.
@@ -124,11 +125,11 @@ change takes effect on the next key.
 - `(inkline-unbind-defaults &optional GROUPS)` — unsets the default layout's
   groups named in `GROUPS` (a symbol, or a list of symbols: `suggestions`,
   `multi-line`, `pairing`, `menu`); with no argument, unsets the whole layout.
-  Unsetting `menu` while `multi-line` stays makes `C-n` and `C-p`, where they
-  still run `menu-next` and `menu-previous`, run `next-line-or-history` and
-  `previous-line-or-history`, as they do with no menu. Once inkline binds none
-  of `DEL`, `C-h`, `C-u`, `C-v` and `C-w`, it turns `bind-tty-special-chars`
-  back on, even when `inputrc` turned it off; call
+  Unsetting `menu` while `multi-line` stays makes `C-n`, `C-p`, `<down>` and
+  `<up>`, where they still run `menu-next` and `menu-previous`, run the
+  command they run with no menu. Once inkline binds none of `DEL`, `C-h`,
+  `C-u`, `C-v` and `C-w`, it turns `bind-tty-special-chars` back on, even
+  when `inputrc` turned it off; call
   `(inkline-set-readline-variable "bind-tty-special-chars" nil)` after it to
   keep it off.
 - `(inkline-set-readline-variable NAME VALUE)` — sets the readline variable
@@ -227,7 +228,11 @@ can find it too.
   A readline or inkline command runs with the key the calling Lisp command or
   hook was run for; after a `C-c` came (while reading a key, while Lisp
   computed, or while a readline command ran), or shell code jumped as above, it
-  raises `quit` instead of running.
+  raises `quit` instead of running. `menu-next` and `menu-previous` run this
+  way move once when the menu shows for the line and cursor as they are; the
+  row stays when the command returns, and the moving ends there. Run from a
+  command whose key comes right after a move, they end that moving and act
+  as with no menu, as for a key that had nothing (see `keymap-global-set`).
 - `(message FORMAT &rest ARGS)` — formats `FORMAT` and `ARGS` as `format`
   does and shows the text under the line until the next key, replacing any
   message already showing; `(message nil)` clears it. Only the text up to
@@ -358,11 +363,16 @@ changed the line: after the command has returned, and before the line is drawn.
 - History recall, a search, undo and taking a suggestion are changes like any
   other, as in Emacs. `this-command` is the name of the command the key ran, and
   `last-command` that of the key before (`nil` for a lambda, and at the first
-  key of a line), so the functions can tell these apart. On bash 5.3, a key
-  that ends an incremental search (`C-r`) runs its own command with
-  `this-command` still naming the search, such as `reverse-search-history`.
+  key of a line), so the functions can tell these apart. In the default
+  layout the arrows run the menu commands, so Up that brings back a history
+  entry gives `this-command` `menu-previous`, and Down `menu-next`. On bash
+  5.3, a key that ends an incremental search (`C-r`) runs its own command
+  with `this-command` still naming the search, such as
+  `reverse-search-history`.
 - Their changes are one undo step of their own, after the key's: the first `C-_`
   takes back what they did and keeps what you typed.
+- It runs after each move through the menu too, with `this-command` the move's
+  command; a function that changes the line then ends the moving.
 - Only called in plain editing: not while searching, reading a count (`M-3`) or
   a quoted key (`C-v`), and not when the key ran the line.
 - A function that fails, also with `user-error`, has its own changes undone and
@@ -376,7 +386,8 @@ Called with the line as a string whenever inkline gathers the completion
 menu's items: the line is not empty, the cursor is at its end, and inkline
 draws the line, in plain editing. Items are not gathered for a line brought
 back from history until you change it, nor while `inkline-show-menu` and
-`inkline-show-suggestion` are both `nil`.
+`inkline-show-suggestion` are both `nil`. No items are gathered while moving
+through the menu.
 
 - The first function that returns a string that starts with the line and is
   longer wins. Any other value is no answer, and the next function is asked.
@@ -385,10 +396,9 @@ back from history until you change it, nor while `inkline-show-menu` and
   [`inkline-completion-functions`](#inkline-completion-functions) for the
   menu's order). An answer with a control character other than a newline or
   a tab is left out of the menu. The grey text after the cursor is the rest
-  of the picked item, or of the top item when none is picked; where that is
-  this answer, it shows as a history suggestion would, a newline giving a
-  multi-line suggestion (see `inkline-suggestion-lines`). The same keys take
-  it.
+  of the top item; where that is this answer, it shows as a history
+  suggestion would, a newline giving a multi-line suggestion (see
+  `inkline-suggestion-lines`). The same keys take it.
 - Each answer, `nil` included, is kept for that exact line text until the next
   line starts. While what you type still matches the start of the suggestion, it
   stays, and the functions are not asked again.

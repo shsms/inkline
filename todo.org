@@ -59,6 +59,12 @@ turned off. Built in three pieces, each adding sources to the same list:
    protocol (~docs/mode-protocol.md~), which a server such as csvm can
    answer with commands, flags, functions and column names.
 
+** TODO A substring filter for the menu
+
+A ~substring~ value for ~inkline-completion-style~, next to ~prefix~ and
+~fuzzy~: items holding the typed text anywhere, as fish's Up finds
+history entries.
+
 ** TODO Colours during C-r reverse search
 
 While ~C-r~ (or ~C-s~) searches the history, the matched line is drawn
