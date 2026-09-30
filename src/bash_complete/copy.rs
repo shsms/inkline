@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use super::answer::{self, Answer, MOST};
 use crate::ffi;
+use crate::mode_server::process;
 
 /// How long after its time is up the watcher kills a copy. The shell kills
 /// it at that time itself when it is not busy, and counts it as timed out.
@@ -63,8 +64,10 @@ fn watch(out: &OwnedFd, copy: libc::pid_t, shell: libc::pid_t, deadline: Instant
             libc::_exit(0);
         }
         let shell_fd = shell_ended_fd(shell);
-        if shell_fd.is_some() || !gone(shell) {
-            wait_until(shell_fd, deadline);
+        if shell_fd.is_some() || crate::lisp::lockout::process_alive(shell) {
+            // With no pidfd there is nothing to wait on, so this only sleeps.
+            let fds: Vec<libc::c_int> = shell_fd.into_iter().collect();
+            while Instant::now() < deadline && !process::readable(&fds, deadline) {}
         }
         libc::kill(0, libc::SIGKILL);
         libc::_exit(0)
@@ -85,35 +88,6 @@ fn shell_ended_fd(pid: libc::pid_t) -> Option<libc::c_int> {
     {
         let _ = pid;
         None
-    }
-}
-
-/// Whether the process `pid` has ended.
-fn gone(pid: libc::pid_t) -> bool {
-    // SAFETY: signal 0 only checks that `pid` exists.
-    let failed = unsafe { libc::kill(pid, 0) != 0 };
-    failed && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-}
-
-/// Waits until `deadline` passes, or until `fd`, when there is one, is
-/// readable.
-fn wait_until(fd: Option<libc::c_int>, deadline: Instant) {
-    let mut poll = libc::pollfd {
-        fd: fd.unwrap_or(-1),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            return;
-        }
-        let ms = libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX);
-        // SAFETY: `poll` reads and fills the one `pollfd`; a negative `fd`
-        // is skipped, so it only sleeps.
-        if unsafe { libc::poll(&mut poll, 1, ms) } > 0 {
-            return;
-        }
     }
 }
 

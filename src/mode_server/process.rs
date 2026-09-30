@@ -436,6 +436,13 @@ pub fn readable(fds: &[RawFd], deadline: Instant) -> bool {
     ready_any(fds, libc::POLLIN, deadline)
 }
 
+/// Milliseconds from now until `deadline`, rounded up, so that a caller
+/// waiting in a loop does not spin when less than a millisecond is left.
+pub(crate) fn ms_until(deadline: Instant) -> libc::c_int {
+    let left = deadline.saturating_duration_since(Instant::now());
+    libc::c_int::try_from(left.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
+}
+
 /// Waits until one of `fds` is ready for `events`, has hung up or failed,
 /// `deadline` has passed, or a signal arrives: a C-c is then acted on at
 /// once. Whether one became ready.
@@ -449,11 +456,7 @@ fn ready_any(fds: &[RawFd], events: libc::c_short, deadline: Instant) -> bool {
         })
         .collect();
     let count = libc::nfds_t::try_from(polls.len()).unwrap_or(libc::nfds_t::MAX);
-    let left = deadline.saturating_duration_since(Instant::now());
-    // Rounded up, so that a caller waiting in a loop does not spin when
-    // less than a millisecond is left.
-    let ms = left.as_micros().div_ceil(1000);
-    let ms = libc::c_int::try_from(ms).unwrap_or(libc::c_int::MAX);
+    let ms = ms_until(deadline);
     // SAFETY: `polls` holds `count` valid `pollfd`s.
     unsafe { libc::poll(polls.as_mut_ptr(), count, ms) > 0 }
 }
