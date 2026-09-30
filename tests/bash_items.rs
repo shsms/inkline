@@ -585,3 +585,30 @@ fn a_killed_copy_is_not_a_job_that_ended() {
     let grey = s.cell(row, col).map(vt100::Cell::fgcolor);
     assert_eq!(grey, Some(vt100::Color::Idx(8)), "{}", dump(&s));
 }
+
+/// A process the shell forks, such as the child of `$(…)` that a `bind -x`
+/// key runs, leaves the shell's copy running when it exits.
+#[test]
+fn a_child_of_the_shell_leaves_its_copy_alone() {
+    let dir = files();
+    let pids = tempfile::tempdir().unwrap();
+    let pid = pids.path().join("slow");
+    let mut sh = shell_in(
+        dir.path(),
+        &format!(
+            "_slow() {{ _group_to '{}'; sleep 1.5; COMPREPLY=(late); }}\n\
+             complete -F _slow slow\n\
+             bind -x '\"\\C-t\": zz=$(true)'\n",
+            pid.display()
+        ),
+        "(setq inkline-bash-completion-timeout 60000)",
+    );
+    sh.send("slow ");
+    let group = written_group(&pid);
+    assert!(group_alive(&group), "the rule is not running");
+    sh.send("\x14");
+    sh.wait_for("the answer", |s| has_row(s, "c  late"));
+    sh.send("\x07\x15inkline status\r");
+    let s = sh.wait_for("the status", |s| find(s, "bash completion:").is_some());
+    assert!(has_row(&s, "bash completion: on"), "{}", dump(&s));
+}

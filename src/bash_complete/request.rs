@@ -8,8 +8,9 @@ use super::Word;
 use super::answer::{self, Answer, Decoded};
 use crate::mode_server::process;
 
-/// A copy of the shell working on bash's matches for `word`. Dropping it
-/// kills the copy and what it started, unless its answer has come.
+/// A copy of the shell working on bash's matches for `word`. Dropping it in
+/// the shell that started it kills the copy and what it started, unless its
+/// answer has come.
 pub struct Running {
     pub word: Word,
     /// When the copy's time is up.
@@ -18,6 +19,10 @@ pub struct Running {
     /// that made the group and started the copy in it. The id is not given
     /// to another process while the group has a process in it.
     group: libc::pid_t,
+    /// The shell that started the copy. A process the shell forks, such as
+    /// the child of `$(…)`, drops this value too when it exits, and must not
+    /// kill the copy.
+    shell: libc::pid_t,
     pipe: OwnedFd,
     buf: Vec<u8>,
     /// Set once the answer came or the pipe closed: the copy's group may then
@@ -100,6 +105,7 @@ impl Running {
             word,
             deadline,
             group: middle,
+            shell,
             pipe: read,
             buf: Vec::new(),
             ended: false,
@@ -160,7 +166,8 @@ impl Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        if !self.ended {
+        // SAFETY: `getpid` only reads this process's id.
+        if !self.ended && unsafe { libc::getpid() } == self.shell {
             // SAFETY: signals the copy's process group, which was made
             // before the copy started in it.
             unsafe {
