@@ -126,14 +126,12 @@ impl Running {
     /// `answer::MOST_BYTES` are a failure.
     pub fn read(&mut self) -> Read {
         let mut chunk = [0u8; 8192];
-        let mut got = false;
         let closed = loop {
             // SAFETY: reads into `chunk`, which outlives the call.
             let n = unsafe { libc::read(self.fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
             match n {
                 0 => break true,
                 n if n > 0 => {
-                    got = true;
                     self.buf.extend_from_slice(&chunk[..n as usize]);
                     if self.buf.len() > answer::MOST_BYTES {
                         return Read::Failed;
@@ -146,8 +144,10 @@ impl Running {
                 },
             }
         };
-        // Bytes already read gave `More` the last time.
-        if !got && !closed {
+        // An answer ends with its end mark and its `cut` field: until the
+        // bytes read end so, or the pipe closes, there is nothing to decode.
+        let whole = self.buf.ends_with(b"e\x000\0") || self.buf.ends_with(b"e\x001\0");
+        if !whole && !closed {
             return Read::More;
         }
         match answer::decode(&self.buf) {
