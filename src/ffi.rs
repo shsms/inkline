@@ -476,6 +476,13 @@ pub fn on_history_entry() -> bool {
     unsafe { !current_history().is_null() }
 }
 
+/// How many entries readline's history place is from the end of history.
+pub fn history_steps_to_end() -> c_int {
+    // SAFETY: reads history's own counter.
+    let length = unsafe { history_length };
+    length - history_position()
+}
+
 unsafe extern "C" {
     static mut rl_signal_event_hook: Option<unsafe extern "C" fn() -> c_int>;
     fn rl_check_signals();

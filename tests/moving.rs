@@ -169,6 +169,23 @@ fn up_finds_entries_holding_the_typed_text() {
 }
 
 #[test]
+fn down_past_the_newest_match_gives_back_the_typed_text() {
+    let mut sh = Shell::start(substring_keys(vec!["git status", "ls", "echo stat", "pwd"]));
+    sh.send("stat");
+    sh.wait_for("the typed text", |s| cursor_row(s) == "$ stat");
+    sh.send(UP);
+    sh.wait_for("the newest match", |s| cursor_row(s) == "$ echo stat");
+    sh.send(UP);
+    sh.wait_for("the match before it", |s| cursor_row(s) == "$ git status");
+    sh.send(DOWN);
+    sh.wait_for("the newer match", |s| cursor_row(s) == "$ echo stat");
+    sh.send(DOWN);
+    sh.wait_for("the typed text back", |s| {
+        cursor_row(s) == "$ stat" && s.cursor_position() == (0, 6)
+    });
+}
+
+#[test]
 fn up_on_an_empty_line_walks_history() {
     let mut sh = Shell::start(substring_keys(vec!["echo one", "echo two", "echo three"]));
     sh.settle();

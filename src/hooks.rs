@@ -96,9 +96,9 @@ struct State {
     /// history did, if it searched, so a further one of the same kind
     /// continues it instead of starting fresh.
     search_continues: Option<ffi::Search>,
-    /// The cursor a substring search with Up started from. With nothing
-    /// before it, readline walks history instead of searching.
-    search_from: Option<usize>,
+    /// The line and cursor a substring search with Up started from, for
+    /// Down past the newest match.
+    search_from: Option<(String, usize)>,
     /// The command the last `menu-next` or `menu-previous` ran as its key's
     /// own command (see `menu_fallback`); None when it did anything else. It
     /// stays across other keys, but counts only while readline's last command
