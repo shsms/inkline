@@ -38,8 +38,6 @@ pub struct Entry {
     pub command: &'static str,
     /// The readline commands that count as the key's default; "" is unbound.
     pub defaults: &'static [&'static str],
-    /// A binding to replace with another command instead: (was, becomes).
-    pub instead: Option<(&'static str, &'static str)>,
 }
 
 const fn e(
@@ -53,7 +51,6 @@ const fn e(
         key,
         command,
         defaults,
-        instead: None,
     }
 }
 
@@ -88,24 +85,6 @@ pub const LAYOUT: &[Entry] = &[
     e(MultiLine, "RET", "accept-or-newline", &["accept-line"]),
     e(MultiLine, "C-j", "insert-newline", &["accept-line"]),
     e(MultiLine, "M-RET", "accept-as-is", &["", "vi-editing-mode"]),
-    Entry {
-        instead: Some(("history-search-backward", "previous-line-or-search")),
-        ..e(
-            MultiLine,
-            "<up>",
-            "previous-line-or-history",
-            &["previous-history", ""],
-        )
-    },
-    Entry {
-        instead: Some(("history-search-forward", "next-line-or-search")),
-        ..e(
-            MultiLine,
-            "<down>",
-            "next-line-or-history",
-            &["next-history", ""],
-        )
-    },
     e(MultiLine, "C-a", "line-start", &["beginning-of-line"]),
     e(
         MultiLine,
@@ -133,6 +112,28 @@ pub const LAYOUT: &[Entry] = &[
     e(Pairing, "DEL", "delete-pair", &["backward-delete-char"]),
     e(Menu, "C-n", "menu-next", &["next-history"]),
     e(Menu, "C-p", "menu-previous", &["previous-history"]),
+    e(
+        Menu,
+        "<down>",
+        "menu-next",
+        &[
+            "next-history",
+            "",
+            "history-search-forward",
+            "history-substring-search-forward",
+        ],
+    ),
+    e(
+        Menu,
+        "<up>",
+        "menu-previous",
+        &[
+            "previous-history",
+            "",
+            "history-search-backward",
+            "history-substring-search-backward",
+        ],
+    ),
     e(Menu, "TAB", "menu-take", &["complete"]),
     e(Menu, "<backtab>", "menu-take-previous", &[""]),
     e(Menu, "C-g", "menu-hide", &["abort"]),
@@ -185,11 +186,10 @@ mod bash {
                     Some((ffi::Binding::Command(f), false)) => ffi::command_name(*f),
                     _ => None,
                 };
-                let command = match (&name, entry.instead) {
-                    (Some(n), Some((was, becomes))) if n == was => Some(becomes),
-                    (Some(n), _) if entry.defaults.contains(&n.as_str()) => Some(entry.command),
-                    _ => None,
-                };
+                let command = name
+                    .as_ref()
+                    .filter(|n| entry.defaults.contains(&n.as_str()))
+                    .map(|_| entry.command);
                 match command.and_then(|c| ffi::named_command(c).map(|f| (c, f))) {
                     Some((c, f)) => {
                         let _ = keys::bind_seq(&seq, entry.key, c, f, None, Some(entry.group));

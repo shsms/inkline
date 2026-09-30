@@ -769,35 +769,53 @@ fn a_users_own_binding_is_left_alone() {
     sh.wait_for("the cursor moved back", |s| s.cursor_position() == (0, 7));
 }
 
+/// Up moves through the menu as `C-p` does, also in a multi-line command.
 #[test]
-fn up_moves_between_lines_while_the_menu_shows() {
+fn up_moves_through_the_menu_like_ctrl_p() {
     // `\x0a` is C-j: it adds a line to the command.
     let mut sh = menu_showing(with_init(WORDS, vec![]), "echo a\x0aecho s", "l  switch");
     sh.send("\x1b[A");
-    sh.wait_for("the cursor on the first line", |s| {
-        s.cursor_position().0 == 0
+    sh.wait_for("the bottom row", |s| {
+        s.cursor_position().0 == 1 && row_text(s, 1) == "echo show" && picked(s, 3)
+    });
+    sh.send("\x1b[B");
+    sh.wait_for("the top row", |s| {
+        row_text(s, 1) == "echo switch" && picked(s, 2)
     });
 }
 
-/// Moving the pick is not a move between lines: the next Up keeps the
-/// cursor's own column, not one from an earlier run of Up and Down.
+/// Moving through the menu is not a move between lines: a move up a line
+/// right after a row was written keeps the cursor's own column, not one from
+/// the run of line moves before the row. Keys bound straight to the line
+/// commands move between lines while the menu shows, which
+/// `inkline-menu-on-move` keeps up after each.
 #[test]
-fn up_after_a_pick_keeps_the_cursors_column() {
-    let mut sh = Shell::start(with_init(WORDS, vec![]));
-    sh.send("echo aaaaaaaaaaaa\x0aecho");
-    sh.wait_for("two lines", |s| s.cursor_position().0 == 1);
-    sh.send("\x1b[A");
-    sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
-    sh.send("\x1b[B");
-    sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
-    sh.send(" s");
+fn up_after_moving_keeps_the_cursors_column() {
+    let init = format!("{WORDS}\n(setq inkline-menu-on-move t)");
+    let mut sh = Shell::start(Options {
+        rc: "bind '\"\\C-xk\": previous-line-or-history'
+bind '\"\\C-xj\": next-line-or-history'
+"
+        .into(),
+        ..with_init(&init, vec![])
+    });
+    // `\x0a` is C-j: it adds a line to the command.
+    sh.send("echo aaaaaaaaaaaa\x0aecho s");
     sh.wait_for("the menu", |s| row_text(s, 2) == "l  switch");
+    // A run of line moves keeps column 6.
+    sh.send("\x18k");
+    sh.wait_for("the first line", |s| s.cursor_position() == (0, 6));
+    sh.send("\x18j");
+    sh.wait_for("the second line and its menu", |s| {
+        s.cursor_position() == (1, 6) && row_text(s, 2) == "l  switch"
+    });
     sh.send(C_N);
-    let s = sh.wait_for("the pick", |s| picked(s, 2));
-    let col = s.cursor_position().1;
-    sh.send("\x1b[A");
+    sh.wait_for("the row written", |s| {
+        picked(s, 2) && row_text(s, 1) == "echo switch" && s.cursor_position() == (1, 11)
+    });
+    sh.send("\x18k");
     let s = sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
-    assert_eq!(s.cursor_position(), (0, col), "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 11), "{}", dump(&s));
 }
 
 /// `C-g` with no menu is readline's `abort`, which rings the bell, and the
@@ -867,7 +885,7 @@ fn walked_back_from_the_search(s: &vt100::Screen) -> bool {
 
 /// A line that Up found with `previous-line-or-search` counts as brought
 /// back from history: after `C-e` it shows no menu and no grey text, and
-/// `C-p` goes back from it. inkline binds Up to `previous-line-or-search`
+/// `C-p` goes back from it. With no menu, Up runs `previous-line-or-search`
 /// where inputrc binds it to `history-search-backward`.
 #[test]
 fn a_line_found_with_previous_line_or_search_shows_no_menu() {
@@ -878,6 +896,7 @@ fn a_line_found_with_previous_line_or_search_shows_no_menu() {
     });
     sh.send("git s");
     sh.wait_for("the menu", |s| row_text(s, 1) == "h  git st");
+    sh.send("\x07");
     sh.send("\x1b[A");
     sh.wait_for("the found entry", |s| {
         cursor_row(s) == "$ git st" && row_text(s, 1).is_empty()
@@ -910,22 +929,6 @@ fn a_line_found_with_a_non_incremental_search_shows_no_menu() {
     assert_eq!(row_text(&s, 1), "", "no menu: {}", dump(&s));
     sh.send(C_P);
     sh.wait_for("an older entry", walked_back_from_the_search);
-}
-
-/// A search with Up (`previous-line-or-search`, as above) that finds nothing
-/// leaves the typed line, and its menu, as they were.
-#[test]
-fn a_search_that_finds_nothing_keeps_the_menu() {
-    let mut sh = Shell::start(Options {
-        inputrc: Some("\"\\e[A\": history-search-backward\n".into()),
-        ..with_init(WORDS, vec!["ls"])
-    });
-    sh.send("echo s");
-    sh.wait_for("the menu", |s| row_text(s, 1) == "l  switch");
-    sh.send("\x1b[A");
-    let s = sh.settle();
-    assert_eq!(cursor_row(&s), "$ echo switch", "{}", dump(&s));
-    assert_eq!(row_text(&s, 1), "l  switch", "{}", dump(&s));
 }
 
 /// `menu-next` works on any key: with a menu it moves, and with none the
@@ -1142,10 +1145,10 @@ fn the_menu_waits_for_enough_typed_characters() {
 #[test]
 fn moving_the_cursor_hides_the_menu_until_the_text_changes() {
     // `\x0a` is C-j: it adds a line to the command. The second line has no
-    // prompt, so the cursor's column there is after the `s` of the first.
+    // prompt, so `<left>` puts the cursor before its `h`, at column 7.
     let mut sh = menu_showing(with_init(WORDS, vec![]), "echo s\x0aecho  sh", "l  show");
-    sh.send("\x1b[A");
-    sh.wait_for("the first line", |s| s.cursor_position().0 == 0);
+    sh.send("\x1b[D");
+    sh.wait_for("the cursor moved", |s| s.cursor_position() == (1, 7));
     let s = sh.settle();
     assert!(!has_row(&s, "l  s"), "{}", dump(&s));
     sh.send(C_N);
@@ -1156,7 +1159,8 @@ fn moving_the_cursor_hides_the_menu_until_the_text_changes() {
     sh.wait_for("the first line again", |s| s.cursor_position().0 == 0);
     sh.send(C_N);
     sh.wait_for("the second line again", |s| s.cursor_position().0 == 1);
-    sh.send("o");
+    // `<right>` goes back past the `h`.
+    sh.send("\x1b[Co");
     sh.wait_for("the menu again", |s| row_text(s, 2) == "l  show");
 }
 
@@ -1164,9 +1168,9 @@ fn moving_the_cursor_hides_the_menu_until_the_text_changes() {
 fn menu_on_move_keeps_the_menu_while_the_cursor_moves() {
     let init = format!("{WORDS}\n(setq inkline-menu-on-move t)");
     let mut sh = menu_showing(with_init(&init, vec![]), "echo s\x0aecho  sh", "l  show");
-    sh.send("\x1b[A");
-    sh.wait_for("the first line and its menu", |s| {
-        s.cursor_position().0 == 0 && has_row(s, "l  switch")
+    sh.send("\x1b[D");
+    sh.wait_for("the cursor moved and the menu", |s| {
+        s.cursor_position() == (1, 7) && has_row(s, "l  show")
     });
 }
 

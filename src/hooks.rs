@@ -1918,14 +1918,14 @@ extern "C" fn accept_suggestion(count: c_int, key: c_int) -> c_int {
     accept(count, key, suggest::all, multiline::end_of_line)
 }
 
-/// `C-n`: moves to the next row of the menu, writing it into the line; with
-/// no menu, see `menu_fallback`.
+/// `C-n` and `<down>`: move to the next row of the menu, writing it into the
+/// line; with no menu, see `menu_fallback`.
 pub(super) extern "C" fn menu_next(count: c_int, key: c_int) -> c_int {
     move_pick(count, key, true)
 }
 
-/// `C-p`: moves to the row above in the menu, writing it into the line; with
-/// no menu, see `menu_fallback`.
+/// `C-p` and `<up>`: move to the row above in the menu, writing it into the
+/// line; with no menu, see `menu_fallback`.
 pub(super) extern "C" fn menu_previous(count: c_int, key: c_int) -> c_int {
     move_pick(count, key, false)
 }

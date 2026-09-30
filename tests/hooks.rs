@@ -343,7 +343,7 @@ const SHOW_CHANGES: &str = r#"(add-hook 'inkline-after-change-functions
 fn after_change_gets_the_part_and_the_commands() {
     let mut sh = Shell::start(Options {
         init_el: Some(SHOW_CHANGES.into()),
-        history: vec!["echo old"],
+        history: vec!["a old"],
         ..Options::default()
     });
     sh.send("a");
@@ -351,12 +351,12 @@ fn after_change_gets_the_part_and_the_commands() {
     sh.send("b");
     sh.wait_for("typing", |s| has_row(s, "self-insert self-insert 2 3 0"));
     // The default layout binds DEL to `delete-pair` and Up to
-    // `previous-line-or-history`.
+    // `menu-previous`.
     sh.send("\x7f");
     sh.wait_for("deleting", |s| has_row(s, "delete-pair self-insert 2 2 1"));
     sh.send(UP);
-    sh.wait_for("history", |s| {
-        has_row(s, "previous-line-or-history delete-pair 1 9 1")
+    sh.wait_for("the menu row", |s| {
+        has_row(s, "menu-previous delete-pair 2 6 0")
     });
 }
 

@@ -152,8 +152,10 @@ fn layout_leaves_inputrc_keys_after_an_earlier_bind() {
     sh.wait_for("C-k transposes", |s| cursor_row(s) == "$ ba");
 }
 
+/// Where inputrc binds Up to `history-search-backward`, Up moves through
+/// the menu when one shows, and with none searches by prefix.
 #[test]
-fn history_search_on_up_becomes_line_or_search() {
+fn history_search_on_up_moves_the_menu_and_searches_by_prefix() {
     let mut sh = Shell::start(Options {
         inputrc: Some("\"\\e[A\": history-search-backward\n".into()),
         history: vec!["echo one", "ls two", "echo two"],
@@ -161,15 +163,18 @@ fn history_search_on_up_becomes_line_or_search() {
         rows: 40,
         ..Options::default()
     });
-    // The suggestion is "echo two"; the second Up skips "ls two".
-    sh.send("ec\x1b[A\x1b[A");
+    sh.send("ec");
+    sh.wait_for("the menu", |s| row_text(s, 1) == "h  echo two");
+    sh.send("\x1b[A");
+    sh.wait_for("the bottom row", |s| cursor_row(s) == "$ echo one");
+    // Back to the typed text with no menu: Up searches by prefix and skips
+    // "ls two".
+    sh.send("\x07\x1b[A\x1b[A");
     sh.wait_for("the search", |s| cursor_row(s) == "$ echo one");
-    // The search leaves the cursor after "ec": clear the whole line.
     sh.send("\x01\x0binkline keys\r");
     sh.wait_for("the binding", |s| {
         (0..s.size().0).any(|r| {
-            row_text(s, r).starts_with("<up>")
-                && row_text(s, r).ends_with("previous-line-or-search")
+            row_text(s, r).starts_with("<up>") && row_text(s, r).ends_with("menu-previous")
         })
     });
 }
@@ -202,13 +207,48 @@ fn unbinding_the_menu_gives_ctrl_p_and_ctrl_n_back_to_multi_line() {
     });
     sh.send("\x0e");
     sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
-    sh.send("\x15\x0binkline keys | grep -E '^C-[np]\\s'\r");
+    sh.send("\x15\x0binkline keys | grep -E '^(C-[np]|<up>)\\s'\r");
     sh.wait_for("the bindings", |s| {
         (0..s.size().0).any(|r| {
             row_text(s, r).starts_with("C-p")
                 && row_text(s, r).ends_with("previous-line-or-substring-search")
+        }) && (0..s.size().0).any(|r| {
+            row_text(s, r).starts_with("<up>")
+                && row_text(s, r).ends_with("previous-line-or-substring-search")
         })
     });
+}
+
+/// With the menu group unbound, Up keeps inputrc's prefix search, as a
+/// multi-line key.
+#[test]
+fn unbinding_the_menu_keeps_prefix_search_on_up() {
+    let mut sh = Shell::start(Options {
+        inputrc: Some("\"\\e[A\": history-search-backward\n".into()),
+        init_el: Some("(inkline-unbind-defaults 'menu)\n".into()),
+        rows: 40,
+        ..Options::default()
+    });
+    sh.send("inkline keys | grep '^<up>'\r");
+    sh.wait_for("the binding", |s| {
+        (0..s.size().0).any(|r| {
+            row_text(s, r).starts_with("<up>")
+                && row_text(s, r).ends_with("previous-line-or-search")
+        })
+    });
+}
+
+/// With only the multi-line group unbound, a menu key with no menu runs
+/// readline's own command: Up walks history plainly, with no line moves.
+#[test]
+fn unbinding_multi_line_gives_the_arrows_readlines_history() {
+    let mut sh = Shell::start(Options {
+        init_el: Some("(inkline-unbind-defaults 'multi-line)\n".into()),
+        history: vec!["echo stat", "ls"],
+        ..Options::default()
+    });
+    sh.send("stat\x07\x1b[A");
+    sh.wait_for("the newest entry", |s| cursor_row(s) == "$ ls");
 }
 
 /// Unbinding the multi-line group after the menu group gives `C-p` back to
