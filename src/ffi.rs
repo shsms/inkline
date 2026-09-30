@@ -1697,6 +1697,20 @@ pub struct CompletionSettings {
     suppress_quote: c_int,
     append_character: c_int,
     mark_symlink_dirs: c_int,
+    /// readline 8.3's `rl_full_quoting_desired` (`compopt -o fullquote`).
+    full_quoting: c_int,
+}
+
+/// readline 8.3's `rl_full_quoting_desired`: quote a match even when it is
+/// not a file name. Earlier readline has none, so it is looked up at run
+/// time.
+fn full_quoting_desired() -> Option<*mut c_int> {
+    static FULL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    // SAFETY: `dlsym` only looks the symbol up.
+    let at = *FULL.get_or_init(|| unsafe {
+        libc::dlsym(libc::RTLD_DEFAULT, c"rl_full_quoting_desired".as_ptr()) as usize
+    });
+    (at != 0).then_some(at as *mut c_int)
 }
 
 /// What bash's completion gave for the word at the cursor.
@@ -1773,6 +1787,9 @@ pub fn bash_matches() -> Option<BashMatches> {
         rl_completion_found_quote = found;
         rl_completion_quote_character = c_int::from(quote as u8);
         rl_completion_invoking_key = c_int::from(b'\t');
+        if let Some(full) = full_quoting_desired() {
+            *full = 0;
+        }
         rl_attempted_completion_over = 0;
         let line = line_bytes();
         let text = CString::new(line.get(start as usize..end as usize)?).ok()?;
@@ -1808,6 +1825,7 @@ pub fn bash_matches() -> Option<BashMatches> {
             suppress_quote: rl_completion_suppress_quote,
             append_character: rl_completion_append_character,
             mark_symlink_dirs: rl_completion_mark_symlink_dirs,
+            full_quoting: full_quoting_desired().map_or(0, |full| *full),
         };
         Some(BashMatches {
             start: start as usize,
@@ -1895,6 +1913,9 @@ unsafe extern "C" fn one_match(
         rl_completion_suppress_quote = s.suppress_quote;
         rl_completion_append_character = s.append_character;
         rl_completion_mark_symlink_dirs = s.mark_symlink_dirs;
+        if let Some(full) = full_quoting_desired() {
+            *full = s.full_quoting;
+        }
         rl_attempted_completion_over = 1;
         let list = libc::malloc(2 * std::mem::size_of::<*mut c_char>()).cast::<*mut c_char>();
         if list.is_null() {
