@@ -125,13 +125,22 @@ fn at_a_line_edge_the_kills_join_lines() {
     sh.wait_for("joined by C-k", |s| row_text(s, 0) == "$ echo aecho b");
 }
 
+/// A shell whose Up and Down run `up` and `down`.
+fn arrow_keys(up: &str, down: &str, history: Vec<&'static str>) -> Options {
+    Options {
+        rc: format!("bind '\"\\e[A\": {up}'\nbind '\"\\e[B\": {down}'\n"),
+        history,
+        ..Options::default()
+    }
+}
+
 #[test]
 fn up_can_search_history() {
-    let mut sh = Shell::start(Options {
-        rc: "bind '\"\\e[A\": previous-line-or-search'\n".into(),
-        history: vec!["git status", "ls", "git log"],
-        ..Options::default()
-    });
+    let mut sh = Shell::start(arrow_keys(
+        "previous-line-or-search",
+        "next-line-or-search",
+        vec!["git status", "ls", "git log"],
+    ));
     sh.send("git");
     sh.wait_for("the text", |s| cursor_row(s).starts_with("$ git"));
     sh.send(UP);
@@ -142,14 +151,11 @@ fn up_can_search_history() {
 
 /// A shell whose Up and Down run the substring search commands.
 fn substring_keys(history: Vec<&'static str>) -> Options {
-    Options {
-        rc: "bind '\"\\e[A\": previous-line-or-substring-search'
-bind '\"\\e[B\": next-line-or-substring-search'
-"
-        .into(),
+    arrow_keys(
+        "previous-line-or-substring-search",
+        "next-line-or-substring-search",
         history,
-        ..Options::default()
-    }
+    )
 }
 
 #[test]
@@ -315,14 +321,11 @@ fn down_after_a_failed_substring_search_stays() {
 
 #[test]
 fn down_after_a_failed_prefix_search_stays() {
-    down_after_a_failed_search_stays(Options {
-        rc: "bind '\"\\e[A\": previous-line-or-search'
-bind '\"\\e[B\": next-line-or-search'
-"
-        .into(),
-        history: vec!["ls"],
-        ..Options::default()
-    });
+    down_after_a_failed_search_stays(arrow_keys(
+        "previous-line-or-search",
+        "next-line-or-search",
+        vec!["ls"],
+    ));
 }
 
 /// On a history entry that was changed, Down walks history: it does not

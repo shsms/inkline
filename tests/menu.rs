@@ -312,12 +312,22 @@ fn picked(s: &vt100::Screen, row: u16) -> bool {
     s.cell(row, 0).is_some_and(|c| c.inverse())
 }
 
-fn two_items() -> Shell {
+/// A shell started with `opts` and the history `git stash`, `git status`,
+/// with `git st` typed and the two rows showing: `git status`, `git stash`,
+/// top to bottom.
+fn two_items_with(opts: Options) -> Shell {
     menu_showing(
-        with_history(vec!["git stash", "git status"]),
+        Options {
+            history: vec!["git stash", "git status"],
+            ..opts
+        },
         "git st",
         "h  git status",
     )
+}
+
+fn two_items() -> Shell {
+    two_items_with(Options::default())
 }
 
 /// A shell with `git st` typed and three history rows: `git status`,
@@ -327,6 +337,25 @@ fn three_items() -> Shell {
         with_history(vec!["git stage", "git stash", "git status"]),
         "git st",
         "h  git status",
+    )
+}
+
+/// A shell with `git st` typed and one history row, `git status`.
+fn one_item() -> Shell {
+    menu_showing(with_history(vec!["git status"]), "git st", "h  git status")
+}
+
+/// A shell started with `opts` and the history `echo one-two`, `echo oh`,
+/// with `echo o` typed and the two rows showing: `echo oh`, `echo one-two`,
+/// top to bottom.
+fn echo_items(opts: Options) -> Shell {
+    menu_showing(
+        Options {
+            history: vec!["echo one-two", "echo oh"],
+            ..opts
+        },
+        "echo o",
+        "h  echo oh",
     )
 }
 
@@ -426,7 +455,7 @@ fn tab_moves_through_the_rows() {
 /// With one row, Tab writes it and does not start moving.
 #[test]
 fn tab_with_one_row_writes_it() {
-    let mut sh = menu_showing(with_history(vec!["git status"]), "git st", "h  git status");
+    let mut sh = one_item();
     sh.send("\t");
     let s = sh.wait_for("the row written", |s| {
         cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
@@ -438,7 +467,7 @@ fn tab_with_one_row_writes_it() {
 /// and the row stays picked.
 #[test]
 fn tab_while_moving_with_one_row_stays_on_it() {
-    let mut sh = menu_showing(with_history(vec!["git status"]), "git st", "h  git status");
+    let mut sh = one_item();
     sh.send(C_N);
     sh.wait_for("the row written", |s| {
         picked(s, 1) && cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
@@ -495,11 +524,7 @@ fn ctrl_g_then_two_tabs_list_the_choices() {
 
 #[test]
 fn enter_keeps_the_row_without_running() {
-    let mut sh = menu_showing(
-        with_history(vec!["echo one-two", "echo oh"]),
-        "echo o",
-        "h  echo oh",
-    );
+    let mut sh = echo_items(Options::default());
     sh.send(C_P);
     sh.wait_for("the bottom written", |s| {
         picked(s, 2) && cursor_row(s) == "$ echo one-two"
@@ -521,11 +546,7 @@ fn enter_keeps_the_row_without_running() {
 /// With no move, Enter runs the line as typed.
 #[test]
 fn enter_with_no_move_runs_the_line_as_typed() {
-    let mut sh = menu_showing(
-        with_history(vec!["echo one-two", "echo oh"]),
-        "echo o",
-        "h  echo oh",
-    );
+    let mut sh = echo_items(Options::default());
     sh.send("\r");
     sh.wait_for("the output", |s| row_text(s, 1) == "o");
 }
@@ -533,11 +554,7 @@ fn enter_with_no_move_runs_the_line_as_typed() {
 /// `M-RET` while moving runs the line as written.
 #[test]
 fn alt_enter_while_moving_runs_the_written_line() {
-    let mut sh = menu_showing(
-        with_history(vec!["echo one-two", "echo oh"]),
-        "echo o",
-        "h  echo oh",
-    );
+    let mut sh = echo_items(Options::default());
     sh.send(C_P);
     sh.wait_for("the bottom written", |s| cursor_row(s) == "$ echo one-two");
     sh.send(ALT_ENTER);
@@ -550,14 +567,7 @@ fn alt_enter_while_moving_runs_the_written_line() {
 /// it runs the written row at once.
 #[test]
 fn enter_as_accept_line_runs_the_written_row() {
-    let mut sh = menu_showing(
-        with_init(
-            "(inkline-unbind-defaults 'multi-line)",
-            vec!["echo one-two", "echo oh"],
-        ),
-        "echo o",
-        "h  echo oh",
-    );
+    let mut sh = echo_items(with_init("(inkline-unbind-defaults 'multi-line)", vec![]));
     sh.send(C_P);
     sh.wait_for("the bottom written", |s| cursor_row(s) == "$ echo one-two");
     sh.send("\r");
@@ -620,11 +630,7 @@ fn a_lisp_command_moves_after_its_own_question() {
   (lambda () (interactive)
     (y-or-n-p "Q? ")
     (call-interactively 'menu-next)))"#;
-    let mut sh = menu_showing(
-        with_init(init, vec!["git stash", "git status"]),
-        "git st",
-        "h  git status",
-    );
+    let mut sh = two_items_with(with_init(init, vec![]));
     sh.send("\x18w");
     sh.wait_for("the question", |s| has_row(s, "Q? (y or n)"));
     sh.send("n");
@@ -643,11 +649,7 @@ fn a_lisp_command_that_edits_then_moves_leaves_a_whole_line() {
     (insert "a")
     (y-or-n-p "Q? ")
     (call-interactively 'menu-next)))"#;
-    let mut sh = menu_showing(
-        with_init(init, vec!["git stash", "git status"]),
-        "git st",
-        "h  git status",
-    );
+    let mut sh = two_items_with(with_init(init, vec![]));
     sh.send("\x18w");
     sh.wait_for("the question", |s| has_row(s, "Q? (y or n)"));
     sh.send("n");
@@ -671,11 +673,7 @@ fn an_after_change_edit_ends_moving() {
     (when (eq this-command 'menu-next)
       (goto-char (point-max))
       (insert "!"))))"#;
-    let mut sh = menu_showing(
-        with_init(init, vec!["git stash", "git status"]),
-        "git st",
-        "h  git status",
-    );
+    let mut sh = two_items_with(with_init(init, vec![]));
     sh.send(C_N);
     sh.wait_for("the row and the hook's change", |s| {
         cursor_row(s) == "$ git status!"
@@ -935,14 +933,7 @@ fn a_line_found_with_a_non_incremental_search_shows_no_menu() {
 /// key does what it did before (`C-t` swaps two characters).
 #[test]
 fn menu_next_on_another_key_keeps_that_keys_own_job() {
-    let mut sh = menu_showing(
-        with_init(
-            "(keymap-global-set \"C-t\" 'menu-next)",
-            vec!["git stash", "git status"],
-        ),
-        "git st",
-        "h  git status",
-    );
+    let mut sh = two_items_with(with_init("(keymap-global-set \"C-t\" 'menu-next)", vec![]));
     sh.send("\x14");
     sh.wait_for("the top row", |s| {
         picked(s, 1) && cursor_row(s) == "$ git status"

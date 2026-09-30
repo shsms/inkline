@@ -3,6 +3,15 @@ mod common;
 
 use common::*;
 
+/// Whether a row of `s` lists `key` as running `command`, as `inkline keys`
+/// prints it.
+fn lists(s: &vt100::Screen, key: &str, command: &str) -> bool {
+    (0..s.size().0).any(|r| {
+        let row = row_text(s, r);
+        row.starts_with(key) && row.ends_with(command)
+    })
+}
+
 #[test]
 fn keymap_global_set_binds_every_sequence_and_unset_puts_it_back() {
     let mut sh = Shell::start(Options {
@@ -54,11 +63,7 @@ fn inkline_keys_lists_bindings() {
         ..Options::default()
     });
     sh.send("inkline keys\r");
-    sh.wait_for("the list", |s| {
-        (0..s.size().0).any(|r| {
-            row_text(s, r).starts_with("C-x C-a") && row_text(s, r).ends_with("beginning-of-line")
-        })
-    });
+    sh.wait_for("the list", |s| lists(s, "C-x C-a", "beginning-of-line"));
 }
 
 #[test]
@@ -172,11 +177,7 @@ fn history_search_on_up_moves_the_menu_and_searches_by_prefix() {
     sh.send("\x07\x1b[A\x1b[A");
     sh.wait_for("the search", |s| cursor_row(s) == "$ echo one");
     sh.send("\x01\x0binkline keys\r");
-    sh.wait_for("the binding", |s| {
-        (0..s.size().0).any(|r| {
-            row_text(s, r).starts_with("<up>") && row_text(s, r).ends_with("menu-previous")
-        })
-    });
+    sh.wait_for("the binding", |s| lists(s, "<up>", "menu-previous"));
 }
 
 #[test]
@@ -209,13 +210,8 @@ fn unbinding_the_menu_gives_ctrl_p_and_ctrl_n_back_to_multi_line() {
     sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
     sh.send("\x15\x0binkline keys | grep -E '^(C-[np]|<up>)\\s'\r");
     sh.wait_for("the bindings", |s| {
-        (0..s.size().0).any(|r| {
-            row_text(s, r).starts_with("C-p")
-                && row_text(s, r).ends_with("previous-line-or-substring-search")
-        }) && (0..s.size().0).any(|r| {
-            row_text(s, r).starts_with("<up>")
-                && row_text(s, r).ends_with("previous-line-or-substring-search")
-        })
+        lists(s, "C-p", "previous-line-or-substring-search")
+            && lists(s, "<up>", "previous-line-or-substring-search")
     });
 }
 
@@ -231,10 +227,7 @@ fn unbinding_the_menu_keeps_prefix_search_on_up() {
     });
     sh.send("inkline keys | grep '^<up>'\r");
     sh.wait_for("the binding", |s| {
-        (0..s.size().0).any(|r| {
-            row_text(s, r).starts_with("<up>")
-                && row_text(s, r).ends_with("previous-line-or-search")
-        })
+        lists(s, "<up>", "previous-line-or-search")
     });
 }
 
@@ -472,14 +465,8 @@ fn reload_takes_del_and_c_u_again() {
     // starts, unless bind-tty-special-chars is off.
     sh.send("inkline keys | grep -E '^(DEL|C-u)'; echo done\r");
     let s = sh.wait_for("done", |s| has_row(s, "done"));
-    let listed = |key: &str, command: &str| {
-        (0..s.size().0).any(|r| {
-            let row = row_text(&s, r);
-            row.starts_with(key) && row.ends_with(command)
-        })
-    };
-    assert!(listed("DEL", "delete-pair"), "{}", dump(&s));
-    assert!(listed("C-u", "kill-to-line-start"), "{}", dump(&s));
+    assert!(lists(&s, "DEL", "delete-pair"), "{}", dump(&s));
+    assert!(lists(&s, "C-u", "kill-to-line-start"), "{}", dump(&s));
 }
 
 #[test]
@@ -490,9 +477,6 @@ fn backtab_is_bound_to_menu_take_previous() {
     });
     sh.send("inkline keys\r");
     sh.wait_for("the binding", |s| {
-        (0..s.size().0).any(|r| {
-            row_text(s, r).starts_with("<backtab>")
-                && row_text(s, r).ends_with("menu-take-previous")
-        })
+        lists(s, "<backtab>", "menu-take-previous")
     });
 }
