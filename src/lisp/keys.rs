@@ -133,17 +133,30 @@ pub fn shared_command(running: ffi::RunningKey) -> Option<LispCommand> {
     })
 }
 
-/// What a Lisp command's key runs when Lisp cannot run.
+/// What a Lisp command's key runs when Lisp cannot run, or a menu key with
+/// no menu.
 pub enum Fallback {
     Command(ffi::CommandFn),
-    Macro(ffi::MacroText),
+    /// Macro text, copied for `ffi::push_macro_input` when it runs.
+    Macro(Vec<u8>),
     Nothing,
 }
 
+impl Fallback {
+    /// The fallback for `saved`, what a sequence had before inkline first
+    /// bound it.
+    pub fn of(saved: &ffi::Binding) -> Fallback {
+        match saved {
+            ffi::Binding::Command(f) => Fallback::Command(*f),
+            ffi::Binding::Macro(text) => Fallback::Macro(text.clone()),
+            ffi::Binding::Unbound => Fallback::Nothing,
+        }
+    }
+}
+
 /// What the key being run had before inkline first bound it to the Lisp
-/// command of slot `slot` (or of `commands::SHARED`, for None). Macro text
-/// comes as a copy for `ffi::push_macro_input`. A saved Lisp command's
-/// function would only lead back here, so it gives `Nothing`.
+/// command of slot `slot` (or of `commands::SHARED`, for None). A saved Lisp
+/// command's function would only lead back here, so it gives `Nothing`.
 pub fn saved_binding(slot: Option<usize>) -> Fallback {
     saved_where(
         |b| match (&b.lisp, slot) {
@@ -178,14 +191,12 @@ fn saved_where(
     let saved = TABLE.with_borrow(|t| {
         t.iter()
             .find(|b| pick(b) && runs_at(b, running))
-            .map(|b| b.saved.binding.clone())
+            .map(|b| Fallback::of(&b.saved.binding))
     });
     match saved {
-        Some(ffi::Binding::Command(f)) if !leads_back(f) => Fallback::Command(f),
-        Some(ffi::Binding::Macro(text)) => {
-            ffi::macro_text(&text).map_or(Fallback::Nothing, Fallback::Macro)
-        }
-        Some(ffi::Binding::Command(_) | ffi::Binding::Unbound) | None => Fallback::Nothing,
+        Some(Fallback::Command(f)) if leads_back(f) => Fallback::Nothing,
+        Some(fallback) => fallback,
+        None => Fallback::Nothing,
     }
 }
 
@@ -286,7 +297,8 @@ pub fn unset_groups(groups: &[Group]) {
                             "menu-previous" => false,
                             _ => return None,
                         };
-                        let back = layout::menu_key_fallback(down, &b.saved.binding)?;
+                        let saved = Fallback::of(&b.saved.binding);
+                        let back = layout::menu_key_fallback(down, &saved)?;
                         Some((b.seq.clone(), b.key.clone(), back))
                     })
                     .collect()

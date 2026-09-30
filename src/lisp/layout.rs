@@ -160,7 +160,7 @@ mod bash {
     use super::*;
     use crate::ffi;
     use crate::lisp::keydesc;
-    use crate::lisp::keys::{self, LeftAlone};
+    use crate::lisp::keys::{self, Fallback, LeftAlone};
 
     /// Readline set-up before binding: sets the variables the layout needs,
     /// then runs readline's own start-up if bash has not run it yet, which
@@ -208,11 +208,12 @@ mod bash {
     /// runs with no menu, from what its key had before inkline bound it
     /// (`saved`). None when what the key had runs as it is, as for macro
     /// text or a command readline has no name for.
-    pub fn menu_key_fallback(down: bool, saved: &ffi::Binding) -> Option<&'static str> {
+    pub fn menu_key_fallback(down: bool, saved: &Fallback) -> Option<&'static str> {
         let had = match saved {
-            ffi::Binding::Unbound => None,
-            ffi::Binding::Command(f) => Some(ffi::command_name(*f)?),
-            ffi::Binding::Macro(_) => return None,
+            Fallback::Nothing => None,
+            Fallback::Command(f) => Some(ffi::command_name(*f)?),
+            // Macro text gives no Up or Down command, whatever it is.
+            Fallback::Macro(_) => return None,
         };
         named_fallback(down, had.as_deref())
     }

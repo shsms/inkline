@@ -697,13 +697,21 @@ fn run_saved_binding(slot: Option<usize>, count: c_int, key: c_int) -> c_int {
 /// Runs `saved`, what a key had before inkline first bound it: the saved
 /// command or macro text, or the bell when nothing was saved. The saved
 /// command runs last, with nothing in the caller's frame to drop, as
-/// readline may jump from it back to its top level.
+/// readline may jump from it back to its top level. Pushing macro text may
+/// jump too, past readline's limit of nested macros, and then readline
+/// never takes the copy made for it, which leaks; so the bytes are dropped
+/// first, and only that copy is lost.
 fn run_fallback(saved: crate::lisp::keys::Fallback, count: c_int, key: c_int) -> c_int {
     use crate::lisp::keys::Fallback;
     match saved {
         Fallback::Command(f) => ffi::run_command(f, count, key),
-        Fallback::Macro(text) => {
-            ffi::push_macro_input(text);
+        Fallback::Macro(bytes) => {
+            let text = ffi::macro_text(&bytes);
+            drop(bytes);
+            match text {
+                Some(text) => ffi::push_macro_input(text),
+                None => ffi::ding(),
+            }
             0
         }
         Fallback::Nothing => {
@@ -2000,16 +2008,8 @@ fn menu_fallback(
         },
         || (Fallback::Nothing, true),
     );
-    if lines {
-        let had = match &saved {
-            Fallback::Command(f) => ffi::Binding::Command(*f),
-            // Macro text gives no Up or Down command, whatever it is.
-            Fallback::Macro(_) => ffi::Binding::Macro(Vec::new()),
-            Fallback::Nothing => ffi::Binding::Unbound,
-        };
-        if let Some(f) = layout::menu_key_fallback(down, &had).and_then(ffi::named_command) {
-            return ffi::run_command(f, count, key);
-        }
+    if lines && let Some(f) = layout::menu_key_fallback(down, &saved).and_then(ffi::named_command) {
+        return ffi::run_command(f, count, key);
     }
     match saved {
         Fallback::Command(f) => {
