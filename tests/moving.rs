@@ -168,6 +168,58 @@ fn up_finds_entries_holding_the_typed_text() {
     assert_eq!(row_text(&s, 1), "", "no menu on a found line: {}", dump(&s));
 }
 
+/// An entry that is the typed text itself is passed over.
+#[test]
+fn up_passes_over_an_entry_that_is_the_typed_text() {
+    let mut sh = Shell::start(substring_keys(vec!["git status", "git st", "ls"]));
+    sh.send("git st");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 8));
+    sh.send(UP);
+    sh.wait_for("the older match", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+}
+
+/// With only the typed text itself older than a match, Up leaves the match
+/// and its cursor as they are.
+#[test]
+fn up_leaves_the_last_match_when_only_the_typed_text_is_older() {
+    let mut sh = Shell::start(substring_keys(vec!["git st", "ls", "git status"]));
+    sh.send("git st");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 8));
+    sh.send(UP);
+    sh.wait_for("the match", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12)
+    });
+    sh.send(UP);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 12), "{}", dump(&s));
+    // The typed text shows its grey text and menu again.
+    sh.send(DOWN);
+    sh.wait_for("the typed text back", |s| {
+        s.cursor_position() == (0, 8) && row_text(s, 1) == "h  git status"
+    });
+}
+
+/// Up whose only match is the typed text itself leaves the typed line as
+/// it is, not as a history entry: after more typing, Down leaves it alone.
+#[test]
+fn down_after_up_found_only_the_typed_text_keeps_the_line() {
+    let mut sh = Shell::start(substring_keys(vec!["zzq", "ls"]));
+    sh.send("zzq");
+    sh.wait_for("the typed text", |s| cursor_row(s) == "$ zzq");
+    sh.send(UP);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ zzq", "{}", dump(&s));
+    sh.send("x");
+    sh.wait_for("the x", |s| cursor_row(s) == "$ zzqx");
+    sh.send(DOWN);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ zzqx", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 6), "{}", dump(&s));
+}
+
 #[test]
 fn down_past_the_newest_match_gives_back_the_typed_text() {
     let mut sh = Shell::start(substring_keys(vec!["git status", "ls", "echo stat", "pwd"]));
