@@ -627,9 +627,8 @@ fn substring_search(count: c_int, key: c_int, up: bool, continuing: bool) -> c_i
     result
 }
 
-/// Moves readline's history place back to `place` when a search left it
-/// elsewhere with the line unchanged. Walking to the end puts back the line
-/// readline saved when the place left it.
+/// Walks readline's history place to `place`. Walking to the end puts back
+/// the line readline saved when the place left it.
 fn walk_to(place: c_int) {
     let now = ffi::history_position();
     if place > now {
@@ -656,9 +655,7 @@ fn back_to_search_start() {
     }) else {
         return;
     };
-    if ffi::on_history_entry() {
-        ffi::next_history(ffi::history_steps_to_end(), 0);
-    }
+    walk_to(ffi::history_len());
     if ffi::line().as_deref() != Some(line.as_str()) {
         let end = ffi::line().map_or(0, |l| l.len());
         ffi::replace_text(0, end, &line);

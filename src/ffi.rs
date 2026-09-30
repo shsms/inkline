@@ -476,11 +476,11 @@ pub fn on_history_entry() -> bool {
     unsafe { !current_history().is_null() }
 }
 
-/// How many entries readline's history place is from the end of history.
-pub fn history_steps_to_end() -> c_int {
+/// How many entries history holds, which is also readline's history place
+/// past the newest one.
+pub fn history_len() -> c_int {
     // SAFETY: reads history's own counter.
-    let length = unsafe { history_length };
-    length - history_position()
+    unsafe { history_length }
 }
 
 unsafe extern "C" {
