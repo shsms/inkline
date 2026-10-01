@@ -7,8 +7,8 @@ use std::io::Write;
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
+use std::sync::Once;
 use std::sync::atomic::Ordering;
-use std::sync::{Once, OnceLock};
 use std::time::Instant;
 
 use crate::args::{self, Arg, CommandArgs};
@@ -63,11 +63,6 @@ struct State {
     /// `inkline-menu-on-move` is set, no menu shows until a draw in plain
     /// editing finds another text.
     cursor_moved: bool,
-    /// The line text a history search put in the line, while it stays: such
-    /// a line counts as brought back from history. Readline before 8.3 puts
-    /// its history place back after a search, so `recalled` cannot tell it
-    /// from that place alone.
-    searched: Option<String>,
     /// Set when bash may have printed while the line was being edited: the
     /// cursor may not be where readline thinks it is, so readline draws the
     /// rest of the line on its own. Cleared when the next line starts.
@@ -211,7 +206,6 @@ thread_local! {
         hidden_on: None,
         drawn_at: None,
         cursor_moved: false,
-        searched: None,
         displaced: false,
         unloaded: false,
         checker: Checker::new(),
@@ -1108,7 +1102,6 @@ extern "C" fn pre_input() -> c_int {
                 s.hidden_on = None;
                 s.drawn_at = None;
                 s.cursor_moved = false;
-                s.searched = None;
             });
             // A new line at the main prompt drops the mode servers' replies;
             // a line read while Lisp runs is part of the line Lisp runs in.
@@ -1357,18 +1350,6 @@ fn repaint_line() -> bool {
         None
     };
     let moving = moving_menu.is_some();
-    // Whether the line changed since the last draw.
-    let changed =
-        STATE.with_borrow(|s| s.drawn_at.as_ref().map(|(was, _)| was.as_str()) != line.as_deref());
-    // Whether the key ran a history search that changed the line to a
-    // history entry's text. A search that found nothing leaves the typed
-    // line, which may be an entry's text too.
-    let searched = editing
-        && ran_history_search()
-        && changed
-        && line
-            .as_deref()
-            .is_some_and(|l| ffi::history_find_map(|entry| (entry == l).then_some(())).is_some());
     STATE.with_borrow_mut(|s| {
         if editing {
             // The menu counts as shown only once this draw puts it on
@@ -1377,12 +1358,6 @@ fn repaint_line() -> bool {
             // the count.
             if let Some(m) = &mut s.menu {
                 m.shown = false;
-            }
-            // A line a search found stays found while its text stays.
-            if searched {
-                s.searched.clone_from(&line);
-            } else if s.searched != line {
-                s.searched = None;
             }
             s.suggestion = None;
             // A kept menu belongs to one text of the line and one cursor
@@ -1612,27 +1587,13 @@ fn is_hidden(line: &str) -> bool {
 }
 
 /// Whether `line` is a history entry brought back as it was: readline's
-/// history position is on an entry and the line's text is that entry's, or
-/// the line is the text a history search left (`searched`). Such a line has
-/// no menu and no grey text, so `C-p` and `C-n` keep walking history;
-/// changing its text ends this.
+/// history position is on an entry and the line's text is that entry's.
+/// Walking history and readline's searches (prefix, substring,
+/// non-incremental and incremental) all move that position to the entry
+/// they put in the line. Such a line has no menu and no grey text, so `C-p`
+/// and `C-n` keep walking history; changing its text ends this.
 fn recalled(line: &str) -> bool {
-    ffi::history_entry_here_is(line) || STATE.with_borrow(|s| s.searched.as_deref() == Some(line))
-}
-
-/// Whether the key just handled ran a history search that puts a history
-/// entry in the line: readline's prefix, substring and non-incremental
-/// searches, or a `menu-next` or `menu-previous` that ran one of these. The
-/// prefix and substring searches of the Up and Down commands are not ones:
-/// they walk to the entry they find, so `recalled` sees that entry at
-/// readline's history place.
-fn ran_history_search() -> bool {
-    let last = last_command();
-    if multiline::is_vertical(last) {
-        return is_menu_key(last)
-            && STATE.with_borrow(|s| s.menu_key_ran.is_some_and(is_history_search));
-    }
-    last.is_some_and(is_history_search)
+    ffi::history_entry_here_is(line)
 }
 
 /// Whether `f` is `menu-next` or `menu-previous`.
@@ -1641,30 +1602,6 @@ fn is_menu_key(f: Option<ffi::CommandFn>) -> bool {
         std::ptr::fn_addr_eq(f, menu_next as ffi::CommandFn)
             || std::ptr::fn_addr_eq(f, menu_previous as ffi::CommandFn)
     })
-}
-
-/// Whether `f` is one of readline's prefix, substring or non-incremental
-/// history searches.
-fn is_history_search(f: ffi::CommandFn) -> bool {
-    static SEARCHES: OnceLock<Vec<ffi::CommandFn>> = OnceLock::new();
-    SEARCHES
-        .get_or_init(|| {
-            [
-                "history-search-backward",
-                "history-search-forward",
-                "history-substring-search-backward",
-                "history-substring-search-forward",
-                "non-incremental-reverse-search-history",
-                "non-incremental-forward-search-history",
-                "non-incremental-reverse-search-history-again",
-                "non-incremental-forward-search-history-again",
-            ]
-            .into_iter()
-            .filter_map(ffi::named_command)
-            .collect()
-        })
-        .iter()
-        .any(|&g| std::ptr::fn_addr_eq(f, g))
 }
 
 /// The menu the last draw in plain editing showed, when it is for the line
@@ -1976,9 +1913,7 @@ fn move_pick(count: c_int, key: c_int, down: bool) -> c_int {
 /// macro text; a key that had nothing rings the bell. When the last key was
 /// also `menu-next` or `menu-previous` and ran its key's own command
 /// (`ran_before`), readline sees that command as the last one, as when its
-/// own key ran it, so a search goes on from where it stopped; and after one
-/// of readline's history searches, the line it finds counts as found by a
-/// search (see `ran_history_search`).
+/// own key ran it, so a search goes on from where it stopped.
 fn menu_fallback(
     count: c_int,
     key: c_int,

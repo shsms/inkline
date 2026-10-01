@@ -1100,6 +1100,51 @@ fn a_line_found_with_a_non_incremental_search_shows_no_menu() {
     sh.wait_for("an older entry", walked_back_from_the_search);
 }
 
+/// The same for a line that `C-r` (`reverse-search-history`) found, with
+/// `C-e` ending the search.
+#[test]
+fn a_line_found_with_an_incremental_search_shows_no_menu() {
+    let mut sh = Shell::start(with_history(vec!["git status", "git st", "ls"]));
+    sh.settle();
+    sh.send("\x12");
+    sh.settle();
+    sh.send("git st");
+    sh.wait_for("the found entry", |s| {
+        cursor_row(s).ends_with("`git st': git st")
+    });
+    sh.send("\x05");
+    sh.wait_for("the search ended", |s| {
+        cursor_row(s) == "$ git st" && s.cursor_position() == (0, 8)
+    });
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git st", "no grey text: {}", dump(&s));
+    assert_eq!(row_text(&s, 1), "", "no menu: {}", dump(&s));
+    sh.send(C_P);
+    sh.wait_for("an older entry", walked_back_from_the_search);
+}
+
+/// The same for a line that `history-substring-search-backward` found, run
+/// by a key inputrc binds it to.
+#[test]
+fn a_line_found_with_a_substring_search_on_its_own_key_shows_no_menu() {
+    let mut sh = Shell::start(Options {
+        inputrc: Some("\"\\C-xs\": history-substring-search-backward\n".into()),
+        history: vec!["git status", "git st", "ls"],
+        ..Options::default()
+    });
+    sh.send("t st");
+    sh.settle();
+    sh.send("\x18s");
+    sh.wait_for("the found entry", |s| cursor_row(s) == "$ git st");
+    sh.send("\x05");
+    sh.wait_for("the cursor at the end", |s| s.cursor_position() == (0, 8));
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git st", "no grey text: {}", dump(&s));
+    assert_eq!(row_text(&s, 1), "", "no menu: {}", dump(&s));
+    sh.send(C_P);
+    sh.wait_for("an older entry", walked_back_from_the_search);
+}
+
 /// `menu-next` works on any key: with a menu it moves, and with none the
 /// key does what it did before (`C-t` swaps two characters).
 #[test]
