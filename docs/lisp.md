@@ -29,21 +29,27 @@ change takes effect on the next key.
   shows.
 - `inkline-menu-lines` (default `8`): the most rows the completion menu
   takes, an integer of at least 1.
-- `inkline-completion-style` (default `prefix`): how the text you typed
-  matches a completion item, the symbol `prefix` (the item starts with what
-  you typed) or `fuzzy` (the letters you typed appear in the item in order,
-  with gaps allowed). A mode server's item that starts with a quote mark
-  is also matched against the text after that mark when the mark goes on
-  the line as it is: in an argument with an expansion (such as `$x`), and
-  inside quotes of the other kind (`` ` `` or `"` inside single quotes,
-  `'` inside double quotes). So inside single quotes `fi` finds
+- `inkline-completion-style` (default `substring`): how the text you typed
+  matches a completion item, the symbol `substring` (the item holds what you
+  typed anywhere), `prefix` (the item starts with what you typed) or `fuzzy`
+  (the letters you typed appear in the item in order, with gaps allowed). The
+  items that start with what you typed come first, whatever their source. Then
+  come, under `substring`, the items that only hold it somewhere else, and
+  under `fuzzy` the items that match with gaps, those whose letters lie
+  closest together first. Items that match equally well go by source (see
+  [`inkline-completion-functions`](#inkline-completion-functions)), and then
+  in the source's own order (history newest first). A mode server's item that
+  starts with a quote mark is also matched against the text after that mark
+  when the mark goes on the line as it is: in an argument with an expansion
+  (such as `$x`), and inside quotes of the other kind (`` ` `` or `"` inside
+  single quotes, `'` inside double quotes). So inside single quotes `fi` finds
   `` `first name` ``.
 - `inkline-completion-ignore-case` (default `nil`): when non-nil, the text you
-  typed matches items whatever their case, in both styles, so `am` also finds
-  `Amount`. Within each source, items that start with the typed text in the
-  same case come first. The grey text shows only when the top item starts with
-  the typed text in the same case; taking an item from the menu puts the
-  item's own case in the line.
+  typed matches items whatever their case, in every style, so `am` also finds
+  `Amount`. Items that start with the typed text in the same case come first,
+  then those that start with it in another case, then the others. The grey
+  text shows only when the top item starts with the typed text in the same
+  case; taking an item from the menu puts the item's own case in the line.
 - `inkline-menu-sources` (default `(history lisp mode bash)`): the sources the
   menu lists, a list of the symbols `history`, `lisp`, `mode` and `bash`. It
   limits only the menu: the grey text still comes from the top item of all the
@@ -397,7 +403,9 @@ through the menu.
 - The first function that returns a string that starts with the line and is
   longer wins. Any other value is no answer, and the next function is asked.
 - The winning answer becomes an item of the completion menu, marked `l`. A
-  matching history entry still comes before it in the menu (see
+  history entry that starts with the line in the same case still comes before
+  it; one that starts with it only in another case, or only holds it, comes
+  after it (see
   [`inkline-completion-functions`](#inkline-completion-functions) for the
   menu's order). An answer with a control character other than a newline or
   a tab is left out of the menu. The grey text after the cursor is the rest
@@ -443,12 +451,13 @@ Unlike Emacs's `completion-at-point-functions`, every function in the hook is
 asked, and all their items go into the menu, marked `l`, in the order of the
 hook and of each function's own list (`inkline-menu-sources` and
 `inkline-menu-min-chars` can leave some of them out of the menu; an item left
-out can still give the grey text). History items come first, then the
-item from `inkline-suggestion-functions`, then a command's mode server's
-items, marked `m` (see [command modes](#command-modes) and
-[`docs/mode-protocol.md`](mode-protocol.md#completing-a-word-complete)),
-then bash's own completion, marked `c` (see `inkline-bash-completion`),
-then these.
+out can still give the grey text). Items go by how well they match the typed
+text (see `inkline-completion-style`), and those that match equally well by
+source: history items first, then the item from
+`inkline-suggestion-functions`, then a command's mode server's items, marked
+`m` (see [command modes](#command-modes) and
+[`docs/mode-protocol.md`](mode-protocol.md#completing-a-word-complete)), then
+bash's own completion, marked `c` (see `inkline-bash-completion`), then these.
 
 - The functions may only read the line, under the same rules as
   `inkline-suggestion-functions`, with the same list of functions they may

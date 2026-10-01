@@ -309,12 +309,12 @@ l  switch
 l  show
 ```
 
-A row marked `h` is a past command that starts with what you typed, newest
-first; a row marked `l` is an item your own Lisp function offers. A row
-marked `m` is an item from a command's mode server (see "Command modes"),
-such as a column name from a `csvm` script; some come with a short note
-after them, saying what they are. They show once you stop typing for a
-moment. Here the cursor is right after `am`, inside the quotes:
+A row marked `h` is a past command that holds what you typed, newest first
+among those that match equally well. A row marked `l` is an item your own Lisp
+function offers. A row marked `m` is an item from a command's mode server (see
+"Command modes"), such as a column name from a `csvm` script; some come with a
+short note after them, saying what they are. They show once you stop typing
+for a moment. Here the cursor is right after `am`, inside the quotes:
 
 ```
 $ csvm 'sort am' data.csv
@@ -348,8 +348,12 @@ run any command while it is read. So typing `make ` in a directory you do
 not trust can run code from it. Set `inkline-bash-completion` to `nil` if
 that is a concern.
 
-The menu takes at most `inkline-menu-lines` rows; when there are more
-items, the last row says how many more.
+The items that start with what you typed come first, whatever their source,
+then those that hold it somewhere else. Items that match equally well go by
+source: `h` rows, then the `l` row from a suggestion function (see
+[`docs/lisp.md`](docs/lisp.md)), then `m`, `c` and the other `l` rows. The
+menu takes at most `inkline-menu-lines` rows; when there are more items, the
+last row says how many more.
 
 - No row is highlighted until you move. The grey text shows the rest of the
   top item of all the sources, even when `inkline-menu-sources` or
@@ -410,11 +414,14 @@ items, the last row says how many more.
   readline's `search-ignore-case` on, case is ignored.
 
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
-text off on their own, and `inkline-completion-style` set to `fuzzy` lets the
-letters you typed match with gaps. `inkline-completion-ignore-case` matches
-items whatever their case; `inkline-menu-sources` picks which sources the menu
-lists (`history`, `lisp`, `mode` and `bash`), and `inkline-menu-min-chars` how
-many characters you type before it lists an item. See
+text off on their own. `inkline-completion-style` is `substring` by default:
+an item matches when it holds what you typed anywhere, and those that start
+with it are listed first, whatever their source. Set to `prefix` it lists only
+those that start with it, and set to `fuzzy` it lets the letters you typed
+match with gaps. `inkline-completion-ignore-case` matches items whatever their
+case; `inkline-menu-sources` picks which sources the menu lists (`history`,
+`lisp`, `mode` and `bash`), and `inkline-menu-min-chars` how many characters
+you type before it lists an item. See
 [`docs/lisp.md`](docs/lisp.md). The menu's colours are set with the `menu`,
 `menu-selected`, `menu-source` and `menu-note` keys (see "Colours").
 
@@ -451,7 +458,7 @@ for the menu:
 ```
 
 It offers `switch` and `show` for the lowercase word before the cursor, and
-inkline keeps those that start with it: `git s` shows both.
+inkline keeps those that hold it: `git s` shows both.
 
 ## Command modes
 

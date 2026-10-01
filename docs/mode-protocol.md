@@ -408,10 +408,11 @@ The reply:
 
 What inkline does with a reply:
 
-- Each item becomes a row of the completion menu, marked `m`, after the
+- Each item becomes a row of the completion menu, marked `m`, unless
+  `inkline-menu-sources` or `inkline-menu-min-chars` leaves it out. Among
+  the items that match the typed text equally well, it comes after the
   rows from history and the suggestion hook and before the ones from
-  `inkline-completion-functions`, unless `inkline-menu-sources` or
-  `inkline-menu-min-chars` leaves it out. It is matched, under
+  `inkline-completion-functions`. It is matched, under
   `inkline-completion-style` and `inkline-completion-ignore-case`, against the
   typed text from the item's `START` to the cursor, the same as any other menu
   item; its note does not take part in the matching. When an item's text starts
@@ -419,7 +420,7 @@ What inkline does with a reply:
   `raw` argument, or inside quotes of the other kind (`` ` `` or `"` inside
   single quotes, `'` inside double quotes) — the item also matches against the
   text after that mark, so inside single quotes `fi` finds `` `first name` ``:
-  under `prefix` when that text starts with the typed text, which ranks the item
+  in every style when that text starts with the typed text, which ranks the item
   with the items that start with it, and under `fuzzy` also when the typed
   letters appear in it in order. The grey text shows only for an item that
   starts with the typed text itself, quote mark and all.
@@ -490,7 +491,7 @@ answers with every column, each replacing bytes 5 to 7 of argument 1
 :end 3
 ```
 
-inkline keeps the two that start with `am`, and the menu shows two rows,
+inkline keeps the two that hold `am`, and the menu shows two rows,
 the item texts padded to line up their notes:
 
 ```

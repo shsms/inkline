@@ -59,11 +59,15 @@ turned off. Built in three pieces, each adding sources to the same list:
    protocol (~docs/mode-protocol.md~), which a server such as csvm can
    answer with commands, flags, functions and column names.
 
-** TODO A substring filter for the menu
+** DONE A substring filter for the menu
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-10-01 Do 18:57]
+:END:
 
 A ~substring~ value for ~inkline-completion-style~, next to ~prefix~ and
 ~fuzzy~: items holding the typed text anywhere, as fish's Up finds
-history entries.
+history entries. It is the default; items that start with the typed text
+still come first.
 
 ** TODO Colours during C-r reverse search
 
