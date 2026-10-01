@@ -13,8 +13,8 @@ use common::*;
 
 struct Case {
     text: String,
-    /// Recorded answers: bash 5.2, bash 5.2 with extglob, bash 5.0.
-    bash: [String; 3],
+    /// Recorded answers: bash 5.3 with extglob off, then on.
+    bash: [String; 2],
 }
 
 fn cases() -> Vec<Case> {
@@ -26,7 +26,7 @@ fn cases() -> Vec<Case> {
             let c: Vec<&str> = columns.split(' ').collect();
             Case {
                 text: unescape(text),
-                bash: [c[0].to_owned(), c[1].to_owned(), c[2].to_owned()],
+                bash: [c[0].to_owned(), c[1].to_owned()],
             }
         })
         .collect()
@@ -93,13 +93,6 @@ fn ends_in_continuation(text: &str) -> bool {
 
 #[test]
 fn recorded_answers_hold() {
-    let version = bash_version();
-    // Versions without a recorded column are held to bash 5.2's.
-    let columns: &[(usize, bool)] = if version == (5, 0) {
-        &[(2, false)]
-    } else {
-        &[(0, false), (1, true)]
-    };
     let cases = cases();
     let differ: Vec<String> = std::thread::scope(|scope| {
         let workers: Vec<_> = cases
@@ -108,8 +101,8 @@ fn recorded_answers_hold() {
                 scope.spawn(move || {
                     let mut differ = Vec::new();
                     for case in chunk.iter().filter(|c| !ends_in_continuation(&c.text)) {
-                        for &(column, extglob) in columns {
-                            let want = case.bash[column].as_str();
+                        for extglob in [false, true] {
+                            let want = case.bash[usize::from(extglob)].as_str();
                             let got = bash_says(&case.text, extglob);
                             if want != "-" && got != want {
                                 differ.push(format!(
@@ -130,9 +123,8 @@ fn recorded_answers_hold() {
     });
     assert!(
         differ.is_empty(),
-        "bash {}.{} differs on {} commands:\n{}",
-        version.0,
-        version.1,
+        "{} differs on {} commands:\n{}",
+        bash_path().display(),
         differ.len(),
         differ.join("\n")
     );

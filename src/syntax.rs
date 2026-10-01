@@ -904,7 +904,7 @@ mod tests {
     /// One line of `tests/data/syntax-cases.txt`.
     struct Case {
         text: String,
-        /// Bash 5.2's answer with extglob off, then on.
+        /// Bash 5.3's answer with extglob off, then on.
         bash: [String; 2],
         /// The answer these rules give with extglob off, then on.
         want: [String; 2],
@@ -920,7 +920,7 @@ mod tests {
                 Case {
                     text: unescape(text),
                     bash: [c[0].to_owned(), c[1].to_owned()],
-                    want: [c[3].to_owned(), c[4].to_owned()],
+                    want: [c[2].to_owned(), c[3].to_owned()],
                 }
             })
             .collect()
