@@ -174,6 +174,11 @@ fn current_prefix_arg_is_the_count() {
     sh.wait_for("three keys", |s| cursor_row(s) == "$ ccc");
     sh.send("\x18\x7f\x1b4\x18i");
     sh.wait_for("the typed count", |s| cursor_row(s) == "$ iiii");
+    // `C-u` alone is a count of 4 too.
+    sh.send("\x18\x7f");
+    sh.wait_for("an empty line", |s| cursor_row(s) == "$");
+    sh.send("\x15\x18i");
+    sh.wait_for("C-u's count", |s| cursor_row(s) == "$ iiii");
 }
 
 #[test]

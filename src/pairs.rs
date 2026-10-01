@@ -37,18 +37,12 @@ fn around(line: &str, point: usize) -> (Option<char>, Option<char>) {
 }
 
 /// What typing the opening character `typed` should do.
-pub fn open(
-    line: &str,
-    point: usize,
-    typed: char,
-    explicit_count: bool,
-    context: Context,
-) -> Action {
+pub fn open(line: &str, point: usize, typed: char, counted: bool, context: Context) -> Action {
     let Some(close) = closer(typed) else {
         return Action::Fallback;
     };
     let (prev, next) = around(line, point);
-    if explicit_count {
+    if counted {
         return Action::Fallback;
     }
     if next == Some(typed) && closes_here(line, point, typed, context) {
@@ -80,8 +74,8 @@ fn closes_here(line: &str, point: usize, typed: char, context: Context) -> bool 
 }
 
 /// What typing the closing bracket `typed` should do.
-pub fn close(line: &str, point: usize, typed: char, explicit_count: bool) -> Action {
-    if !explicit_count && matches!(typed, ')' | ']' | '}') && around(line, point).1 == Some(typed) {
+pub fn close(line: &str, point: usize, typed: char, counted: bool) -> Action {
+    if !counted && matches!(typed, ')' | ']' | '}') && around(line, point).1 == Some(typed) {
         Action::Skip
     } else {
         Action::Fallback
@@ -89,11 +83,9 @@ pub fn close(line: &str, point: usize, typed: char, explicit_count: bool) -> Act
 }
 
 /// What Backspace should do.
-pub fn backspace(line: &str, point: usize, explicit_count: bool) -> Action {
+pub fn backspace(line: &str, point: usize, counted: bool) -> Action {
     match around(line, point) {
-        (Some(prev), Some(next)) if !explicit_count && closer(prev) == Some(next) => {
-            Action::DeletePair
-        }
+        (Some(prev), Some(next)) if !counted && closer(prev) == Some(next) => Action::DeletePair,
         _ => Action::Fallback,
     }
 }

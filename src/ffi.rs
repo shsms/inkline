@@ -1088,9 +1088,18 @@ pub fn set_point(point: usize) {
     unsafe { rl_point = point as c_int }
 }
 
-/// Whether the user typed a count prefix for this command.
+/// Whether the running command's count was typed with digits or a minus
+/// sign (`M--`, or `-` after `C-u`); `C-u` alone does not set it (see
+/// `count_given`).
 pub fn explicit_count() -> bool {
     unsafe { rl_explicit_arg != 0 }
+}
+
+/// Whether the running command, run with `count`, was given a count: one
+/// typed with digits, or `C-u` alone, which gives 4 but does not mark it
+/// as typed.
+pub fn count_given(count: c_int) -> bool {
+    count != 1 || explicit_count()
 }
 
 unsafe extern "C" {
@@ -1373,7 +1382,7 @@ pub fn undo_command(f: CommandFn) -> Option<Undo> {
     }
 }
 
-/// Sets whether the running command counts as given a count by the user,
+/// Sets whether the running command's count counts as typed with digits,
 /// and returns the old setting.
 pub fn replace_explicit_count(explicit: bool) -> bool {
     // SAFETY: rl_explicit_arg is a plain int readline keeps.

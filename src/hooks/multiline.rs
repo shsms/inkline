@@ -710,8 +710,7 @@ pub(super) fn end_of_line(count: c_int, key: c_int) -> c_int {
 pub(super) extern "C" fn kill_to_line_end(count: c_int, key: c_int) -> c_int {
     guard(
         || match active_line() {
-            // `C-u` alone gives a count of 4 that readline does not mark as typed.
-            Some(line) if count != 1 || ffi::explicit_count() => {
+            Some(line) if ffi::count_given(count) => {
                 kill(lines::kill_lines(&line, ffi::point(), count), count > 0);
                 0
             }
@@ -745,7 +744,7 @@ fn kill(range: Range<usize>, forward: bool) {
 
 /// Runs `edit` on the line and cursor. Readline's `fallback` runs instead
 /// when the multi-line commands are off, the command has one line, or a
-/// count was typed, so single-line editing stays readline's.
+/// count was given, so single-line editing stays readline's.
 fn on_line(
     count: c_int,
     key: c_int,
@@ -754,7 +753,7 @@ fn on_line(
 ) -> c_int {
     guard(
         || match active_line() {
-            Some(line) if line.contains('\n') && !ffi::explicit_count() => {
+            Some(line) if line.contains('\n') && !ffi::count_given(count) => {
                 edit(&line, ffi::point());
                 0
             }
@@ -774,6 +773,8 @@ pub(super) extern "C" fn comment_lines(count: c_int, key: c_int) -> c_int {
                 return ffi::insert_comment(count, key);
             };
             let begin = ffi::variable(c"comment-begin").unwrap_or_else(|| "#".to_owned());
+            // Follows readline's `insert-comment`, which a count from `C-u`
+            // alone does not make take the comment off.
             let commented = lines::comment(&line, &begin, ffi::explicit_count());
             ffi::replace_text(0, line.len(), &commented);
             super::repaint_now();

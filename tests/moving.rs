@@ -112,6 +112,16 @@ fn home_and_end_stay_on_the_line() {
     sh.wait_for("the line's end", |s| s.cursor_position() == (1, 6));
 }
 
+/// With a count, `C-a` is readline's `beginning-of-line`, which goes to the
+/// start of the whole command; `C-u` alone is a count too.
+#[test]
+fn c_a_with_a_c_u_count_goes_to_the_start_of_the_command() {
+    let mut sh = Shell::start(Options::default());
+    block(&mut sh, &["echo a", "echo b"]);
+    sh.send("\x15\x01");
+    sh.wait_for("the command's start", |s| s.cursor_position() == (0, 2));
+}
+
 #[test]
 fn kills_stop_at_the_line() {
     let mut sh = Shell::start(Options::default());

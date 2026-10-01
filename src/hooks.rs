@@ -2198,7 +2198,7 @@ extern "C" fn insert_pair(count: c_int, key: c_int) -> c_int {
             return false;
         };
         let context = STATE.with_borrow_mut(|s| s.lexer.context_at(line, point));
-        match pairs::open(line, point, typed, ffi::explicit_count(), context) {
+        match pairs::open(line, point, typed, ffi::count_given(count), context) {
             Action::InsertPair(open, close) => {
                 ffi::begin_undo_group();
                 ffi::insert_text(&format!("{open}{close}"));
@@ -2220,7 +2220,7 @@ extern "C" fn insert_close(count: c_int, key: c_int) -> c_int {
         let Some(typed) = typed_char(key) else {
             return false;
         };
-        let moves_over = pairs::close(line, point, typed, ffi::explicit_count()) == Action::Skip;
+        let moves_over = pairs::close(line, point, typed, ffi::count_given(count)) == Action::Skip;
         if moves_over {
             ffi::set_point(point + typed.len_utf8());
         }
@@ -2230,7 +2230,7 @@ extern "C" fn insert_close(count: c_int, key: c_int) -> c_int {
 
 extern "C" fn delete_pair(count: c_int, key: c_int) -> c_int {
     pairing(count, key, ffi::rubout, |line, point| {
-        let deletes = pairs::backspace(line, point, ffi::explicit_count()) == Action::DeletePair;
+        let deletes = pairs::backspace(line, point, ffi::count_given(count)) == Action::DeletePair;
         if deletes {
             // Pairs are ASCII: one byte on each side of the cursor.
             ffi::delete_text(point - 1, point + 1);
