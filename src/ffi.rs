@@ -775,8 +775,10 @@ unsafe extern "C" {
     fn rl_get_next_history(count: c_int, key: c_int) -> c_int;
 }
 
-/// The command readline ran for the previous key.
-pub fn last_command() -> Option<CommandFn> {
+/// The command readline ran for the previous key, as readline notes it: for
+/// a `numeric-argument` key, that command. Callers want
+/// `hooks::last_command`, which gives the command a `C-u` count ran.
+pub fn readline_last_command() -> Option<CommandFn> {
     unsafe { rl_last_func }
 }
 
@@ -858,6 +860,19 @@ pub fn continue_completion() {
 /// frames must hold nothing to drop.
 pub fn abort(count: c_int, key: c_int) -> c_int {
     unsafe { rl_abort(count, key) }
+}
+
+unsafe extern "C" {
+    fn rl_universal_argument(count: c_int, key: c_int) -> c_int;
+}
+
+/// readline's `universal-argument`. Outside readline's callback mode, which
+/// bash does not use, it reads the count and the key after it, and runs that
+/// key's command with the count before it returns. That command may jump
+/// back to readline's or bash's top level: the caller's frames must hold
+/// nothing to drop.
+pub fn universal_argument(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_universal_argument(count, key) }
 }
 
 /// Whether readline is replaying a macro: the text bound to a key, or a

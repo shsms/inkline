@@ -360,6 +360,22 @@ fn after_change_gets_the_part_and_the_commands() {
     });
 }
 
+/// After a `C-u` count, the command noted for the key is the one the count
+/// ran, not `numeric-argument`.
+#[test]
+fn after_change_names_the_command_a_c_u_count_ran() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "{SHOW_CHANGES}\n(keymap-global-set \"C-u\" 'numeric-argument)"
+        )),
+        ..Options::default()
+    });
+    sh.send("ab\x152\x02");
+    sh.wait_for("the move", |s| s.cursor_position() == (0, 2));
+    sh.send("x");
+    sh.wait_for("typing", |s| has_row(s, "self-insert backward-char 1 2 0"));
+}
+
 #[test]
 fn an_abbreviation_is_one_undo_step_after_the_typing() {
     let mut sh = shell(

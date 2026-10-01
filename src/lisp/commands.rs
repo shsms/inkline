@@ -428,7 +428,7 @@ fn run(command: Option<&LispCommand>, count: c_int, key: c_int) -> c_int {
         return 0;
     };
     let prefix = ffi::explicit_count().then_some(count);
-    let last = ffi::last_command().and_then(command_symbol_of);
+    let last = crate::hooks::last_command().and_then(command_symbol_of);
     let result = crate::lisp::with_lisp_marking_panics(|ctx| {
         let function = match command {
             LispCommand::Named(name) => ctx.intern(name),

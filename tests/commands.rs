@@ -917,6 +917,21 @@ fn this_and_last_command() {
     sh.wait_for("unbound again", |s| has_row(s, "(nil nil)"));
 }
 
+/// After a `C-u` count, `last-command` is the command the count ran, not
+/// `numeric-argument`.
+#[test]
+fn last_command_after_a_c_u_count_is_the_counted_command() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            "(defun who () (insert (format \"%s/%s\" this-command last-command)))\n(keymap-global-set \"C-x w\" 'who)\n(keymap-global-set \"C-u\" 'numeric-argument)\n"
+                .into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("ab\x152\x02\x18w");
+    sh.wait_for("names", |s| cursor_row(s) == "$ who/backward-charab");
+}
+
 /// 300 lambdas under a prefix readline leaves free: slots run out at 256.
 /// `C-x z l`, bound last, also starts the longer `C-x z l l`: readline runs
 /// both in the same keymap entry.

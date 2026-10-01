@@ -267,7 +267,7 @@ pub fn after_key() -> bool {
     // Readline 8.3 leaves `rl_last_func` at the search command when a key that
     // ended an incremental search runs its command, so `this-command` is then
     // the search command.
-    let this = ffi::last_command().and_then(super::commands::command_symbol_of);
+    let this = crate::hooks::last_command().and_then(super::commands::command_symbol_of);
     if !after_change_has_functions() {
         see_line(this);
         return false;

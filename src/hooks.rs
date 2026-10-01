@@ -183,6 +183,8 @@ thread_local! {
     /// to bash's top level: the value it jumped with. `after_lisp` makes the
     /// jump once Lisp has stopped.
     static SHELL_JUMP: Cell<Option<c_int>> = const { Cell::new(None) };
+    /// The command the last `numeric-argument` key ran with its count.
+    static COUNTED_COMMAND: Cell<Option<ffi::CommandFn>> = const { Cell::new(None) };
     /// Set once readline reads a line of its own (`read -e` in shell code)
     /// under a readline command that Lisp runs, until that command returns.
     static NESTED_LINE: Cell<bool> = const { Cell::new(false) };
@@ -280,6 +282,7 @@ pub fn load() {
                 ffi::add_command(c"menu-take", menu_take);
                 ffi::add_command(c"menu-take-previous", menu_take_previous);
                 ffi::add_command(c"menu-hide", menu_hide);
+                ffi::add_command(c"numeric-argument", numeric_argument);
                 ffi::add_command(c"inkline-lisp-key", crate::lisp::commands::SHARED);
             });
             crate::lisp::start_for_shell();
@@ -1622,7 +1625,7 @@ fn recalled(line: &str) -> bool {
 /// they walk to the entry they find, so `recalled` sees that entry at
 /// readline's history place.
 fn ran_history_search() -> bool {
-    let last = ffi::last_command();
+    let last = last_command();
     if multiline::is_vertical(last) {
         return is_menu_key(last)
             && STATE.with_borrow(|s| s.menu_key_ran.is_some_and(is_history_search));
@@ -1997,7 +2000,7 @@ fn menu_fallback(
     }
     match saved {
         Fallback::Command(f) => {
-            let before = ran_before.filter(|_| is_menu_key(ffi::last_command()));
+            let before = ran_before.filter(|_| is_menu_key(last_command()));
             guard(
                 || {
                     STATE.with_borrow_mut(|s| {
@@ -2024,7 +2027,7 @@ fn menu_fallback(
 extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
     let (done, again) = guard(
         || {
-            let right_after = ffi::last_command()
+            let right_after = last_command()
                 .is_some_and(|f| std::ptr::fn_addr_eq(f, menu_take as ffi::CommandFn));
             let again = right_after && STATE.with_borrow(|s| s.completing);
             let done = moving::tab(true);
@@ -2086,6 +2089,39 @@ extern "C" fn menu_hide(count: c_int, key: c_int) -> c_int {
         || false,
     );
     if hidden { 0 } else { ffi::abort(count, key) }
+}
+
+/// `C-u`: readline's `universal-argument`, which reads a count and runs the
+/// next key's command with it. Notes the command the count ran, for
+/// `last_command`. That command may jump back to readline's or bash's top
+/// level, so nothing here is left to drop; the note is then not taken, and
+/// readline does not see this command as the last one either.
+extern "C" fn numeric_argument(count: c_int, key: c_int) -> c_int {
+    let result = ffi::universal_argument(count, key);
+    // A `C-u` the count read ran this command again, which noted the
+    // command after it.
+    let ran = ffi::readline_last_command();
+    if !is_numeric_argument(ran) {
+        COUNTED_COMMAND.set(ran);
+    }
+    result
+}
+
+/// Whether `f` is `numeric-argument`.
+fn is_numeric_argument(f: Option<ffi::CommandFn>) -> bool {
+    f.is_some_and(|f| std::ptr::fn_addr_eq(f, numeric_argument as ffi::CommandFn))
+}
+
+/// The command readline ran for the previous key. For a `numeric-argument`
+/// key, which readline notes as the last command, it is the command that key
+/// ran with its count, so a count does not break a run of moves or of Tabs.
+pub fn last_command() -> Option<ffi::CommandFn> {
+    let last = ffi::readline_last_command();
+    if is_numeric_argument(last) {
+        COUNTED_COMMAND.get()
+    } else {
+        last
+    }
 }
 
 /// Inserts the part of the suggestion `take` picks. Without a suggestion for

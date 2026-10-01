@@ -415,6 +415,90 @@ fn a_count_moves_the_pick_that_many_rows() {
     });
 }
 
+/// `C-u` as `numeric-argument`.
+const COUNT_KEY: &str = "(keymap-global-set \"C-u\" 'numeric-argument)\n";
+const C_U: &str = "\x15";
+
+/// `three_items` with `C-u` running `numeric-argument`.
+fn three_items_counting() -> Shell {
+    menu_showing(
+        with_init(COUNT_KEY, vec!["git stage", "git stash", "git status"]),
+        "git st",
+        "h  git status",
+    )
+}
+
+/// A `C-u` count moves that many rows, and the moving goes on: the next
+/// `C-n` moves one row more, and `C-g` gives back the typed text.
+#[test]
+fn a_c_u_count_moves_that_many_rows_and_keeps_moving() {
+    let mut sh = three_items_counting();
+    sh.send(&format!("{C_U}2{C_N}"));
+    sh.wait_for("the second row", |s| {
+        picked(s, 2) && !picked(s, 1) && cursor_row(s) == "$ git stash"
+    });
+    sh.send(C_N);
+    sh.wait_for("the third row", |s| {
+        picked(s, 3) && cursor_row(s) == "$ git stage"
+    });
+    sh.send(&format!("{C_U}2{C_P}"));
+    sh.wait_for("the top row", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status"
+    });
+    sh.send(C_G);
+    sh.wait_for("the typed text back", |s| {
+        cursor_row(s) == "$ git st" && s.cursor_position() == (0, 8)
+    });
+}
+
+/// `C-g` right after a `C-u` count's move gives back the typed text.
+#[test]
+fn ctrl_g_after_a_c_u_count_gives_back_the_typed_text() {
+    let mut sh = three_items_counting();
+    sh.send(&format!("{C_U}2{C_N}"));
+    sh.wait_for("the second row", |s| cursor_row(s) == "$ git stash");
+    sh.send(C_G);
+    sh.wait_for("the typed text back", |s| {
+        cursor_row(s) == "$ git st" && s.cursor_position() == (0, 8)
+    });
+}
+
+/// Enter right after a `C-u` count's move keeps the row without running it.
+#[test]
+fn enter_after_a_c_u_count_keeps_the_row() {
+    let mut sh = three_items_counting();
+    sh.send(&format!("{C_U}2{C_N}"));
+    sh.wait_for("the second row", |s| cursor_row(s) == "$ git stash");
+    sh.send("\r");
+    sh.wait_for("the row kept", |s| {
+        cursor_row(s) == "$ git stash" && !picked(s, 2)
+    });
+    let s = sh.settle();
+    assert_eq!(
+        (s.cursor_position(), row_text(&s, 1)),
+        ((0, 11), String::new()),
+        "the line did not run: {}",
+        dump(&s)
+    );
+}
+
+/// `C-u` alone is a count of 4, as readline's `universal-argument` gives.
+#[test]
+fn c_u_alone_moves_four_rows() {
+    let mut sh = menu_showing(
+        with_init(
+            COUNT_KEY,
+            vec!["git st1", "git st2", "git st3", "git st4", "git st5"],
+        ),
+        "git st",
+        "h  git st5",
+    );
+    sh.send(&format!("{C_U}{C_N}"));
+    sh.wait_for("the fourth row", |s| {
+        picked(s, 4) && cursor_row(s) == "$ git st2"
+    });
+}
+
 /// Keys sent together chain: each acts on the rows of the first move.
 #[test]
 fn keys_sent_together_move_through_the_rows() {

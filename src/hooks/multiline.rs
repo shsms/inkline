@@ -448,7 +448,7 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
     } else {
         (count, up)
     };
-    let is_run = is_vertical(ffi::last_command());
+    let is_run = is_vertical(super::last_command());
     let continuing_search = is_run
         && STATE.with_borrow(|s| {
             s.search.as_ref().is_some_and(|search| {

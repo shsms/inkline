@@ -36,6 +36,21 @@ fn a_run_of_moves_keeps_its_column() {
     sh.wait_for("the first line", |s| s.cursor_position() == (0, 13));
 }
 
+/// A move with a `C-u` count is part of the run: the next Up keeps the
+/// column the run started with.
+#[test]
+fn a_c_u_counted_move_keeps_the_runs_column() {
+    let mut sh = Shell::start(Options {
+        init_el: Some("(keymap-global-set \"C-u\" 'numeric-argument)\n".into()),
+        ..Options::default()
+    });
+    block(&mut sh, &["echo abcdefghij", "x", "y", "echo 12345678"]);
+    sh.send(&format!("\x152{UP}"));
+    sh.wait_for("the short line", |s| s.cursor_position() == (1, 1));
+    sh.send(UP);
+    sh.wait_for("the first line", |s| s.cursor_position() == (0, 13));
+}
+
 #[test]
 fn up_on_the_first_line_goes_to_history() {
     let mut sh = Shell::start(Options {

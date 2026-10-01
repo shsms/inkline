@@ -34,7 +34,7 @@ impl Moving {
     /// menu, and the line, cursor and undo list are as the last move left
     /// them.
     fn live(&self, on: bool) -> bool {
-        on && is_move(ffi::last_command())
+        on && is_move(super::last_command())
             && self.menu.shown
             && ffi::undo_list_head() == self.undo_head
             && ffi::point() == self.written.1
