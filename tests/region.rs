@@ -420,3 +420,46 @@ fn del_and_ctrl_d_on_an_empty_region_delete_a_character() {
     sh.send(&format!("{C_SPC}\x04"));
     sh.wait_for("C-d", |s| cursor_row(s) == "$ ab");
 }
+
+const C_J: &str = "\x0a";
+
+/// On a command of two lines, `C-p` and `C-n` stretch the region between
+/// the lines and ring the bell at the first and the last instead of
+/// walking history; the arrows do the same.
+#[test]
+fn up_and_down_stay_within_the_command() {
+    for (up, down) in [("\x10", "\x0e"), ("\x1b[A", "\x1b[B")] {
+        // Up past the first line searches history for entries holding the
+        // text before the cursor, `echo o`: `echo old` matches, so without
+        // the region Up would replace the line. An entry that does not
+        // match, such as `ls`, would ring the bell anyway.
+        let mut sh = Shell::start(Options {
+            history: vec!["echo old"],
+            rc: "bind 'set bell-style audible'\n".into(),
+            ..Options::default()
+        });
+        sh.send(&format!("echo one{C_J}echo two"));
+        sh.wait_for("two lines", |s| s.cursor_position() == (1, 8));
+        sh.send(C_SPC);
+        sh.send(up);
+        // The goal column, 8, counts the prompt on the first line:
+        // `$ echo o|ne`.
+        sh.wait_for("the region over both lines", |s| {
+            s.cursor_position() == (0, 8)
+                && every_cell(s, "two", vt100::Cell::inverse)
+                && !every_cell(s, "echo one", vt100::Cell::inverse)
+        });
+        sh.take_output();
+        sh.send(up);
+        sh.wait_for_output("the bell at the first line", b"\x07");
+        let s = sh.settle();
+        assert!(has_row(&s, "$ echo one"), "no history walk: {}", dump(&s));
+        assert!(every_cell(&s, "two", vt100::Cell::inverse), "{}", dump(&s));
+        sh.send(down);
+        sh.wait_for("back on the last line", |s| s.cursor_position() == (1, 8));
+        sh.take_output();
+        sh.send(down);
+        sh.wait_for_output("the bell at the last line", b"\x07");
+        assert!(has_row(&sh.settle(), "$ echo one"));
+    }
+}

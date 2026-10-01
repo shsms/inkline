@@ -392,6 +392,8 @@ enum Fallback {
     /// A search for entries starting with (`Kind::Prefix`) or holding
     /// (`Kind::Substring`) the text before the cursor (see `search`).
     Search(Kind),
+    /// Nowhere: the bell rings. While the region is active.
+    Bell,
 }
 
 pub(super) extern "C" fn previous_line_or_history(count: c_int, key: c_int) -> c_int {
@@ -418,6 +420,12 @@ pub(super) extern "C" fn next_line_or_substring_search(count: c_int, key: c_int)
     vertical(count, key, false, Fallback::Search(Kind::Substring))
 }
 
+/// Up (`up`) or Down between the lines of the command, ringing the bell
+/// past the first or last; for the menu keys while the region is active.
+pub(super) fn line_up_or_down(count: c_int, key: c_int, up: bool) -> c_int {
+    vertical(count, key, up, Fallback::Bell)
+}
+
 /// Whether `f` is one of the Up and Down commands, so a run of them keeps
 /// its column. `menu-next` and `menu-previous` count too, since with no menu
 /// they may run these commands. Before they run any other command, they end
@@ -438,13 +446,21 @@ pub(super) fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
 
 /// Moves the cursor `count` lines up or down, keeping its column. Past the
 /// first or last line it runs `fallback` for the lines left over: history,
-/// or the prefix or substring search (`search`).
+/// or the prefix or substring search (`search`); while the region is active
+/// it rings the bell instead.
 ///
 /// A search keeps its own state, with whether the run of Up and Down goes
 /// on with it. That is only trusted when the last key ran one of the Up and
 /// Down commands (`is_vertical`), the same condition `goal_column` uses,
 /// and only by a key of that search's kind.
 fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
+    // While the region is active, Up and Down only stretch it between the
+    // lines of the command.
+    let fallback = if super::region::active() {
+        Fallback::Bell
+    } else {
+        fallback
+    };
     let (count, up) = if count < 0 {
         (-count, !up)
     } else {
@@ -460,6 +476,10 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
     let leave = move |n: c_int| match fallback {
         Fallback::History => walk_history(n, key, up),
         Fallback::Search(kind) => search(n, key, up, kind, continuing_search),
+        Fallback::Bell => {
+            ffi::ding();
+            0
+        }
     };
     guard(
         || {

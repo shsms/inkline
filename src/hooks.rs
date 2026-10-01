@@ -1937,20 +1937,28 @@ extern "C" fn accept_suggestion(count: c_int, key: c_int) -> c_int {
 }
 
 /// `C-n` and `<down>`: move to the next row of the menu, writing it into the
-/// line; with no menu, see `menu_fallback`.
+/// line; with no menu, see `menu_fallback`; with the region active, see
+/// `multiline::line_up_or_down`.
 pub(super) extern "C" fn menu_next(count: c_int, key: c_int) -> c_int {
     move_pick(count, key, true)
 }
 
 /// `C-p` and `<up>`: move to the row above in the menu, writing it into the
-/// line; with no menu, see `menu_fallback`.
+/// line; with no menu, see `menu_fallback`; with the region active, see
+/// `multiline::line_up_or_down`.
 pub(super) extern "C" fn menu_previous(count: c_int, key: c_int) -> c_int {
     move_pick(count, key, false)
 }
 
 /// Moves through the menu `count` rows (see `moving::step`), or runs
-/// `menu_fallback` when there is nothing to move through.
+/// `menu_fallback` when there is nothing to move through; with the region
+/// active, see `multiline::line_up_or_down`.
 fn move_pick(count: c_int, key: c_int, down: bool) -> c_int {
+    // While the region is active there is no menu, and Up and Down stay
+    // within the command.
+    if guard(region::active, || false) {
+        return multiline::line_up_or_down(count, key, !down);
+    }
     let (moved, ran_before) = guard(
         || {
             let ran_before = STATE.with_borrow_mut(|s| s.menu_key_ran.take());
