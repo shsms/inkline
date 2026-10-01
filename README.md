@@ -47,7 +47,8 @@ lines of your own after `enable -f`; they run after inkline's and win.
 | multi-line | `M-RET` | `accept-as-is` | unbound or `vi-editing-mode` |
 | multi-line | `C-a`, `<home>` | `line-start` | `beginning-of-line` |
 | multi-line | `C-k` | `kill-to-line-end` | `kill-line` |
-| multi-line | `C-u` | `kill-to-line-start` | `unix-line-discard` |
+| multi-line | `C-u` | `numeric-argument` | `unix-line-discard` |
+| multi-line | `C-x DEL` | `kill-to-line-start` | `backward-kill-line` |
 | multi-line | `M-#` | `comment-lines` | `insert-comment` |
 | pairing | `(` `[` `{` `"` `'` `` ` `` | `insert-pair` | `self-insert` |
 | pairing | `)` `]` `}` | `insert-close` | `self-insert` |
@@ -98,10 +99,12 @@ first thing to set readline up — that is, only when nothing runs `bind` before
 `enable -f` in `.bashrc`. When it can, an `inputrc` that turns
 `bind-tty-special-chars` back on makes readline rebind Backspace and `C-u` to
 the terminal's erase and kill characters on every line, undoing `delete-pair`
-and `kill-to-line-start`. With it off, readline also stops binding the
+and `numeric-argument`. With it off, readline also stops binding the
 terminal's kill, word-erase and literal-next characters for you. Those default
 to `C-u`, `C-w` and `C-v`, which bash's emacs bindings already cover, so this
-only matters if you changed them with `stty`.
+only matters if you changed them with `stty`. In inkline's layout `C-u` gives
+a count instead of killing the line; `C-x DEL` kills back to the start of the
+line.
 
 ## Configuration
 
@@ -267,9 +270,12 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   next command instead of running it, like pasted text. Up and Down move
   between the lines, and from the first and last line into history; a
   multi-line entry Up brings back opens on its first line, so the next Up
-  goes on through history. `C-a`, `C-e`, `C-k`
-  and `C-u` act on the current line, and `C-k` and `C-u` join lines at its
-  edges. `M-#` comments out every line. Pasted text keeps its own spacing.
+  goes on through history. `C-a`, `C-e`, `C-k` and `C-x DEL` act on the
+  current line, and `C-k` and `C-x DEL` join lines at its edges. `C-u` gives
+  a count, as in Emacs, and `C-k` takes one as Emacs does: `C-u 2 C-k` kills
+  to the start of the second line down, `C-u 0 C-k` kills back to the start
+  of the line, and `C-u - C-k` kills from the start of the line above to the
+  cursor. `M-#` comments out every line. Pasted text keeps its own spacing.
 - **Syntax errors.** A command bash would reject is underlined in wavy red
   when you pause typing, on the word bash would complain about. The word you
   are typing is never underlined.
@@ -352,11 +358,11 @@ items, the last row says how many more.
 - `C-n`, `<down>` and Tab move to the next row, `C-p`, `<up>` and Shift-Tab
   to the previous one, wrapping at either end: the first move down goes to
   the top row, the first move up to the bottom one. Each move writes the row
-  into the line, and the menu keeps its rows while you move. A count typed
-  with Meta and digits, as in `M-2 C-n`, moves that many rows, and you go on
-  moving. A count from readline's `universal-argument` (if you bind it to a
-  key) moves too, but the moving ends after that move: `C-g` and Enter then
-  act as with no move.
+  into the line, and the menu keeps its rows while you move. A count, as in
+  `M-2 C-n` or `C-u 2 C-n`, moves that many rows, and you go on moving;
+  `C-u` alone is a count of 4. A count from readline's own
+  `universal-argument`, if you bind it to a key, moves too, but the moving
+  ends after that move: `C-g` and Enter then act as with no move.
 - Tab or Shift-Tab with only one row, and no more items still coming, writes
   it and does not start moving, so `cd s` Tab gives `cd src/` and the menu
   then lists what is inside. While bash's copy of the shell or a mode server

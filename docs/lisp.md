@@ -169,6 +169,7 @@ can find it too.
 
 - `current-prefix-arg` — the count the key was pressed with, as an integer,
   for the length of the running command; `nil` when no count was given.
+  `C-u` alone gives 4.
 - `this-command` — the running command's own name; `nil` while a lambda
   runs.
 - `last-command` — the name of the command that last ran from a key before
@@ -176,7 +177,8 @@ can find it too.
   inkline knows it by); `nil` if that one was a lambda, or this is the
   first command of the shell. A readline command that `call-interactively`
   ran on the current command's behalf does not become `last-command` on its
-  own — only the Lisp command that called it does.
+  own — only the Lisp command that called it does. After a count typed with
+  `C-u` (`numeric-argument`), it names the command the count ran.
 - Undo: everything a command changes about the line, however many editing
   functions it calls, undoes as one step. An error partway through, or
   `quit` (see below), puts the line, point and mark back to what they were
@@ -363,9 +365,10 @@ changed the line: after the command has returned, and before the line is drawn.
   such as typed-ahead characters it inserts together, or a macro, can be one
   change, as a paste is.
 - History recall, a search, undo and taking a suggestion are changes like any
-  other, as in Emacs. `this-command` is the name of the command the key ran, and
-  `last-command` that of the key before (`nil` for a lambda, and at the first
-  key of a line), so the functions can tell these apart. In the default
+  other, as in Emacs. `this-command` is the name of the command the key ran
+  (after a `C-u` count, the command the count ran), and `last-command` that of
+  the key before (`nil` for a lambda, and at the first key of a line), so the
+  functions can tell these apart. In the default
   layout the arrows run the menu commands, so Up that brings back a history
   entry gives `this-command` `menu-previous`, and Down `menu-next`. On bash
   5.3, a key that ends an incremental search (`C-r`) runs its own command
@@ -375,8 +378,8 @@ changed the line: after the command has returned, and before the line is drawn.
   takes back what they did and keeps what you typed.
 - It runs after each move through the menu too, with `this-command` the move's
   command; a function that changes the line then ends the moving.
-- Only called in plain editing: not while searching, reading a count (`M-3`) or
-  a quoted key (`C-v`), and not when the key ran the line.
+- Only called in plain editing: not while searching, reading a count (`M-3`,
+  `C-u 3`) or a quoted key (`C-v`), and not when the key ran the line.
 - A function that fails, also with `user-error`, has its own changes undone and
   is removed from the hook. `inkline: NAME: TEXT (removed from
   inkline-after-change-functions)` shows under the line. A `quit` undoes every
