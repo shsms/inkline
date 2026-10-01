@@ -163,17 +163,14 @@ mod bash {
     use crate::lisp::keydesc;
     use crate::lisp::keys::{self, Fallback, LeftAlone};
 
-    /// Readline set-up before binding: sets the variables the layout needs,
+    /// Readline set-up before binding: turns `bind-tty-special-chars` off,
     /// then runs readline's own start-up if bash has not run it yet, which
     /// reads `inputrc`. When inkline is first to set readline up, `inputrc`
-    /// can still change the variables. When a `bind` earlier in `.bashrc` set
-    /// readline up first, `inputrc` was already read and the variables are
-    /// set anyway: the layout's `DEL` and `C-u` need them.
+    /// can still turn it back on. When a `bind` earlier in `.bashrc` set
+    /// readline up first, `inputrc` was already read and the variable is set
+    /// anyway: the layout's `DEL` and `C-u` need it.
     pub fn prepare_readline() {
         ffi::set_readline_variable("bind-tty-special-chars", "off");
-        if ffi::readline_version() < 0x0801 {
-            ffi::set_readline_variable("enable-bracketed-paste", "on");
-        }
         ffi::initialize_readline_once();
     }
 

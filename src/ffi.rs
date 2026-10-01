@@ -144,13 +144,24 @@ fn check_versions() -> Result<(), String> {
     look_up_symbols()
 }
 
-/// Readline functions that an older bash may lack. They are looked up when
-/// `enable -f` loads the library, once `check_versions` has found bash and
-/// readline new enough, instead of being linked: a linked symbol that bash
-/// lacks fails the load before inkline can say which bash it needs.
+/// Readline functions and variables that an older bash may lack. They are
+/// looked up when `enable -f` loads the library, once `check_versions` has
+/// found bash and readline new enough, instead of being linked: a linked
+/// symbol that bash lacks fails the load before inkline can say which bash
+/// it needs.
 struct LookedUp {
-    bracketed_read_key: unsafe extern "C" fn() -> c_int,
+    bracketed_read_key: IntFn,
+    mark_active_p: IntFn,
+    timeout_remaining: TimeoutFn,
+    full_quoting_desired: *mut c_int,
 }
+
+type IntFn = unsafe extern "C" fn() -> c_int;
+type TimeoutFn = unsafe extern "C" fn(*mut c_uint, *mut c_uint) -> c_int;
+
+// Only used from bash's single thread.
+unsafe impl Sync for LookedUp {}
+unsafe impl Send for LookedUp {}
 
 static LOOKED_UP: std::sync::OnceLock<LookedUp> = std::sync::OnceLock::new();
 
@@ -167,15 +178,17 @@ fn look_up_symbols() -> Result<(), String> {
         }
         Ok(at)
     }
-    if LOOKED_UP.get().is_some() {
-        return Ok(());
-    }
-    type KeyFn = unsafe extern "C" fn() -> c_int;
     let bracketed_read_key = find(c"_rl_bracketed_read_key")?;
+    let mark_active_p = find(c"rl_mark_active_p")?;
+    let timeout_remaining = find(c"rl_timeout_remaining")?;
+    let full_quoting_desired = find(c"rl_full_quoting_desired")?;
     // SAFETY: each symbol has the type readline 8.3 declares for it.
     let looked_up = unsafe {
         LookedUp {
-            bracketed_read_key: std::mem::transmute::<*mut c_void, KeyFn>(bracketed_read_key),
+            bracketed_read_key: std::mem::transmute::<*mut c_void, IntFn>(bracketed_read_key),
+            mark_active_p: std::mem::transmute::<*mut c_void, IntFn>(mark_active_p),
+            timeout_remaining: std::mem::transmute::<*mut c_void, TimeoutFn>(timeout_remaining),
+            full_quoting_desired: full_quoting_desired.cast::<c_int>(),
         }
     };
     let _ = LOOKED_UP.set(looked_up);
@@ -280,11 +293,6 @@ pub fn initialize_readline_once() {
     }
 }
 
-/// Readline's version, such as 0x0800 for 8.0.
-pub fn readline_version() -> c_int {
-    unsafe { rl_readline_version }
-}
-
 /// Sets a readline variable; false when readline has no such variable.
 pub fn set_readline_variable(name: &str, value: &str) -> bool {
     let (Ok(n), Ok(v)) = (CString::new(name), CString::new(value)) else {
@@ -324,18 +332,9 @@ pub fn utf8_locale() -> bool {
 }
 
 /// Whether readline is highlighting an active region (a search match or pasted
-/// text). `rl_mark_active_p` only exists from readline 8.1, so it is looked up
-/// at run time.
+/// text).
 pub fn region_active() -> bool {
-    type MarkActiveFn = unsafe extern "C" fn() -> c_int;
-    static MARK_ACTIVE: std::sync::OnceLock<Option<MarkActiveFn>> = std::sync::OnceLock::new();
-    let mark_active = *MARK_ACTIVE.get_or_init(|| {
-        let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"rl_mark_active_p".as_ptr()) };
-        // SAFETY: readline defines rl_mark_active_p as `int (void)`.
-        (!symbol.is_null())
-            .then(|| unsafe { std::mem::transmute::<*mut c_void, MarkActiveFn>(symbol) })
-    });
-    mark_active.is_some_and(|f| unsafe { f() != 0 })
+    unsafe { (looked_up().mark_active_p)() != 0 }
 }
 
 /// The value of a shell variable, exported or not.
@@ -662,22 +661,11 @@ pub enum Wait {
 }
 
 /// Milliseconds left until readline's timeout (`read -t`), rounded up, or -1
-/// when there is none. Readline 8.2 keeps the timeout itself and checks it in
-/// its own reader; older versions leave it to bash's `SIGALRM`, and have no
-/// `rl_timeout_remaining`, so it is looked up at run time.
+/// when there is none. Readline keeps the timeout itself and checks it in
+/// its own reader.
 fn timeout_remaining() -> c_int {
-    type TimeoutFn = unsafe extern "C" fn(*mut c_uint, *mut c_uint) -> c_int;
-    static TIMEOUT: std::sync::OnceLock<Option<TimeoutFn>> = std::sync::OnceLock::new();
-    let timeout = *TIMEOUT.get_or_init(|| {
-        let symbol = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"rl_timeout_remaining".as_ptr()) };
-        // SAFETY: readline defines rl_timeout_remaining as
-        // `int (unsigned int *, unsigned int *)`.
-        (!symbol.is_null())
-            .then(|| unsafe { std::mem::transmute::<*mut c_void, TimeoutFn>(symbol) })
-    });
-    let Some(timeout) = timeout else { return -1 };
     let (mut secs, mut usecs) = (0, 0);
-    match unsafe { timeout(&mut secs, &mut usecs) } {
+    match unsafe { (looked_up().timeout_remaining)(&mut secs, &mut usecs) } {
         1 => c_int::try_from(u64::from(secs) * 1000 + u64::from(usecs).div_ceil(1000))
             .unwrap_or(c_int::MAX),
         // No timeout, or reading the clock failed.
@@ -1900,20 +1888,14 @@ pub struct CompletionSettings {
     suppress_quote: c_int,
     append_character: c_int,
     mark_symlink_dirs: c_int,
-    /// readline 8.3's `rl_full_quoting_desired` (`compopt -o fullquote`).
+    /// readline's `rl_full_quoting_desired` (`compopt -o fullquote`).
     full_quoting: c_int,
 }
 
-/// readline 8.3's `rl_full_quoting_desired`: quote a match even when it is
-/// not a file name. Earlier readline has none, so it is looked up at run
-/// time.
-fn full_quoting_desired() -> Option<*mut c_int> {
-    static FULL: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    // SAFETY: `dlsym` only looks the symbol up.
-    let at = *FULL.get_or_init(|| unsafe {
-        libc::dlsym(libc::RTLD_DEFAULT, c"rl_full_quoting_desired".as_ptr()) as usize
-    });
-    (at != 0).then_some(at as *mut c_int)
+/// readline's `rl_full_quoting_desired`: quote a match even when it is not a
+/// file name.
+fn full_quoting_desired() -> *mut c_int {
+    looked_up().full_quoting_desired
 }
 
 /// What bash's completion gave for the word at the cursor.
@@ -1990,9 +1972,7 @@ pub fn bash_matches() -> Option<BashMatches> {
         rl_completion_found_quote = found;
         rl_completion_quote_character = c_int::from(quote as u8);
         rl_completion_invoking_key = c_int::from(b'\t');
-        if let Some(full) = full_quoting_desired() {
-            *full = 0;
-        }
+        *full_quoting_desired() = 0;
         rl_attempted_completion_over = 0;
         let line = line_bytes();
         let text = CString::new(line.get(start as usize..end as usize)?).ok()?;
@@ -2028,7 +2008,7 @@ pub fn bash_matches() -> Option<BashMatches> {
             suppress_quote: rl_completion_suppress_quote,
             append_character: rl_completion_append_character,
             mark_symlink_dirs: rl_completion_mark_symlink_dirs,
-            full_quoting: full_quoting_desired().map_or(0, |full| *full),
+            full_quoting: *full_quoting_desired(),
         };
         Some(BashMatches {
             start: start as usize,
@@ -2116,9 +2096,7 @@ unsafe extern "C" fn one_match(
         rl_completion_suppress_quote = s.suppress_quote;
         rl_completion_append_character = s.append_character;
         rl_completion_mark_symlink_dirs = s.mark_symlink_dirs;
-        if let Some(full) = full_quoting_desired() {
-            *full = s.full_quoting;
-        }
+        *full_quoting_desired() = s.full_quoting;
         rl_attempted_completion_over = 1;
         let list = libc::malloc(2 * std::mem::size_of::<*mut c_char>()).cast::<*mut c_char>();
         if list.is_null() {
