@@ -147,10 +147,92 @@ impl Default for Options {
     }
 }
 
+/// Start and end of a synchronized update (DEC private mode 2026).
+pub const BEGIN_UPDATE: &[u8] = b"\x1b[?2026h";
+pub const END_UPDATE: &[u8] = b"\x1b[?2026l";
+
+/// How long a synchronized update may stay open before the screen is shown
+/// anyway, as terminals do so that one never closed cannot hide the screen
+/// for good.
+pub const UPDATE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// A terminal emulator that supports synchronized updates: what bash writes
+/// goes to `live` as it arrives, and while an update is open the screen the
+/// tests see is `shown`, the copy of `live`'s taken when the update began.
+/// inkline's frames reach the terminal in more than one write, and a test
+/// that read the screen between them would see half a frame.
+pub struct Term {
+    live: vt100::Parser,
+    /// The screen as it was when the update now open began.
+    shown: vt100::Screen,
+    /// When the update now open began.
+    open_since: Option<Instant>,
+    /// The last bytes read, kept to find a marker that a read splits.
+    tail: Vec<u8>,
+}
+
+impl Term {
+    pub fn new(rows: u16, cols: u16) -> Term {
+        let live = vt100::Parser::new(rows, cols, 0);
+        let shown = live.screen().clone();
+        Term {
+            live,
+            shown,
+            open_since: None,
+            tail: Vec::new(),
+        }
+    }
+
+    pub fn process(&mut self, bytes: &[u8]) {
+        let mut scan = std::mem::take(&mut self.tail);
+        // `scan[..fed]` has gone to `live`; the tail went with the last read.
+        let mut fed = scan.len();
+        scan.extend_from_slice(bytes);
+        for at in 0..scan.len() {
+            let rest = &scan[at..];
+            let begin = rest.starts_with(BEGIN_UPDATE);
+            if !begin && !rest.starts_with(END_UPDATE) {
+                continue;
+            }
+            // The tail is shorter than a marker, so each one found ends in
+            // `bytes` and was not found before.
+            let end = at + BEGIN_UPDATE.len();
+            self.live.process(&scan[fed..end]);
+            fed = end;
+            if begin {
+                if self.open_since.is_none() {
+                    self.shown = self.live.screen().clone();
+                    self.open_since = Some(Instant::now());
+                }
+            } else {
+                self.open_since = None;
+            }
+        }
+        self.live.process(&scan[fed..]);
+        let keep = scan.len().saturating_sub(BEGIN_UPDATE.len() - 1);
+        self.tail = scan.split_off(keep);
+    }
+
+    /// The screen as the terminal shows it: the one from when the update
+    /// began while an update is open, unless it has been open for
+    /// `UPDATE_TIMEOUT`, and the live one otherwise.
+    pub fn screen(&self) -> vt100::Screen {
+        match self.open_since {
+            Some(since) if since.elapsed() < UPDATE_TIMEOUT => self.shown.clone(),
+            _ => self.live.screen().clone(),
+        }
+    }
+
+    pub fn set_size(&mut self, rows: u16, cols: u16) {
+        self.live.screen_mut().set_size(rows, cols);
+        self.shown.set_size(rows, cols);
+    }
+}
+
 /// An interactive bash in a pseudo-terminal, with its screen kept up to date by
 /// a terminal emulator.
 pub struct Shell {
-    parser: Arc<Mutex<vt100::Parser>>,
+    term: Arc<Mutex<Term>>,
     /// Everything bash wrote since the last `take_output`.
     output: Arc<Mutex<Vec<u8>>>,
     writer: Box<dyn Write + Send>,
@@ -239,10 +321,10 @@ impl Shell {
         let child = pty.slave.spawn_command(cmd).unwrap();
         drop(pty.slave);
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(opts.rows, opts.cols, 0)));
+        let term = Arc::new(Mutex::new(Term::new(opts.rows, opts.cols)));
         let mut reader = pty.master.try_clone_reader().unwrap();
         let output = Arc::new(Mutex::new(Vec::new()));
-        let screen = parser.clone();
+        let screen = term.clone();
         let raw = output.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
@@ -256,7 +338,7 @@ impl Shell {
         });
         let writer = pty.master.take_writer().unwrap();
         Shell {
-            parser,
+            term,
             output,
             writer,
             master: pty.master,
@@ -287,8 +369,9 @@ impl Shell {
         })
     }
 
+    /// The screen, as a terminal that supports synchronized updates shows it.
     pub fn screen(&self) -> vt100::Screen {
-        self.parser.lock().unwrap().screen().clone()
+        self.term.lock().unwrap().screen()
     }
 
     /// Polls the screen until `done` holds, for up to 5 seconds.
@@ -320,11 +403,7 @@ impl Shell {
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
-        self.parser
-            .lock()
-            .unwrap()
-            .screen_mut()
-            .set_size(rows, cols);
+        self.term.lock().unwrap().set_size(rows, cols);
         self.master
             .resize(PtySize {
                 rows,

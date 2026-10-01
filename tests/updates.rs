@@ -7,9 +7,6 @@ mod common;
 
 use common::*;
 
-const BEGIN: &[u8] = b"\x1b[?2026h";
-const END: &[u8] = b"\x1b[?2026l";
-
 #[test]
 fn a_keystroke_is_one_update() {
     let mut sh = Shell::start(Options {
@@ -27,10 +24,13 @@ fn a_keystroke_is_one_update() {
     sh.settle();
     let out = sh.take_output();
     let shown = String::from_utf8_lossy(&out).into_owned();
-    assert!(out.starts_with(BEGIN), "{shown:?}");
-    assert!(out.ends_with(END), "{shown:?}");
+    assert!(out.starts_with(BEGIN_UPDATE), "{shown:?}");
+    assert!(out.ends_with(END_UPDATE), "{shown:?}");
     assert_eq!(
-        (count_bytes(&out, BEGIN), count_bytes(&out, END)),
+        (
+            count_bytes(&out, BEGIN_UPDATE),
+            count_bytes(&out, END_UPDATE)
+        ),
         (1, 1),
         "{shown:?}"
     );
@@ -51,12 +51,12 @@ fn the_update_ends_before_the_command_runs() {
     sh.settle();
     let out = sh.take_output();
     let shown = String::from_utf8_lossy(&out).into_owned();
-    let end = find_bytes(&out, END).expect(&shown);
+    let end = find_bytes(&out, END_UPDATE).expect(&shown);
     let output = find_bytes(&out, b"hel\r\n").expect(&shown);
     assert!(end < output, "{shown:?}");
     assert_eq!(
-        count_bytes(&out, BEGIN),
-        count_bytes(&out, END),
+        count_bytes(&out, BEGIN_UPDATE),
+        count_bytes(&out, END_UPDATE),
         "{shown:?}"
     );
 }
@@ -84,8 +84,8 @@ fn assert_no_update_open_at(out: &[u8], marker: &[u8]) {
     let shown = String::from_utf8_lossy(out);
     let before = &out[..find_bytes(out, marker).expect(&shown)];
     assert_eq!(
-        count_bytes(before, BEGIN),
-        count_bytes(before, END),
+        count_bytes(before, BEGIN_UPDATE),
+        count_bytes(before, END_UPDATE),
         "{shown:?}"
     );
 }
@@ -106,4 +106,72 @@ fn winch_trap_output_is_not_held_back() {
     sh.wait_for_output("the trap", b"winch-trap");
     sh.settle();
     assert_no_update_open_at(&sh.take_output(), b"winch-trap");
+}
+
+/// What `term` shows, its rows joined by newlines.
+fn shown(term: &Term) -> String {
+    term.screen().contents()
+}
+
+/// A frame split across reads at any two points is shown whole or not at
+/// all.
+#[test]
+fn the_harness_never_shows_part_of_a_frame() {
+    let old = b"old-line";
+    let frame = [BEGIN_UPDATE, b"\x1b[H\x1b[2Jnew-one\r\nnew-two", END_UPDATE].concat();
+    let mut whole = Term::new(4, 20);
+    whole.process(old);
+    let old_screen = shown(&whole);
+    whole.process(&frame);
+    let new_screen = shown(&whole);
+    for i in 0..=frame.len() {
+        for j in i..=frame.len() {
+            let mut term = Term::new(4, 20);
+            term.process(old);
+            for read in [&frame[..i], &frame[i..j], &frame[j..]] {
+                term.process(read);
+                let screen = shown(&term);
+                assert!(
+                    screen == old_screen || screen == new_screen,
+                    "split at {i} and {j}: {screen:?}"
+                );
+            }
+            assert_eq!(shown(&term), new_screen, "split at {i} and {j}");
+        }
+    }
+}
+
+/// Text read with the end of an update is shown at once.
+#[test]
+fn the_harness_shows_text_after_the_end_at_once() {
+    let mut term = Term::new(4, 20);
+    term.process(&[BEGIN_UPDATE, b"held"].concat());
+    assert_eq!(shown(&term), "");
+    term.process(&[END_UPDATE, b"-then-more"].concat());
+    assert_eq!(shown(&term), "held-then-more");
+}
+
+/// A second begin inside an update changes nothing, and the first end
+/// closes the update.
+#[test]
+fn the_harness_ignores_a_nested_begin() {
+    let mut term = Term::new(4, 20);
+    term.process(b"before");
+    term.process(&[BEGIN_UPDATE, b"-one"].concat());
+    term.process(&[BEGIN_UPDATE, b"-two"].concat());
+    assert_eq!(shown(&term), "before");
+    term.process(END_UPDATE);
+    assert_eq!(shown(&term), "before-one-two");
+    term.process(b"-three");
+    assert_eq!(shown(&term), "before-one-two-three");
+}
+
+/// An update left open stops hiding the screen after `UPDATE_TIMEOUT`.
+#[test]
+fn the_harness_shows_an_update_left_open_after_the_timeout() {
+    let mut term = Term::new(4, 20);
+    term.process(&[BEGIN_UPDATE, b"held"].concat());
+    assert_eq!(shown(&term), "");
+    std::thread::sleep(UPDATE_TIMEOUT);
+    assert_eq!(shown(&term), "held");
 }
