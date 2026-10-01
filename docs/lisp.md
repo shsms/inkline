@@ -66,10 +66,12 @@ change takes effect on the next key.
   copy of the shell may take to answer, an integer of at least 1; after that
   it is stopped and the word gets no `c` items.
 - `inkline-history-cursor` (default `start`): the symbol `start` or `end`,
-  where `previous-line-or-history` and `previous-line-or-substring-search`
-  leave the cursor in a multi-line entry they bring back. With `end`, an
+  where `previous-line-or-history`, `previous-line-or-substring-search` and
+  `previous-line-or-search` leave the cursor in a multi-line entry they bring
+  back, also when a menu key with no menu runs one of them. With `end`, an
   entry brought back by walking history keeps the cursor where readline puts
-  it, and an entry the substring search finds has it at its end.
+  it, and an entry the substring search finds has it at its end. An entry
+  the prefix search finds has it after the prefix either way.
 - `inkline-colors` (default `nil`): the colours inkline draws with, as an
   alist of `(NAME . "VALUE")` pairs, or a string in `LS_COLORS`'s format. A
   value is SGR codes or colour words, such as `"bold magenta"` or

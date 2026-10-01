@@ -388,10 +388,19 @@ items, the last row says how many more.
   line. With nothing before the cursor, or on a command brought back by
   walking history or by `C-r`, they walk history instead; on a command the
   up and down keys' own search found, by substring or by prefix, they start
-  a new search. Where inputrc binds `<up>` to `history-search-backward`,
-  `<up>` searches by prefix and goes on with that search, and only `C-p`
-  starts a new substring search. With readline 8.3's `search-ignore-case`
-  on, case is ignored.
+  a new search. Where inputrc binds `<up>` and `<down>` to
+  `history-search-backward` and `history-search-forward`, they search for
+  commands starting with the text as readline's prefix search does: on any
+  line, from where the line is in history, `<up>` for older commands and
+  `<down>` for newer ones, leaving the cursor after the text. They pass
+  over commands that repeat the last match, though on a command from
+  history they go to one when they find nothing else, so they go through
+  history in order. On a typed line, as the substring search does, they
+  also pass over commands that repeat the line, and in a search `<down>`
+  past the newest match puts back the line and cursor as they were when
+  it started; on a command from history, `<down>` past the newest match
+  rings the bell. `C-p` and `C-n` keep the substring search. With
+  readline 8.3's `search-ignore-case` on, case is ignored.
 
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
 text off on their own, and `inkline-completion-style` set to `fuzzy` lets the
@@ -740,12 +749,14 @@ changes.
   by default, for bash code and inside a program's script (see "Command
   modes"); `0` turns off both indenting new lines and moving closing words
   back out, and a closer put on its own line keeps its line's indentation.
-- `inkline-history-cursor`: where `previous-line-or-history` and
-  `previous-line-or-substring-search` leave the cursor in a multi-line entry
-  they bring back, also when a menu key with no menu runs one of them: the
-  symbol `start` (the default) or `end`. With `end`, an entry brought back
-  by walking history keeps the cursor where readline puts it, and an entry
-  the substring search finds has it at its end.
+- `inkline-history-cursor`: where `previous-line-or-history`,
+  `previous-line-or-substring-search` and `previous-line-or-search` leave
+  the cursor in a multi-line entry they bring back, also when a menu key
+  with no menu runs one of them: the symbol `start` (the default) or `end`.
+  With `end`, an entry brought back by walking history keeps the cursor
+  where readline puts it, and an entry the substring search finds has it at
+  its end. An entry the prefix search finds has it after the prefix either
+  way.
 - `inkline-suggestion-lines`: the most lines of a multi-line suggestion to
   show, an integer of at least 1, 5 by default. It applies only while no menu
   or message shows under the line; with one, a multi-line suggestion takes

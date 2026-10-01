@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use super::{STATE, guard, status_of};
 use crate::args;
 use crate::ffi;
-use crate::history_search::SubstringSearch;
+use crate::history_search::{HistorySearch, Kind};
 use crate::indent;
 use crate::lines;
 use crate::mode_server::{self, protocol::Depths};
@@ -387,12 +387,9 @@ fn fits_on_screen(text: &str) -> bool {
 #[derive(Clone, Copy)]
 enum Fallback {
     History,
-    /// readline's history search for entries starting with the text before
-    /// the cursor.
-    Search,
-    /// A search for entries holding the text before the cursor (see
-    /// `substring_search`).
-    SubstringSearch,
+    /// A search for entries starting with (`Kind::Prefix`) or holding
+    /// (`Kind::Substring`) the text before the cursor (see `search`).
+    Search(Kind),
 }
 
 pub(super) extern "C" fn previous_line_or_history(count: c_int, key: c_int) -> c_int {
@@ -404,19 +401,19 @@ pub(super) extern "C" fn next_line_or_history(count: c_int, key: c_int) -> c_int
 }
 
 pub(super) extern "C" fn previous_line_or_search(count: c_int, key: c_int) -> c_int {
-    vertical(count, key, true, Fallback::Search)
+    vertical(count, key, true, Fallback::Search(Kind::Prefix))
 }
 
 pub(super) extern "C" fn next_line_or_search(count: c_int, key: c_int) -> c_int {
-    vertical(count, key, false, Fallback::Search)
+    vertical(count, key, false, Fallback::Search(Kind::Prefix))
 }
 
 pub(super) extern "C" fn previous_line_or_substring_search(count: c_int, key: c_int) -> c_int {
-    vertical(count, key, true, Fallback::SubstringSearch)
+    vertical(count, key, true, Fallback::Search(Kind::Substring))
 }
 
 pub(super) extern "C" fn next_line_or_substring_search(count: c_int, key: c_int) -> c_int {
-    vertical(count, key, false, Fallback::SubstringSearch)
+    vertical(count, key, false, Fallback::Search(Kind::Substring))
 }
 
 /// Whether `f` is one of the Up and Down commands, so a run of them keeps
@@ -439,19 +436,12 @@ pub(super) fn is_vertical(f: Option<ffi::CommandFn>) -> bool {
 
 /// Moves the cursor `count` lines up or down, keeping its column. Past the
 /// first or last line it runs `fallback` for the lines left over: history,
-/// the prefix search, or the substring search (`substring_search`).
+/// or the prefix or substring search (`search`).
 ///
-/// Readline's own prefix search decides whether to continue the last
-/// search or start a new one by checking `rl_last_func`, which after this
-/// command's own dispatch holds this command, never the search function it
-/// called directly; without `continue_prefix_search` a run of
-/// `-or-search` presses would restart the search from the newest entry
-/// every time instead of moving through the matches. The substring search
-/// keeps its own state, with whether the run goes on with it. Either
-/// search's state (`search_continues`, or the substring search's
-/// `going_on`) is only trusted when the last key ran one of the Up and Down
-/// commands (`is_vertical`), the same condition `goal_column` uses, and
-/// only by a key of that search's kind.
+/// A search keeps its own state, with whether the run of Up and Down goes
+/// on with it. That is only trusted when the last key ran one of the Up and
+/// Down commands (`is_vertical`), the same condition `goal_column` uses,
+/// and only by a key of that search's kind.
 fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
     let (count, up) = if count < 0 {
         (-count, !up)
@@ -459,61 +449,15 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
         (count, up)
     };
     let is_run = is_vertical(ffi::last_command());
-    let (continued, continuing_search) = STATE.with_borrow(|s| match fallback {
-        Fallback::History => (None, false),
-        Fallback::Search => {
-            let continued = s.search_continues.filter(|_| is_run);
-            (continued, continued.is_some())
-        }
-        Fallback::SubstringSearch => (
-            None,
-            is_run && s.substring.as_ref().is_some_and(|search| search.going_on),
-        ),
-    });
-    let leave = move |n: c_int| {
-        let before = ffi::line_bytes();
-        // Where the prefix search looks from: readline's history place, or
-        // the entry it last found when it goes on.
-        let search_from = STATE.with_borrow(|s| {
-            s.found_at
-                .filter(|_| continuing_search)
-                .map_or_else(ffi::history_position, |found| found.entry)
+    let continuing_search = is_run
+        && STATE.with_borrow(|s| {
+            s.search.as_ref().is_some_and(|search| {
+                search.going_on && matches!(fallback, Fallback::Search(kind) if kind == search.kind)
+            })
         });
-        // The substring search keeps its own state.
-        if !matches!(fallback, Fallback::SubstringSearch) {
-            STATE.with_borrow_mut(|s| {
-                s.search_continues = matches!(fallback, Fallback::Search).then_some(false);
-                s.substring = None;
-                if matches!(fallback, Fallback::History) {
-                    s.found_at = None;
-                }
-            });
-            if continuing_search {
-                ffi::continue_prefix_search();
-            }
-        }
-        let result = match (up, fallback) {
-            (true, Fallback::History) => ffi::previous_history(n, key),
-            (false, Fallback::History) => ffi::next_history(n, key),
-            (true, Fallback::Search) => ffi::history_search_backward(n, key),
-            (false, Fallback::Search) => ffi::history_search_forward(n, key),
-            (_, Fallback::SubstringSearch) => substring_search(n, key, up, continuing_search),
-        };
-        let changed = ffi::line_bytes() != before;
-        STATE.with_borrow_mut(|s| {
-            if let Some(search_changed) = &mut s.search_continues {
-                *search_changed = changed || continued == Some(true);
-            }
-            // While readline's history place stays, the line counts as
-            // found, as the substring search's own finds do.
-            if changed && matches!(fallback, Fallback::Search) {
-                s.found_at = Some(Found {
-                    place: ffi::history_position(),
-                    entry: prefix_match_place(search_from),
-                });
-            }
-        });
-        result
+    let leave = move |n: c_int| match fallback {
+        Fallback::History => walk_history(n, key, up),
+        Fallback::Search(kind) => search(n, key, up, kind, continuing_search),
     };
     guard(
         || {
@@ -549,14 +493,15 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
                 };
                 point = next;
             }
-            // A move between the lines of a line a search found keeps that
-            // search going, so past its first or last line the next key
-            // continues it. Any other key before ends it, and so does a move
-            // when the search left the line as it was.
+            // A move between the lines of a line a search found, or of an
+            // entry a prefix run with no text walked to, keeps that run
+            // going, so past its first or last line the next key continues
+            // it. Any other key before ends it, and so does a move when the
+            // search has found nothing and left the line as it was.
             STATE.with_borrow_mut(|s| {
-                s.search_continues = s.search_continues.filter(|&changed| is_run && changed);
-                if let Some(search) = &mut s.substring {
-                    search.going_on &= is_run && search.at != search.start;
+                if let Some(search) = &mut s.search {
+                    search.going_on &=
+                        is_run && (search.last_found.is_some() || search.text.is_empty());
                 }
             });
             ffi::set_point(point);
@@ -566,97 +511,149 @@ fn vertical(count: c_int, key: c_int, up: bool, fallback: Fallback) -> c_int {
     )
 }
 
-/// Up (`up`) or Down past the first or last line with the substring search.
-/// A run of Up and Down that searched this way goes on with its search
-/// (`continuing`). Otherwise Up starts a search for the text before the
-/// cursor, unless the line is a history entry brought back by walking
-/// (`found_entry` tells a found one apart) or nothing is before the
-/// cursor; there, and for any other Down, the key walks history.
+/// Up (`up`) or Down past the first or last line with the prefix or
+/// substring search (`kind`). A run of Up and Down that searched this way
+/// goes on with its search (`continuing`). Otherwise the prefix search
+/// starts a new search for the text before the cursor from readline's
+/// history place, older for Up and newer for Down, on any line, as
+/// readline's own prefix search does. The substring search starts one only
+/// for Up, and not on a history entry brought back by walking
+/// (`found_entry` tells a found one apart). With nothing before the cursor,
+/// on such an entry, and for the substring search's Down, the key walks
+/// history. A prefix run that started with nothing before the cursor
+/// walks history to its end, as readline's prefix search does while its
+/// text is empty.
 ///
-/// inkline reads history itself (`SubstringSearch::next_match`) and walks
-/// to the match with readline's history walk, which on every version
-/// saves the typed line with its undo list on the first step, gives both
-/// back at the end of history, and leaves the history place on the match.
-/// Up past the oldest match leaves the line and cursor as they were. Down
-/// past the newest walks back to where the search started, which gives
-/// back that line with its undo list, and puts back the cursor; the search
-/// ends. A found entry gets the cursor as `place_on_found` says; an entry
-/// brought back by walking gets it as `previous-line-or-history` gives it.
-fn substring_search(count: c_int, key: c_int, up: bool, continuing: bool) -> c_int {
+/// inkline reads history itself (`HistorySearch::next_match`) and walks to
+/// the match with readline's history walk, which saves the typed line with
+/// its undo list on the first step, gives both back at the end of history,
+/// and leaves the history place on the match. A search that finds nothing,
+/// Up past the oldest match or Down from the line the search started on,
+/// rings the bell and leaves the line; the substring search leaves the
+/// cursor too, and the prefix search puts it after the prefix, as
+/// readline's own does. Down past the newest match of a search that
+/// started past its entries (`HistorySearch::gives_back_start`) walks back
+/// to where it started, which gives back that line with its undo list, and
+/// puts back the cursor; the search ends. A prefix search that started
+/// inside history rings the bell there instead and leaves the line, as
+/// readline's does. On a found entry, the prefix search puts the cursor
+/// right after the prefix, as readline's own does, and the substring search
+/// as `place_on_found` says; an entry brought back by walking gets it as
+/// `previous-line-or-history` gives it. After a match or a search that
+/// finds nothing, the mark is at the end of the line, as readline's
+/// searches leave it.
+fn search(count: c_int, key: c_int, up: bool, kind: Kind, continuing: bool) -> c_int {
     if count == 0 {
         return 0;
     }
     let kept = if continuing {
-        STATE.with_borrow_mut(|s| s.substring.take())
+        STATE.with_borrow_mut(|s| s.search.take())
     } else {
         None
     };
     let search = kept.or_else(|| {
         let found = found_entry();
-        (up && (found.is_some() || !ffi::on_history_entry()))
-            .then(|| new_search(found))
-            .flatten()
-    });
-    let Some(mut search) = search else {
-        STATE.with_borrow_mut(|s| {
-            s.search_continues = None;
-            s.substring = None;
-            s.found_at = None;
-        });
-        let before = ffi::line_bytes();
-        let result = if up {
-            ffi::previous_history(count, key)
-        } else {
-            ffi::next_history(count, key)
+        let starts = match kind {
+            Kind::Prefix => true,
+            Kind::Substring => up && (found.is_some() || !ffi::on_history_entry()),
         };
-        if up && ffi::line_bytes() != before {
-            open_at_start();
+        starts.then(|| new_search(kind, found)).flatten()
+    });
+    // With nothing before the cursor, the key walks history. The prefix
+    // search keeps its run with no text, so the rest of the run walks too,
+    // as readline's prefix search does while its text is empty.
+    let mut search = match search {
+        Some(search) if !search.text.is_empty() => search,
+        walking => {
+            STATE.with_borrow_mut(|s| s.search = walking);
+            let before = ffi::line_bytes();
+            let result = step_history(count, key, up);
+            if up && ffi::line_bytes() != before {
+                open_at_start();
+            }
+            return result;
         }
-        return result;
     };
     let ignore_case = ffi::variable_on(c"search-ignore-case");
-    let found = ffi::with_history_entries(|entry| search.next_match(up, count, ignore_case, entry));
+    let found = ffi::with_history_entries(|entry| {
+        let place = search.next_match(up, count, ignore_case, entry)?;
+        Some((place, entry(place).unwrap_or_default().to_vec()))
+    });
+    let after_prefix = |search: &HistorySearch| {
+        ffi::set_point(search.prefix_end(&ffi::line_bytes()));
+    };
+    let mark_at_end = || ffi::set_mark(ffi::line_bytes().len());
     match found {
-        Some(place) => {
+        Some((place, text)) => {
             walk_to(place);
             search.at = place;
-            place_on_found(up);
+            search.last_found = Some(text);
+            match kind {
+                Kind::Prefix => after_prefix(&search),
+                Kind::Substring => place_on_found(up),
+            }
+            mark_at_end();
         }
-        None if up => ffi::ding(),
+        None if up || !search.gives_back_start() => {
+            ffi::ding();
+            if kind == Kind::Prefix {
+                after_prefix(&search);
+            }
+            mark_at_end();
+        }
         None => {
             walk_to(search.start);
             search.at = search.start;
+            search.last_found = None;
             ffi::set_point(search.point.min(ffi::line_bytes().len()));
             search.going_on = false;
         }
     }
-    STATE.with_borrow_mut(|s| {
-        s.search_continues = None;
-        s.found_at = search.found_at().map(|entry| Found {
-            place: ffi::history_position(),
-            entry,
-        });
-        s.substring = Some(search);
-    });
+    STATE.with_borrow_mut(|s| s.search = Some(search));
     0
 }
 
-/// A search for the text before the cursor, from the line as it is: from
-/// the place of the entry an earlier search `found`, else from readline's
-/// history place. None when nothing is before the cursor.
-fn new_search(found: Option<c_int>) -> Option<SubstringSearch> {
+/// A search of `kind` for the text before the cursor, from the line as it
+/// is: from the place of the entry an earlier search `found`, else from
+/// readline's history place. When nothing is before the cursor, a prefix
+/// search with no text, which walks history, and None for the substring
+/// search.
+fn new_search(kind: Kind, found: Option<c_int>) -> Option<HistorySearch> {
     let line = ffi::line_bytes();
     let point = ffi::point().min(line.len());
     let start = found.unwrap_or_else(ffi::history_position);
-    (point > 0).then(|| SubstringSearch {
+    let end = match kind {
+        Kind::Prefix => ffi::history_end(),
+        Kind::Substring => start,
+    };
+    (point > 0 || kind == Kind::Prefix).then(|| HistorySearch {
+        kind,
+        end,
         text: line[..point].to_vec(),
-        start_found: found.is_some(),
+        start_found: found.is_some() && point > 0,
         line,
         point,
         start,
         at: start,
+        last_found: None,
         going_on: true,
     })
+}
+
+/// Walks `count` entries older (`up`) or newer through history, ending any
+/// search.
+fn walk_history(count: c_int, key: c_int, up: bool) -> c_int {
+    STATE.with_borrow_mut(|s| s.search = None);
+    step_history(count, key, up)
+}
+
+/// Walks `count` entries older (`up`) or newer through history.
+fn step_history(count: c_int, key: c_int, up: bool) -> c_int {
+    if up {
+        ffi::previous_history(count, key)
+    } else {
+        ffi::next_history(count, key)
+    }
 }
 
 /// Walks readline's history place to `place`. Walking to the end puts back
@@ -670,42 +667,14 @@ fn walk_to(place: c_int) {
     }
 }
 
-/// A line an Up or Down key's own search found.
-#[derive(Clone, Copy)]
-pub(super) struct Found {
-    /// readline's history place just after the search.
-    place: c_int,
-    /// The history place of the entry found. It is `place` except after
-    /// readline's prefix search before readline 8.3, which puts its place
-    /// back where it was.
-    entry: c_int,
-}
-
-/// The history place of the entry that readline's prefix search, looking
-/// from `from`, just put in the line. It is the newest entry whose text is
-/// the line, older than `from` (the search looks only older) and no newer
-/// than readline's history place: readline 8.3 leaves its place on the
-/// match, so that is the place itself; older readline puts it back where
-/// it was.
-fn prefix_match_place(from: c_int) -> c_int {
-    let now = ffi::history_position();
-    let line = ffi::line_bytes();
-    ffi::with_history_entries(|entry| {
-        (0..=now.min(from - 1))
-            .rev()
-            .find(|&place| entry(place) == Some(line.as_slice()))
-    })
-    .unwrap_or(now)
-}
-
 /// The place of the entry an Up or Down key's own search, by prefix or by
 /// substring, put in the line, when readline's history place has not moved
-/// since, so Up on the line starts a new search older than that entry.
+/// since, so the substring search's Up on the line starts a new search
+/// older than that entry.
 fn found_entry() -> Option<c_int> {
     STATE
-        .with_borrow(|s| s.found_at)
-        .filter(|found| found.place == ffi::history_position())
-        .map(|found| found.entry)
+        .with_borrow(|s| s.search.as_ref().and_then(HistorySearch::found_at))
+        .filter(|&place| place == ffi::history_position())
 }
 
 /// Puts the cursor on an entry Up or Down brought: at the end of the line,

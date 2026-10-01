@@ -495,6 +495,12 @@ pub fn history_entry_here_is(text: &str) -> bool {
     }
 }
 
+/// The history place past the newest entry, where a new line starts.
+pub fn history_end() -> c_int {
+    // SAFETY: history_length is a plain int history keeps.
+    unsafe { history_length }
+}
+
 /// Whether readline's history place is on an entry, not past the newest.
 pub fn on_history_entry() -> bool {
     // SAFETY: current_history gives NULL past the newest entry.
@@ -767,8 +773,6 @@ unsafe extern "C" {
     static mut rl_last_func: Option<CommandFn>;
     fn rl_get_previous_history(count: c_int, key: c_int) -> c_int;
     fn rl_get_next_history(count: c_int, key: c_int) -> c_int;
-    fn rl_history_search_backward(count: c_int, key: c_int) -> c_int;
-    fn rl_history_search_forward(count: c_int, key: c_int) -> c_int;
 }
 
 /// The command readline ran for the previous key.
@@ -784,24 +788,6 @@ pub fn previous_history(count: c_int, key: c_int) -> c_int {
 /// readline's `next-history`.
 pub fn next_history(count: c_int, key: c_int) -> c_int {
     unsafe { rl_get_next_history(count, key) }
-}
-
-/// readline's `history-search-backward`.
-pub fn history_search_backward(count: c_int, key: c_int) -> c_int {
-    unsafe { rl_history_search_backward(count, key) }
-}
-
-/// readline's `history-search-forward`.
-pub fn history_search_forward(count: c_int, key: c_int) -> c_int {
-    unsafe { rl_history_search_forward(count, key) }
-}
-
-/// Marks the prefix search about to run as a continuation of the last one:
-/// readline tells the two apart by checking whether `rl_last_func` is one of
-/// its own prefix search functions, which it is not once a call reaches it
-/// through one of this crate's own commands.
-pub fn continue_prefix_search() {
-    unsafe { rl_last_func = Some(rl_history_search_backward) };
 }
 
 /// Makes readline see `f` as the last command, for a command about to run

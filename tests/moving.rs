@@ -489,20 +489,26 @@ fn prefix_and_substring_keys() -> Options {
     }
 }
 
-/// On a line the prefix search of the Up key found, the substring key
-/// (`C-p`) starts a new search for the text before the cursor, as on a line
-/// it found itself, on every readline. Walking history from the match would
-/// give `ls`: readline 8.3 leaves its history place on a prefix match, older
-/// readline does not.
-#[test]
-fn the_substring_key_searches_again_on_a_line_the_prefix_key_found() {
-    let mut sh = Shell::start(Options {
+/// Options whose Up and Down keys have readline's prefix search in inputrc,
+/// so with no menu they run `previous-line-or-search` and
+/// `next-line-or-search`, and `C-p` the substring search.
+fn prefix_arrows(history: Vec<&'static str>) -> Options {
+    Options {
         inputrc: Some(
             "\"\\e[A\": history-search-backward\n\"\\e[B\": history-search-forward\n".into(),
         ),
-        history: vec!["git status", "ls", "git log"],
+        history,
         ..Options::default()
-    });
+    }
+}
+
+/// On a line the prefix search of the Up key found, the substring key
+/// (`C-p`) starts a new search for the text before the cursor, as on a line
+/// it found itself: it finds `git status`, where walking history from the
+/// match would give `ls`.
+#[test]
+fn the_substring_key_searches_again_on_a_line_the_prefix_key_found() {
+    let mut sh = Shell::start(prefix_arrows(vec!["git status", "ls", "git log"]));
     sh.send("git");
     sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
     sh.send("\x07");
@@ -514,18 +520,16 @@ fn the_substring_key_searches_again_on_a_line_the_prefix_key_found() {
 
 /// A prefix search that starts on a line the substring key found finds an
 /// older entry; the substring key then searches older than that entry, not
-/// older than the one the prefix search started on. Before readline 8.3
-/// the prefix search puts its history place back where it was, on
-/// `git log`, from where the substring key would find `echo git log`.
+/// older than the one the prefix search started on, `git log`, from where
+/// it would find `echo git log`.
 #[test]
 fn the_substring_key_searches_older_than_a_prefix_match_from_a_found_line() {
-    let mut sh = Shell::start(Options {
-        inputrc: Some(
-            "\"\\e[A\": history-search-backward\n\"\\e[B\": history-search-forward\n".into(),
-        ),
-        history: vec!["git log --all", "git log -p", "echo git log", "git log"],
-        ..Options::default()
-    });
+    let mut sh = Shell::start(prefix_arrows(vec![
+        "git log --all",
+        "git log -p",
+        "echo git log",
+        "git log",
+    ]));
     sh.send("git lo");
     sh.wait_for("the typed text", |s| s.cursor_position() == (0, 8));
     sh.send("\x07");
@@ -543,13 +547,12 @@ fn the_substring_key_searches_older_than_a_prefix_match_from_a_found_line() {
 /// found before, the substring key searches older than that older copy.
 #[test]
 fn the_substring_key_searches_older_than_a_repeated_prefix_match() {
-    let mut sh = Shell::start(Options {
-        inputrc: Some(
-            "\"\\e[A\": history-search-backward\n\"\\e[B\": history-search-forward\n".into(),
-        ),
-        history: vec!["echo git log", "git log X", "git log Y", "git log X"],
-        ..Options::default()
-    });
+    let mut sh = Shell::start(prefix_arrows(vec![
+        "echo git log",
+        "git log X",
+        "git log Y",
+        "git log X",
+    ]));
     sh.send("git log");
     sh.wait_for("the typed text", |s| s.cursor_position() == (0, 9));
     sh.send("\x07");
@@ -586,11 +589,16 @@ fn the_prefix_key_does_not_go_on_with_a_substring_search() {
 }
 
 /// The substring key after the prefix key starts its own search, for the
-/// text before the cursor, which the prefix search left after `git`: it
-/// finds `xgit`. Going on with the prefix search would find `git status`.
+/// text before the cursor, which the prefix search left after `git`, from
+/// the line it found: it finds `git`. Going on with the prefix run as a
+/// substring search would pass over `git`, the line that run started from,
+/// and find nothing.
 #[test]
 fn the_substring_key_does_not_go_on_with_a_prefix_search() {
-    let mut sh = Shell::start(prefix_and_substring_keys());
+    let mut sh = Shell::start(Options {
+        history: vec!["git", "git log"],
+        ..prefix_and_substring_keys()
+    });
     sh.send("git");
     sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
     sh.send("\x07");
@@ -599,7 +607,539 @@ fn the_substring_key_does_not_go_on_with_a_prefix_search() {
         cursor_row(s) == "$ git log" && s.cursor_position() == (0, 5)
     });
     sh.send("\x18p");
-    sh.wait_for("the substring match", |s| cursor_row(s) == "$ xgit");
+    sh.wait_for("the substring match", |s| cursor_row(s) == "$ git");
+}
+
+/// The substring Down key after the prefix key does not go on with the
+/// prefix run either: the substring search's Down never starts one, so it
+/// walks history from the found line, to `ls`. Going on with the run would
+/// find `git b`.
+#[test]
+fn the_substring_down_key_walks_on_from_a_prefix_match() {
+    let mut options = prefix_and_substring_keys();
+    options
+        .rc
+        .push_str("bind '\"\\C-xn\": next-line-or-substring-search'\n");
+    let mut sh = Shell::start(Options {
+        history: vec!["git a", "ls", "git b"],
+        ..options
+    });
+    sh.send("git");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git");
+    sh.send("\x18k");
+    sh.wait_for("the newest prefix match", |s| cursor_row(s) == "$ git b");
+    sh.send("\x18k");
+    sh.wait_for("the older prefix match", |s| cursor_row(s) == "$ git a");
+    sh.send("\x18n");
+    sh.wait_for("the next entry", |s| cursor_row(s) == "$ ls");
+}
+
+/// After the prefix keys went down to a newer match, the substring key
+/// searches older than that match: from `git b`, `C-p` finds the `git c`
+/// before it, where walking history would give `ls`.
+#[test]
+fn the_substring_key_searches_older_than_a_prefix_match_down_found() {
+    let mut sh = Shell::start(prefix_arrows(vec!["git c", "ls", "git b", "git c"]));
+    sh.send("git");
+    sh.wait_for("the typed text", |s| cursor_row(s).starts_with("$ git"));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git");
+    sh.send(UP);
+    sh.wait_for("the newest match", |s| cursor_row(s) == "$ git c");
+    sh.send(UP);
+    sh.wait_for("the next match", |s| cursor_row(s) == "$ git b");
+    sh.send(UP);
+    sh.wait_for("the oldest git c", |s| cursor_row(s) == "$ git c");
+    sh.send(DOWN);
+    sh.wait_for("the newer match", |s| cursor_row(s) == "$ git b");
+    sh.send("\x10");
+    sh.wait_for("the match older than it", |s| cursor_row(s) == "$ git c");
+}
+
+/// A count goes that many prefix matches back, and the substring key then
+/// searches older than the match the count reached.
+#[test]
+fn the_substring_key_searches_older_than_a_counted_prefix_match() {
+    let mut sh = Shell::start(prefix_arrows(vec!["echo git q", "git x", "git y", "git x"]));
+    sh.send("git");
+    sh.wait_for("the typed text", |s| cursor_row(s).starts_with("$ git"));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git");
+    sh.send("\x1b3");
+    sh.send(UP);
+    sh.wait_for("the third match", |s| {
+        cursor_row(s) == "$ git x" && s.cursor_position() == (0, 5)
+    });
+    sh.send("\x10");
+    sh.wait_for("the match older than it", |s| {
+        cursor_row(s) == "$ echo git q"
+    });
+}
+
+/// On the oldest prefix match, the substring key's new search finds
+/// nothing older: the bell rings and the line stays, where walking history
+/// would give `ls`.
+#[test]
+fn the_substring_key_finds_nothing_older_than_the_oldest_prefix_match() {
+    let mut sh = Shell::start(prefix_arrows(vec!["ls", "git log -p", "echo git log"]));
+    sh.send("git lo");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 8));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git lo");
+    sh.send(UP);
+    sh.wait_for("the prefix match", |s| {
+        cursor_row(s) == "$ git log -p" && s.cursor_position() == (0, 8)
+    });
+    sh.send("\x10");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git log -p", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 8), "{}", dump(&s));
+}
+
+/// On an entry brought back by walking history, the prefix keys search
+/// for the text before the cursor, as readline's prefix search does: after
+/// `C-a M-f` on `git log`, Up finds `git status` with the cursor after
+/// `git`, where walking history would give `ls`.
+#[test]
+fn the_prefix_keys_search_on_an_entry_brought_back_by_walking() {
+    let mut sh = Shell::start(prefix_arrows(vec!["git status", "ls", "git log"]));
+    sh.settle();
+    sh.send(UP);
+    sh.wait_for("the newest entry", |s| cursor_row(s) == "$ git log");
+    sh.send("\x01\x1bf");
+    sh.wait_for("the cursor after git", |s| s.cursor_position() == (0, 5));
+    sh.send(UP);
+    sh.wait_for("the prefix match", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 5)
+    });
+}
+
+/// On an entry brought back by walking and then changed, the prefix keys
+/// search for the changed text: `git log` cut back to `git` finds
+/// `git status`, where walking history would give `ls`.
+#[test]
+fn the_prefix_keys_search_on_a_changed_entry_brought_back_by_walking() {
+    let mut sh = Shell::start(prefix_arrows(vec!["git status", "ls", "git log"]));
+    sh.settle();
+    sh.send(UP);
+    sh.wait_for("the newest entry", |s| cursor_row(s) == "$ git log");
+    sh.send("\x7f\x7f\x7f\x7f");
+    sh.wait_for("the cut", |s| s.cursor_position() == (0, 5));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git");
+    sh.send(UP);
+    sh.wait_for("the prefix match", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 5)
+    });
+}
+
+/// A prefix match sets the mark at the end of the line, as readline's
+/// prefix search does, so `C-x C-x` goes there.
+#[test]
+fn a_prefix_match_sets_the_mark_at_the_line_end() {
+    let mut sh = Shell::start(prefix_arrows(vec!["git status --short"]));
+    sh.send("git");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git");
+    sh.send(UP);
+    sh.wait_for("the prefix match", |s| {
+        cursor_row(s) == "$ git status --short" && s.cursor_position() == (0, 5)
+    });
+    sh.send("\x18\x18");
+    sh.wait_for("the cursor at the mark", |s| s.cursor_position() == (0, 20));
+}
+
+/// The prefix search goes through the matches with each Up, passing over
+/// one that repeats the last, with the cursor after the prefix; Down goes
+/// back through them and past the newest gives back the typed text with
+/// its cursor and undo list: undo takes the typing off and never shows a
+/// history entry.
+#[test]
+fn the_prefix_search_goes_through_the_matches_and_back() {
+    let mut sh = Shell::start(arrow_keys(
+        "previous-line-or-search",
+        "next-line-or-search",
+        vec!["git status", "ls", "git log", "git log"],
+    ));
+    sh.send("git");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git");
+    sh.send(UP);
+    sh.wait_for("the newest match", |s| {
+        cursor_row(s) == "$ git log" && s.cursor_position() == (0, 5)
+    });
+    sh.send(UP);
+    sh.wait_for("the older match", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 5)
+    });
+    sh.send(DOWN);
+    sh.wait_for("the newer match", |s| {
+        cursor_row(s) == "$ git log" && s.cursor_position() == (0, 5)
+    });
+    // The typed text may show `git log` as its grey text again, so only
+    // undo, below, tells it from the match.
+    sh.send(DOWN);
+    let s = sh.settle();
+    assert!(cursor_row(&s).starts_with("$ git"), "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 5), "{}", dump(&s));
+    sh.send("\x1f");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 2), "{}", dump(&s));
+}
+
+/// A multi-line entry the prefix search finds has the cursor right after
+/// the prefix, as readline's own prefix search puts it.
+#[test]
+fn a_multi_line_prefix_match_has_the_cursor_after_the_prefix() {
+    let mut sh = Shell::start(arrow_keys(
+        "previous-line-or-search",
+        "next-line-or-search",
+        vec![LOOP, "ls"],
+    ));
+    sh.send("for");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ for");
+    sh.send(UP);
+    sh.wait_for("the loop", |s| {
+        row_text(s, 2) == "done" && s.cursor_position() == (0, 5)
+    });
+}
+
+/// An entry that is the typed line itself is passed over by the prefix
+/// search too, so Up does not seem to do nothing.
+#[test]
+fn the_prefix_search_passes_over_an_entry_that_is_the_typed_line() {
+    let mut sh = Shell::start(arrow_keys(
+        "previous-line-or-search",
+        "next-line-or-search",
+        vec!["git status", "git st"],
+    ));
+    sh.send("git st");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 8));
+    // `git status` shows as grey text until C-g hides it.
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git st");
+    sh.send(UP);
+    sh.wait_for("the older match", |s| {
+        cursor_row(s) == "$ git status" && s.cursor_position() == (0, 8)
+    });
+}
+
+/// With nothing before the cursor the prefix keys walk history, and a
+/// multi-line entry opens at its start, as `previous-line-or-history`
+/// opens it.
+#[test]
+fn a_multi_line_entry_the_prefix_keys_walk_to_opens_at_its_start() {
+    let mut sh = Shell::start(arrow_keys(
+        "previous-line-or-search",
+        "next-line-or-search",
+        vec![LOOP],
+    ));
+    sh.settle();
+    sh.send(UP);
+    sh.wait_for("the loop", |s| {
+        row_text(s, 2) == "done" && s.cursor_position() == (0, 2)
+    });
+}
+
+/// With nothing before the cursor, a run of the prefix keys keeps walking
+/// history, as readline's prefix search does while its text is empty: Up
+/// on a walked-to entry does not search for the whole line, and Down past
+/// the newest entry gives back the empty line.
+#[test]
+fn a_run_of_the_prefix_keys_from_an_empty_line_walks_history() {
+    let mut sh = Shell::start(prefix_arrows(vec!["a1", "b2", "c3"]));
+    sh.settle();
+    for (key, row) in [
+        (UP, "$ c3"),
+        (UP, "$ b2"),
+        (UP, "$ a1"),
+        (DOWN, "$ b2"),
+        (DOWN, "$ c3"),
+        (DOWN, "$"),
+    ] {
+        sh.send(key);
+        sh.wait_for(row, |s| cursor_row(s) == row);
+    }
+}
+
+/// The empty-line walk goes on across a multi-line entry: Down on the
+/// loop's first line moves through its lines and then on to `c3`.
+#[test]
+fn a_prefix_walk_from_an_empty_line_goes_across_a_multi_line_entry() {
+    let mut sh = Shell::start(prefix_arrows(vec!["a1", LOOP, "c3"]));
+    sh.settle();
+    for (key, row) in [
+        (UP, "$ c3"),
+        (UP, "$ for x in a"),
+        (DOWN, "do echo $x"),
+        (DOWN, "done"),
+        (DOWN, "$ c3"),
+    ] {
+        sh.send(key);
+        sh.wait_for(row, |s| cursor_row(s) == row);
+    }
+}
+
+/// Goes to the oldest of `history`'s entries with `M-<`, `C-n` `newer`
+/// times, and puts the cursor after the entry's first word.
+fn after_the_first_word_of_an_entry(sh: &mut Shell, newer: usize, entry: &str) {
+    sh.settle();
+    sh.send("\x1b<");
+    sh.send(&"\x0e".repeat(newer));
+    let row = format!("$ {entry}");
+    sh.wait_for(entry, |s| cursor_row(s) == row);
+    sh.send("\x01\x1bf");
+    sh.wait_for("the cursor after the first word", |s| {
+        s.cursor_position() == (0, 5)
+    });
+}
+
+/// A prefix search that starts on an entry inside history goes through
+/// history in order both ways, the entry it started from included, as
+/// readline's does; Down past the newest match rings the bell and stays.
+#[test]
+fn a_prefix_search_from_inside_history_goes_through_it_in_order() {
+    let mut sh = Shell::start(Options {
+        rc: "bind 'set bell-style audible'\n".into(),
+        ..prefix_arrows(vec!["git a", "ls", "git b", "pwd", "git c"])
+    });
+    after_the_first_word_of_an_entry(&mut sh, 2, "git b");
+    for (key, row) in [
+        (DOWN, "$ git c"),
+        (UP, "$ git b"),
+        (UP, "$ git a"),
+        (DOWN, "$ git b"),
+        (DOWN, "$ git c"),
+    ] {
+        sh.send(key);
+        sh.wait_for(row, |s| {
+            cursor_row(s) == row && s.cursor_position() == (0, 5)
+        });
+    }
+    sh.take_output();
+    sh.send(DOWN);
+    sh.wait_for_output("the bell", b"\x07");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git c", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 5), "{}", dump(&s));
+}
+
+/// A prefix search that starts on an entry inside history finds an older
+/// entry that repeats it, not `git a`, as readline's does, and Down then
+/// goes back to the newer one. Up from there passes over the older `git b`
+/// it found before, and Down goes through history in order again: each key
+/// moves without the bell.
+#[test]
+fn a_prefix_search_from_inside_history_finds_a_repeat_of_its_start() {
+    let mut sh = Shell::start(Options {
+        rc: "bind 'set bell-style audible'\n".into(),
+        ..prefix_arrows(vec!["git a", "git b", "ls", "git b", "pwd"])
+    });
+    after_the_first_word_of_an_entry(&mut sh, 3, "git b");
+    for (key, row) in [
+        (UP, "$ git b"),
+        (DOWN, "$ git b"),
+        (UP, "$ git a"),
+        (DOWN, "$ git b"),
+        (DOWN, "$ git b"),
+    ] {
+        sh.take_output();
+        sh.send(key);
+        let s = sh.settle();
+        assert_eq!(cursor_row(&s), row, "{}", dump(&s));
+        assert_eq!(s.cursor_position(), (0, 5), "{}", dump(&s));
+        assert!(!sh.take_output().contains(&0x07), "a bell\n{}", dump(&s));
+    }
+    // On the newest `git b`, Down finds nothing newer.
+    sh.send(DOWN);
+    sh.wait_for_output("the bell", b"\x07");
+}
+
+/// On the entry a prefix search started from, which Down found again, the
+/// substring key (`C-p`) starts a new search for the text before the
+/// cursor, as on any line a search found: it finds `git a`, where walking
+/// history would give `ls`.
+#[test]
+fn the_substring_key_searches_again_on_a_start_the_prefix_key_found_again() {
+    let mut sh = Shell::start(prefix_arrows(vec!["git a", "git b", "ls", "git b", "pwd"]));
+    after_the_first_word_of_an_entry(&mut sh, 3, "git b");
+    sh.send(UP);
+    sh.wait_for("the older git b", |s| {
+        cursor_row(s) == "$ git b" && s.cursor_position() == (0, 5)
+    });
+    sh.send(DOWN);
+    sh.wait_for("the newer git b", |s| {
+        cursor_row(s) == "$ git b" && s.cursor_position() == (0, 5)
+    });
+    sh.send("\x10");
+    sh.wait_for("the older match", |s| cursor_row(s) == "$ git a");
+}
+
+/// A prefix search that went back by a match to the multi-line entry it
+/// started from keeps its run across a move between that entry's lines:
+/// Up past the first line goes on with the search and passes over the
+/// older `git b` it found before, to `git a`.
+#[test]
+fn a_prefix_run_back_on_its_start_goes_on_across_its_lines() {
+    let mut sh = Shell::start(prefix_arrows(vec![
+        "git a", "git b\nx", "ls", "git b\nx", "pwd",
+    ]));
+    sh.settle();
+    sh.send("\x1b<");
+    sh.send(&"\x0e".repeat(3));
+    sh.wait_for("the second line of entry 3", |s| cursor_row(s) == "x");
+    sh.send("\x01\x1b[A\x01\x1bf");
+    sh.wait_for("the cursor after git", |s| {
+        cursor_row(s) == "$ git b" && s.cursor_position() == (0, 5)
+    });
+    for (key, row) in [
+        (UP, "$ git b"),
+        (DOWN, "x"),
+        (DOWN, "$ git b"),
+        (DOWN, "x"),
+        (UP, "$ git b"),
+        (UP, "$ git a"),
+    ] {
+        sh.send(key);
+        let s = sh.settle();
+        assert_eq!(cursor_row(&s), row, "{}", dump(&s));
+    }
+}
+
+/// A counted Down that finds fewer newer matches than the count goes to
+/// the newest it finds, as readline's prefix search does.
+#[test]
+fn a_counted_prefix_down_goes_to_the_newest_match_it_finds() {
+    let mut sh = Shell::start(prefix_arrows(vec!["git x", "ls", "git y", "pwd"]));
+    after_the_first_word_of_an_entry(&mut sh, 0, "git x");
+    sh.send("\x1b3");
+    sh.send(DOWN);
+    sh.wait_for("the newest match", |s| {
+        cursor_row(s) == "$ git y" && s.cursor_position() == (0, 5)
+    });
+}
+
+/// A prefix search that starts on an entry inside history finds newer
+/// entries with Down: from `git status`, past `ls`, to `git log`.
+#[test]
+fn the_prefix_down_key_finds_a_newer_match_from_inside_history() {
+    let mut sh = Shell::start(prefix_arrows(vec!["git status", "ls", "git log"]));
+    sh.settle();
+    sh.send(UP);
+    sh.wait_for("the newest entry", |s| cursor_row(s) == "$ git log");
+    sh.send("\x10");
+    sh.wait_for("the entry before", |s| cursor_row(s) == "$ ls");
+    sh.send("\x10");
+    sh.wait_for("the oldest entry", |s| cursor_row(s) == "$ git status");
+    sh.send("\x01\x1bf");
+    sh.wait_for("the cursor after git", |s| s.cursor_position() == (0, 5));
+    sh.send(DOWN);
+    sh.wait_for("the newer match", |s| {
+        cursor_row(s) == "$ git log" && s.cursor_position() == (0, 5)
+    });
+}
+
+/// Down on a typed line finds nothing newer: the bell rings and the line
+/// stays.
+#[test]
+fn the_prefix_down_key_on_a_typed_line_rings_the_bell() {
+    let mut sh = Shell::start(Options {
+        rc: "bind 'set bell-style audible'\n".into(),
+        ..prefix_arrows(vec!["git log"])
+    });
+    sh.send("git");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
+    // C-g hides the menu and the grey text.
+    sh.send("\x07");
+    sh.wait_for("no menu", |s| {
+        cursor_row(s) == "$ git" && row_text(s, 1).is_empty()
+    });
+    sh.take_output();
+    sh.send(DOWN);
+    sh.wait_for_output("the bell", b"\x07");
+    let s = sh.settle();
+    assert!(cursor_row(&s).starts_with("$ git"), "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 5), "{}", dump(&s));
+}
+
+/// A prefix search that finds nothing sets the mark at the end of the
+/// line, as readline's does, so `C-x C-x` goes there.
+#[test]
+fn a_prefix_search_that_finds_nothing_sets_the_mark_at_the_line_end() {
+    let mut sh = Shell::start(prefix_arrows(vec!["ls"]));
+    sh.send("git status");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 12));
+    sh.send("\x01\x1bf");
+    sh.wait_for("the cursor after git", |s| s.cursor_position() == (0, 5));
+    sh.send(UP);
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ git status", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 5), "{}", dump(&s));
+    sh.send("\x18\x18");
+    sh.wait_for("the cursor at the mark", |s| s.cursor_position() == (0, 12));
+}
+
+/// With readline's `search-ignore-case` on (readline 8.3 and later), the
+/// prefix search ignores case, as readline's own does.
+#[test]
+fn search_ignore_case_finds_prefix_matches_in_any_case() {
+    let mut options = arrow_keys(
+        "previous-line-or-search",
+        "next-line-or-search",
+        vec!["GIT status", "ls"],
+    );
+    options
+        .rc
+        .push_str("bind 'set search-ignore-case on' 2>/dev/null\n");
+    let mut sh = Shell::start(options);
+    sh.send("git");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ git");
+    sh.send(UP);
+    if bash_version() >= (5, 3) {
+        sh.wait_for("the match", |s| {
+            cursor_row(s) == "$ GIT status" && s.cursor_position() == (0, 5)
+        });
+    } else {
+        let s = sh.settle();
+        assert_eq!(cursor_row(&s), "$ git", "{}", dump(&s));
+    }
+}
+
+/// With case ignored, the cursor goes after as many characters of the
+/// match as the typed text has, so it never lands inside a character whose
+/// lowercase form is shorter, such as the Kelvin sign.
+#[test]
+fn search_ignore_case_puts_the_cursor_after_whole_characters() {
+    let mut options = arrow_keys(
+        "previous-line-or-search",
+        "next-line-or-search",
+        vec!["\u{212A}ubectl get pods", "ls"],
+    );
+    options
+        .rc
+        .push_str("bind 'set search-ignore-case on' 2>/dev/null\n");
+    let mut sh = Shell::start(options);
+    sh.send("k");
+    sh.wait_for("the typed text", |s| s.cursor_position() == (0, 3));
+    sh.send("\x07");
+    sh.wait_for("no grey text", |s| cursor_row(s) == "$ k");
+    sh.send(UP);
+    sh.wait_for("the match", |s| {
+        cursor_row(s) == "$ \u{212A}ubectl get pods" && s.cursor_position() == (0, 3)
+    });
+    sh.send("X");
+    sh.wait_for("X after the Kelvin sign", |s| {
+        cursor_row(s) == "$ \u{212A}Xubectl get pods"
+    });
 }
 
 /// With readline's `search-ignore-case` on (readline 8.3 and later), the
