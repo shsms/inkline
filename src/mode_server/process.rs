@@ -466,10 +466,7 @@ mod tests {
     use super::*;
 
     fn fake(mode: &str) -> Vec<String> {
-        vec![
-            format!("{}/tests/data/fake-mode-server", env!("CARGO_MANIFEST_DIR")),
-            mode.to_owned(),
-        ]
+        vec![crate::mode_server::fake_server(), mode.to_owned()]
     }
 
     fn path() -> String {

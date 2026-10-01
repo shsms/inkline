@@ -879,15 +879,35 @@ fn check_unread(process: &mut Process) -> Result<(), String> {
     Ok(())
 }
 
+/// The path of the fake mode server the tests run
+/// (`tests/data/fake-mode-server`).
+///
+/// It is found when the tests run, not when they are built: cargo can reuse
+/// a test binary built in another checkout that shares the target directory,
+/// and a path fixed at build time would then name that checkout's file.
+/// `cargo test` sets `CARGO_MANIFEST_DIR` for the test process and runs it in
+/// the crate's directory.
+#[cfg(test)]
+fn fake_server() -> String {
+    let root = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    let server = root.join("tests/data/fake-mode-server");
+    assert!(
+        server.is_file(),
+        "fake-mode-server missing at {}",
+        server.display()
+    );
+    server.to_string_lossy().into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn fake(mode: &str) -> Option<Vec<String>> {
-        Some(vec![
-            format!("{}/tests/data/fake-mode-server", env!("CARGO_MANIFEST_DIR")),
-            mode.to_owned(),
-        ])
+        Some(vec![fake_server(), mode.to_owned()])
     }
 
     fn path() -> String {
