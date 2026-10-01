@@ -226,9 +226,14 @@ fn line_filled_in_by_ctrl_o_is_coloured() {
     });
 }
 
+/// The menu is off: it would list the `read` command, which contains `ls -l`,
+/// below the line, where the colour checks would find it first.
 #[test]
 fn line_filled_in_by_read_i_is_coloured() {
-    let mut sh = Shell::start(Options::default());
+    let mut sh = Shell::start(Options {
+        init_el: Some("(setq inkline-show-menu nil)".into()),
+        ..Options::default()
+    });
     sh.send("read -e -i 'ls -l' line\r");
     sh.wait_for("the filled-in line, coloured", |s| {
         cursor_row(s) == "ls -l" && fg_is(s, "ls", Color::Idx(2)) && fg_is(s, "-l", Color::Idx(6))

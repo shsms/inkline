@@ -78,6 +78,22 @@ fn an_item_that_starts_with_the_line_comes_before_history_that_contains_it() {
     assert_eq!(row_text(&s, 2), "h  git status", "{}", dump(&s));
 }
 
+/// By default the menu lists a past command that contains what was typed
+/// anywhere; under `prefix` it must start with it.
+#[test]
+fn the_menu_lists_history_that_contains_the_line() {
+    let sh = menu_showing(with_history(vec!["git status"]), "stat", "h  git status");
+    assert_eq!(cursor_row(&sh.screen()), "$ stat", "no grey text");
+    let mut sh = Shell::start(with_init(
+        "(setq inkline-completion-style 'prefix)",
+        vec!["git status"],
+    ));
+    sh.send("stat");
+    sh.wait_for("the line", |s| cursor_row(s) == "$ stat");
+    let s = sh.settle();
+    assert_eq!(row_text(&s, 1), "", "{}", dump(&s));
+}
+
 #[test]
 fn erased_after_enter() {
     let mut sh = menu_showing(
@@ -278,7 +294,7 @@ fn a_menu_is_made_again_when_the_text_comes_back() {
     ));
     sh.send("gst");
     let s = sh.wait_for("the typed text", |s| cursor_row(s) == "$ gst");
-    assert_eq!(row_text(&s, 1), "", "no prefix match: {}", dump(&s));
+    assert_eq!(row_text(&s, 1), "", "no match yet: {}", dump(&s));
     sh.send("\x18\x7f\x18f\x19");
     sh.wait_for("the fuzzy menu", |s| {
         cursor_row(s) == "$ gst" && row_text(s, 1) == "h  git status"
