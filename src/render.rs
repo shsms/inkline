@@ -32,9 +32,8 @@ pub struct Repaint<'a> {
     pub suggestion_lines: usize,
     /// The bytes of `line` to underline as a syntax error.
     pub error: Option<Range<usize>>,
-    /// The bytes of `line` an incremental search matched, drawn with the
-    /// `search-match` colour on top of everything else.
-    pub search_match: Option<Range<usize>>,
+    /// Drawn on top of everything else (see `Highlight`).
+    pub highlight: Option<Highlight<'a>>,
     /// Sorted, not overlapping byte ranges of `line` drawn with the `script`
     /// style added on top of their kind's colour (and alone on uncoloured
     /// bytes).
@@ -55,6 +54,14 @@ pub struct Repaint<'a> {
     pub menu: Option<MenuView<'a>>,
     pub rows: usize,
     pub cols: usize,
+}
+
+/// Bytes of the line drawn with `sgr` on top of everything else: the match
+/// of an incremental search, or the active region.
+pub struct Highlight<'a> {
+    pub bytes: Range<usize>,
+    /// SGR codes; empty draws nothing.
+    pub sgr: &'a str,
 }
 
 pub struct Output {
@@ -79,7 +86,7 @@ impl Repaint<'_> {
 /// How one character is drawn: its kind's colour and the set that colour
 /// comes from (`None` for `Repaint::colors`), whether it is underlined,
 /// whether it has the script style and the set that comes from, and whether
-/// it is in a search's match.
+/// it is highlighted.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Style {
     kind: Option<Kind>,
@@ -87,7 +94,7 @@ struct Style {
     error: bool,
     script: bool,
     script_set: Option<usize>,
-    search_match: bool,
+    highlight: bool,
 }
 
 /// Columns used by the last line of `prompt`, skipping the parts between `\001`
@@ -479,11 +486,10 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
             error: repaint.error.as_ref().is_some_and(|e| e.contains(&i)),
             script: in_script,
             script_set: script_set.filter(|_| in_script),
-            search_match: repaint
-                .search_match
+            highlight: repaint
+                .highlight
                 .as_ref()
-                .is_some_and(|m| m.contains(&i))
-                && !repaint.colors.search_match().is_empty(),
+                .is_some_and(|h| h.bytes.contains(&i) && !h.sgr.is_empty()),
         };
         if want != style {
             if style != Style::default() {
@@ -498,8 +504,10 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
             if want.script {
                 let _ = write!(out, "\x1b[{}m", repaint.colors_of(want.script_set).script());
             }
-            if want.search_match {
-                let _ = write!(out, "\x1b[{}m", repaint.colors.search_match());
+            if want.highlight
+                && let Some(h) = &repaint.highlight
+            {
+                let _ = write!(out, "\x1b[{}m", h.sgr);
             }
             style = want;
         }
@@ -650,7 +658,7 @@ mod tests {
             suggestion: None,
             suggestion_lines: 5,
             error: None,
-            search_match: None,
+            highlight: None,
             script: &[],
             sets: &[],
             span_sets: &[],
@@ -968,7 +976,10 @@ mod tests {
         }];
         let out = build(&Repaint {
             error: Some(2..6),
-            search_match: Some(1..3),
+            highlight: Some(Highlight {
+                bytes: 1..3,
+                sgr: "7",
+            }),
             ..repaint("echo x", 1, &spans, &colors)
         })
         .unwrap();
@@ -979,14 +990,31 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_search_match_colour_marks_nothing() {
-        let colors = Colors::from_entries(&[("search-match".to_owned(), String::new())]).unwrap();
+    fn a_highlight_with_no_codes_draws_nothing() {
+        let colors = Colors::default();
         let out = build(&Repaint {
-            search_match: Some(0..2),
+            highlight: Some(Highlight {
+                bytes: 0..2,
+                sgr: "",
+            }),
             ..repaint("ab", 2, &[], &colors)
         })
         .unwrap();
         assert_eq!(text(&out), "\x1b7\r\x1b[2Cab\x1b8");
+    }
+
+    #[test]
+    fn a_highlight_is_drawn_with_its_own_codes() {
+        let colors = Colors::default();
+        let out = build(&Repaint {
+            highlight: Some(Highlight {
+                bytes: 0..1,
+                sgr: "4",
+            }),
+            ..repaint("ab", 2, &[], &colors)
+        })
+        .unwrap();
+        assert_eq!(text(&out), "\x1b7\r\x1b[2C\x1b[4ma\x1b[0mb\x1b8");
     }
 
     #[test]

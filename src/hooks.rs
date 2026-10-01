@@ -20,7 +20,7 @@ use crate::lexer::{Kind, Lexer};
 use crate::menu::{self, Item, Menu, Source};
 use crate::mode_server::{self, protocol::Reply, protocol::ReplyItem};
 use crate::pairs::{self, Action};
-use crate::render::{self, MenuView, Repaint};
+use crate::render::{self, Highlight, MenuView, Repaint};
 use crate::suggest;
 use crate::syntax::{self, Checker, Status};
 
@@ -1478,8 +1478,12 @@ fn repaint_line() -> bool {
             suggestion: suggestion.as_deref(),
             suggestion_lines,
             error: error.clone(),
-            search_match: ffi::active_region()
-                .filter(|m| line.is_char_boundary(m.start) && line.is_char_boundary(m.end)),
+            highlight: ffi::active_region()
+                .filter(|m| line.is_char_boundary(m.start) && line.is_char_boundary(m.end))
+                .map(|bytes| Highlight {
+                    bytes,
+                    sgr: colors.search_match(),
+                }),
             script: &painted.script,
             sets: &sets,
             span_sets: &painted.span_sets,
