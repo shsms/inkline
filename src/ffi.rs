@@ -864,7 +864,28 @@ pub fn abort(count: c_int, key: c_int) -> c_int {
 
 unsafe extern "C" {
     fn rl_universal_argument(count: c_int, key: c_int) -> c_int;
+    /// How the count being read was typed: `NUM_SAWDIGITS` once it has
+    /// digits. readline clears it when a count starts, and before it reads
+    /// the next key's command only when no key is pending: a key an
+    /// incremental search ended on and put back runs with the flags of the
+    /// count the search ran with. `numeric-argument` clears it when it
+    /// returns, but a count from `digit-argument` still leaves
+    /// `NUM_SAWDIGITS` for that key: after `M-2 C-r al`, a `C-u` runs the
+    /// next key with a count of 2, where readline's would make it 8.
+    static mut _rl_argcxt: c_int;
+    static mut rl_numeric_arg: c_int;
+    static mut rl_arg_sign: c_int;
+    fn _rl_bracketed_read_key() -> c_int;
+    fn rl_save_prompt();
+    fn rl_restore_prompt();
+    fn rl_message(format: *const c_char, ...) -> c_int;
+    fn rl_clear_message() -> c_int;
+    fn _rl_dispatch(key: c_int, map: *mut KeymapEntry) -> c_int;
+    static mut _rl_keymap: *mut KeymapEntry;
 }
+
+/// readline's `NUM_SAWDIGITS` (rlprivate.h in readline 8.3).
+const NUM_SAWDIGITS: c_int = 0x02;
 
 /// readline's `universal-argument`. Outside readline's callback mode, which
 /// bash does not use, it reads the count and the key after it, and runs that
@@ -873,6 +894,46 @@ unsafe extern "C" {
 /// nothing to drop.
 pub fn universal_argument(count: c_int, key: c_int) -> c_int {
     unsafe { rl_universal_argument(count, key) }
+}
+
+/// Whether the running command is the key after the digits of a count.
+pub fn count_has_digits() -> bool {
+    // SAFETY: _rl_argcxt is a plain int readline keeps.
+    unsafe { _rl_argcxt & NUM_SAWDIGITS != 0 }
+}
+
+/// Forgets how the last count was typed, so that `count_has_digits` is
+/// false until the next count has digits.
+pub fn forget_count_digits() {
+    // SAFETY: _rl_argcxt is a plain int readline keeps.
+    unsafe { _rl_argcxt = 0 };
+}
+
+/// Reads a key and runs its command with the count as it is, as readline's
+/// `universal-argument` does when its key follows a count's digits: it shows
+/// `(arg: N) ` while it waits, and the key's command starts with the count's
+/// flags cleared. That command may jump back to readline's or bash's top
+/// level: the caller's frames must hold nothing to drop.
+pub fn run_next_key() -> c_int {
+    // SAFETY: readline saves the prompt, shows the message, reads a key and
+    // puts the prompt back, and then runs the key's command from the keymap
+    // in use, as its own `universal-argument` does here.
+    unsafe {
+        // The state is set before the message is drawn, as readline's
+        // `_rl_arg_init` does, so that the draw sees a count being read.
+        _rl_argcxt = 0;
+        rl_save_prompt();
+        rl_readline_state |= RL_STATE_NUMERICARG;
+        rl_message(c"(arg: %d) ".as_ptr(), rl_arg_sign * rl_numeric_arg);
+        let key = _rl_bracketed_read_key();
+        rl_restore_prompt();
+        rl_clear_message();
+        rl_readline_state &= !RL_STATE_NUMERICARG;
+        if key < 0 {
+            return -1;
+        }
+        _rl_dispatch(key, _rl_keymap)
+    }
 }
 
 /// Whether readline is replaying a macro: the text bound to a key, or a

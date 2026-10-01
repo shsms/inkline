@@ -2092,12 +2092,23 @@ extern "C" fn menu_hide(count: c_int, key: c_int) -> c_int {
 }
 
 /// `C-u`: readline's `universal-argument`, which reads a count and runs the
-/// next key's command with it. Notes the command the count ran, for
-/// `last_command`. That command may jump back to readline's or bash's top
-/// level, so nothing here is left to drop; the note is then not taken, and
-/// readline does not see this command as the last one either.
+/// next key's command with it; after the digits of a count, `C-u` ends the
+/// count and runs the next key's command, as readline's does. Notes the
+/// command the count ran, for `last_command`. That command may jump back to
+/// readline's or bash's top level, so nothing here is left to drop; the note
+/// is then not taken, and readline does not see this command as the last
+/// one either.
 extern "C" fn numeric_argument(count: c_int, key: c_int) -> c_int {
-    let result = ffi::universal_argument(count, key);
+    let result = if ffi::count_has_digits() {
+        ffi::run_next_key()
+    } else {
+        ffi::universal_argument(count, key)
+    };
+    // readline keeps the flags of a count until it reads the next key's
+    // command, and not even then when a key is waiting, as one an
+    // incremental search put back: that key must not count as following
+    // these digits.
+    ffi::forget_count_digits();
     // A `C-u` the count read ran this command again, which noted the
     // command after it.
     let ran = ffi::readline_last_command();

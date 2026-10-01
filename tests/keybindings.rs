@@ -61,3 +61,85 @@ fn key_sequences_match_plain_bash() {
         wait_same(&with, &plain, &format!("C-c after {name}"));
     }
 }
+
+/// Counts typed with `C-u` (from `echo alpha beta gamma`), run with
+/// inkline's `numeric-argument` and with readline's own `universal-argument`.
+const COUNTS: &[(&str, &str)] = &[
+    ("C-u C-b", "\x15\x02"),
+    ("C-u C-u C-b", "\x15\x15\x02"),
+    ("C-u 2 C-u 3", "\x152\x153"),
+    ("M-2 C-u 3", "\x1b2\x153"),
+    ("C-u 2 C-u C-u x", "\x152\x15\x15x"),
+    ("C-u 2 C-u C-u 3 x", "\x152\x15\x153x"),
+    ("C-u 2 C-u C-u C-b", "\x152\x15\x15\x02"),
+    ("M-2 C-u C-u C-b", "\x1b2\x15\x15\x02"),
+    ("C-u 2 C-r al C-u x", "\x152\x12al\x15x"),
+    ("C-u 1 2 C-b", "\x1512\x02"),
+    ("C-u - 2 C-b", "\x15-2\x02"),
+    ("C-u 2 C-b C-u - C-f", "\x152\x02\x15-\x06"),
+    ("C-u C-g x", "\x15\x07x"),
+];
+
+#[test]
+fn numeric_argument_counts_as_universal_argument_does() {
+    let mut with = Shell::start(Options {
+        rows: 60,
+        init_el: Some("(keymap-global-set \"C-u\" 'numeric-argument)\n".into()),
+        ..Options::default()
+    });
+    let mut plain = Shell::start(Options {
+        rows: 60,
+        inkline: false,
+        inputrc: Some("set bind-tty-special-chars off\n\"\\C-u\": universal-argument\n".into()),
+        ..Options::default()
+    });
+    for (name, keys) in COUNTS {
+        for sh in [&mut with, &mut plain] {
+            sh.send("echo alpha beta gamma");
+        }
+        with.settle();
+        plain.settle();
+        for sh in [&mut with, &mut plain] {
+            sh.send(keys);
+        }
+        wait_same(&with, &plain, name);
+        for sh in [&mut with, &mut plain] {
+            sh.send("\x03");
+        }
+        wait_same(&with, &plain, &format!("C-c after {name}"));
+    }
+}
+
+/// While `C-u` after a count's digits waits for its key, the count shows in
+/// place of the prompt, as with readline's `universal-argument`.
+#[test]
+fn c_u_after_digits_shows_the_count_while_it_waits() {
+    let mut sh = Shell::start(Options {
+        init_el: Some("(keymap-global-set \"C-u\" 'numeric-argument)\n".into()),
+        ..Options::default()
+    });
+    sh.send("\x152\x15");
+    sh.wait_for("the count", |s| cursor_row(s) == "(arg: 2)");
+    sh.send("x");
+    sh.wait_for("the count's keys", |s| cursor_row(s) == "$ xx");
+    sh.send("\x18\x7f\x15-2\x15");
+    sh.wait_for("the count below 0", |s| cursor_row(s) == "(arg: -2)");
+}
+
+/// While `C-u` after a count's digits waits for its key, the line shows no
+/// suggestion and no menu, as while readline reads a count.
+#[test]
+fn c_u_after_digits_hides_the_suggestion_while_it_waits() {
+    let mut sh = Shell::start(Options {
+        history: vec!["abcdef"],
+        init_el: Some("(keymap-global-set \"C-u\" 'numeric-argument)\n".into()),
+        ..Options::default()
+    });
+    sh.send("ab");
+    sh.wait_for("the suggestion", |s| cursor_row(s) == "$ abcdef");
+    sh.send("\x152\x15");
+    sh.wait_for("the count", |s| cursor_row(s).starts_with("(arg: 2)"));
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "(arg: 2) ab");
+    assert_eq!(row_text(&s, s.cursor_position().0 + 1), "");
+}
