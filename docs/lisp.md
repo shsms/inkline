@@ -92,8 +92,12 @@ change takes effect on the next key.
   completion menu: `menu`, for its rows (no colour by default),
   `menu-selected` (default `7`), for the highlighted row, `menu-source`
   (default `2`), for the source letter and the `… N more` row, and
-  `menu-note` (default `2`), for an item's note. See the README's
-  "Colours" section for the colour words.
+  `menu-note` (default `2`), for an item's note; and `search-match`
+  (default `7`), drawn on top of the colours over the text `C-r` or `C-s`
+  matched in the command it found, in place of readline's
+  `active-region-start-color` (the match of `M-p` and `M-n` keeps
+  readline's colour). See the README's "Colours" section for the colour
+  words.
 - `inkline-command-mode-alist` (default `nil`): which commands use which
   [command mode](#command-modes).
 

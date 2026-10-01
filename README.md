@@ -232,7 +232,8 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
 
 - **Highlighting.** Commands, keywords, options, strings, variables, operators
   and comments are coloured as you type. A command that is not a keyword, alias,
-  function, builtin or program on `PATH` is red.
+  function, builtin or program on `PATH` is red. While `C-r` or `C-s` searches
+  history, the command it found is coloured too, with the matched text marked.
 - **Suggestions.** When the cursor is at the end of the line, the newest history
   entry starting with what you typed is shown in grey after the cursor. Accepted
   text can be undone with `C-_`.
@@ -690,13 +691,13 @@ what you want to change; a change applies from the next key.
                         (operator . "1") (comment . "2") (suggestion . "90")
                         (number . "36") (function . "32") (script . "2")
                         (menu-selected . "7") (menu-source . "2")
-                        (menu-note . "2")))
+                        (menu-note . "2") (search-match . "7")))
 ```
 
 or, in the old string format:
 
 ```elisp
-(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2:menu-note=2")
+(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2:menu-note=2:search-match=7")
 ```
 
 In the alist form, a name can be a symbol or a string, and the first entry
@@ -746,6 +747,16 @@ colour of its own until you set it: a separator is drawn with the
 `operator` colour. Inside a mode's script, the mode's own `separator` comes
 first, then the one in `inkline-colors`, then the `operator` colour, found
 the same way. `&&`, `||`, `&` and redirections stay `operator`.
+
+`search-match` marks the text that `C-r` or `C-s` matched in the command it
+found, drawn on top of the command's colours: reverse video (`7`) by default, as
+readline marks it. It takes the place of readline's `active-region-start-color`
+for these searches only: the match of `M-p` and `M-n` keeps readline's colour.
+`search-match=` (or `(search-match . "")`) leaves the match unmarked.
+With readline's `enable-active-region` off, readline does not mark the match,
+and neither does inkline. While the search runs, the line shows no grey text,
+menu or error underline, and readline's search prompt
+(`` (reverse-i-search)`text': ``) keeps its own look.
 
 `error` sets the syntax-error underline. By default it is a plain underline
 (`4`) followed by a wavy red one (`4:3`, then `58:5:1`), so terminals that do
@@ -887,8 +898,9 @@ for the whole state.
   lines taller than the terminal, `horizontal-scroll-mode`,
   `show-mode-in-prompt`, `mark-modified-lines`, a `PS1` with escape sequences
   outside `\[ \]`, a terminal readline has no cursor-up capability for (such
-  as an unknown `TERM` over ssh), a locale that is not UTF-8, and while
-  readline highlights a search match or pasted text.
+  as an unknown `TERM` over ssh), a locale that is not UTF-8, while readline
+  highlights pasted text or the match a non-incremental search (readline's
+  `M-p` and `M-n`) found, and while such a search asks for its text.
 - bash's items for a word are asked for once as you start it, then filtered
   as you type. bash is asked again once typing pauses, when nothing in the
   saved answer matches or when the answer was cut at 1000 items; otherwise a

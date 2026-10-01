@@ -69,24 +69,19 @@ A ~substring~ value for ~inkline-completion-style~, next to ~prefix~ and
 history entries. It is the default; items that start with the typed text
 still come first.
 
-** TODO Colours during C-r reverse search
+** DONE Colours during C-r reverse search
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-10-01 Do 20:15]
+:END:
 
-While ~C-r~ (or ~C-s~) searches the history, the matched line is drawn
-by readline alone, without colours: ~normal_editing()~ in ~src/ffi.rs~
-treats ~RL_STATE_ISEARCH~ as busy, and inkline steps aside until the
-search ends. The matched line should be coloured like any other line,
-with the search prompt (~(reverse-i-search)`...':~) left as readline
-draws it. Worth also marking the matched text within the line.
-
-Things to check before starting:
-- readline redraws the whole prompt on every key of the search, with a
-  prompt of its own in place of the user's; the line may start on a
-  different column than usual.
-- no suggestion and no syntax underline while searching, only colours.
-- the non-incremental searches (~RL_STATE_NSEARCH~, ~RL_STATE_SEARCH~)
-  read their text as a line of their own, which should not be coloured
-  as a command.
-- bash 5.3.
+While ~C-r~ (or ~C-s~) searches the history, the line found is drawn
+with its colours after readline's search prompt (~(reverse-i-search)`...':~),
+which stays as readline draws it, and the matched text (readline's
+active region) is marked with the ~search-match~ colour, reverse video
+by default; with ~enable-active-region~ off nothing is marked. No grey
+text, menu or error underline shows while searching. The non-incremental
+searches (~RL_STATE_NSEARCH~, ~RL_STATE_SEARCH~, such as ~M-p~) and
+pasted text are left to readline.
 
 ** TODO Show earlier accept errors when a later accept function refuses the line
 
