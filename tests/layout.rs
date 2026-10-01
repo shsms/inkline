@@ -507,3 +507,13 @@ fn backtab_is_bound_to_menu_take_previous() {
         lists(s, "<backtab>", "menu-take-previous")
     });
 }
+
+/// The layout puts the region commands on `C-@` (`C-SPC`) and `C-x C-x`.
+#[test]
+fn the_layout_binds_the_region_keys() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("inkline keys | grep -E '^(C-@|C-x C-x)\\s'\r");
+    sh.wait_for("the bindings", |s| {
+        lists(s, "C-@", "set-mark-command") && lists(s, "C-x C-x", "swap-point-and-mark")
+    });
+}

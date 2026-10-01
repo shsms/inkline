@@ -26,6 +26,7 @@ use crate::syntax::{self, Checker, Status};
 
 mod moving;
 mod multiline;
+mod region;
 
 /// The readline functions inkline replaced. Kept apart from `State` in a
 /// `Cell`, so the fallback after a panic can always read them.
@@ -280,6 +281,8 @@ pub fn load() {
                 ffi::add_command(c"menu-take-previous", menu_take_previous);
                 ffi::add_command(c"menu-hide", menu_hide);
                 ffi::add_command(c"numeric-argument", numeric_argument);
+                ffi::add_command(c"set-mark-command", region::set_mark_command);
+                ffi::add_command(c"swap-point-and-mark", region::swap_point_and_mark);
                 ffi::add_command(c"inkline-lisp-key", crate::lisp::commands::SHARED);
             });
             crate::lisp::start_for_shell();
@@ -421,6 +424,7 @@ fn disable() {
     let _ = MESSAGE.try_with(|m| m.replace(None));
     let _ = ACCEPT_ERRORS.try_with(|e| e.try_borrow_mut().map(|mut e| e.clear()));
     let _ = catch_unwind(put_back_delete_pair);
+    region::end();
     crate::lisp::hooks::forget_line();
     unwrap_completion();
     session::forget();
@@ -465,6 +469,15 @@ pub(super) fn accept_line(count: c_int, key: c_int) -> c_int {
     use crate::lisp::hooks::{Accept, run_accept};
     let runs = guard(
         || {
+            // The line that runs stays on screen: drawn without the region,
+            // and with no menu or grey text, which would only flash before
+            // `deprep_terminal` erases them.
+            if region::end() {
+                let hidden =
+                    STATE.with_borrow_mut(|s| std::mem::replace(&mut s.hidden_on, ffi::line()));
+                repaint_now();
+                STATE.with_borrow_mut(|s| s.hidden_on = hidden);
+            }
             // A `C-c` still waiting for bash makes it throw the line away, so
             // the hook does not run for it.
             if !hooks_allowed() || ffi::interrupted() {
@@ -1089,6 +1102,8 @@ extern "C" fn pre_input() -> c_int {
     let result = ffi::call_hook(originals().pre_input);
     guard(
         || {
+            // A line starts with no region.
+            region::end();
             STATE.with_borrow_mut(|s| {
                 s.displaced = false;
                 // Aliases and `extglob` may have changed since the last line.
@@ -1228,6 +1243,7 @@ extern "C" fn redisplay() {
     let lisp_ran = guard(
         || {
             rubout_while_searching();
+            region::end_if_changed();
             let after_key = hooks_allowed()
                 && !ffi::dispatching()
                 && !ffi::reading_command_key()
@@ -1349,7 +1365,9 @@ fn draw() {
     }
 }
 
-/// Does `draw`'s work. Returns whether it repainted the line.
+/// Does `draw`'s work. Returns whether it repainted the line. The active
+/// region is drawn with the `region` colour, and while it is active nothing is
+/// gathered for the menu or the grey text.
 fn repaint_line() -> bool {
     let editing = ffi::normal_editing();
     let searching = ffi::searching_incrementally();
@@ -1424,7 +1442,9 @@ fn repaint_line() -> bool {
         && !line.is_empty()
         && (show_menu || (show_suggestion && point == line.len()))
         && !is_hidden(&line)
-        && !recalled(&line);
+        && !recalled(&line)
+        // No menu or grey text while the region is active.
+        && !region::active();
     let began = Instant::now();
     // bash's copy of the shell is started first, so it works while the mode
     // servers are waited on; both share `mode_server::WAIT`.
@@ -1478,12 +1498,13 @@ fn repaint_line() -> bool {
             suggestion: suggestion.as_deref(),
             suggestion_lines,
             error: error.clone(),
-            highlight: ffi::active_region()
-                .filter(|m| line.is_char_boundary(m.start) && line.is_char_boundary(m.end))
-                .map(|bytes| Highlight {
-                    bytes,
-                    sgr: colors.search_match(),
-                }),
+            highlight: if searching {
+                ffi::active_region().map(|bytes| (bytes, colors.search_match()))
+            } else {
+                region::range().map(|bytes| (bytes, colors.region()))
+            }
+            .filter(|(m, _)| line.is_char_boundary(m.start) && line.is_char_boundary(m.end))
+            .map(|(bytes, sgr)| Highlight { bytes, sgr }),
             script: &painted.script,
             sets: &sets,
             span_sets: &painted.span_sets,
@@ -2039,13 +2060,18 @@ extern "C" fn menu_take_previous(count: c_int, key: c_int) -> c_int {
     run_fallback(saved, count, key)
 }
 
-/// `C-g`: while moving, puts back the typed line (see `moving::cancel`);
-/// otherwise hides the menu and the grey text until the line's text changes;
-/// with no menu, readline's `abort`, which jumps back to readline's top
-/// level, so it runs last with nothing here to drop.
+/// `C-g`: with the region active, only ends it; while moving, puts back the
+/// typed line (see `moving::cancel`); otherwise hides the menu and the grey
+/// text until the line's text changes; with no menu, readline's `abort`, which
+/// jumps back to readline's top level, so it runs last with nothing here to
+/// drop.
 extern "C" fn menu_hide(count: c_int, key: c_int) -> c_int {
     let hidden = guard(
         || {
+            // With a region active, `C-g` only ends it.
+            if region::end() {
+                return true;
+            }
             if moving::cancel() {
                 return true;
             }
@@ -2094,6 +2120,15 @@ extern "C" fn numeric_argument(count: c_int, key: c_int) -> c_int {
 /// Whether `f` is `numeric-argument`.
 fn is_numeric_argument(f: Option<ffi::CommandFn>) -> bool {
     f.is_some_and(|f| std::ptr::fn_addr_eq(f, numeric_argument as ffi::CommandFn))
+}
+
+/// Whether inkline's region is active (see `region`).
+#[expect(
+    dead_code,
+    reason = "used by Lisp's `region-active-p` in a later commit"
+)]
+pub fn region_active() -> bool {
+    region::active()
 }
 
 /// The command readline ran for the previous key. For a `numeric-argument`

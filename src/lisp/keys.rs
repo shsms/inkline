@@ -408,7 +408,7 @@ pub fn register(ctx: &mut TulispContext) {
                     .flatten()
                     .ok_or_else(|| {
                         Error::invalid_argument(format!(
-                            "{g}: not a layout group (suggestions, multi-line, pairing, menu)"
+                            "{g}: not a layout group (suggestions, multi-line, pairing, menu, region)"
                         ))
                     })
             };

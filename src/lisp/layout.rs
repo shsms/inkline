@@ -8,14 +8,16 @@ pub enum Group {
     MultiLine,
     Pairing,
     Menu,
+    Region,
 }
 
 impl Group {
-    pub const ALL: [Group; 4] = [
+    pub const ALL: [Group; 5] = [
         Group::Suggestions,
         Group::MultiLine,
         Group::Pairing,
         Group::Menu,
+        Group::Region,
     ];
 
     pub fn name(self) -> &'static str {
@@ -24,6 +26,7 @@ impl Group {
             Group::MultiLine => "multi-line",
             Group::Pairing => "pairing",
             Group::Menu => "menu",
+            Group::Region => "region",
         }
     }
 
@@ -54,7 +57,7 @@ const fn e(
     }
 }
 
-use Group::{Menu, MultiLine, Pairing, Suggestions};
+use Group::{Menu, MultiLine, Pairing, Region, Suggestions};
 
 pub const LAYOUT: &[Entry] = &[
     e(
@@ -138,6 +141,13 @@ pub const LAYOUT: &[Entry] = &[
     e(Menu, "TAB", "menu-take", &["complete"]),
     e(Menu, "<backtab>", "menu-take-previous", &[""]),
     e(Menu, "C-g", "menu-hide", &["abort"]),
+    e(Region, "C-@", "set-mark-command", &["set-mark"]),
+    e(
+        Region,
+        "C-x C-x",
+        "swap-point-and-mark",
+        &["exchange-point-and-mark"],
+    ),
 ];
 
 /// `menu_key_fallback` for a key that had the readline command named `had`
