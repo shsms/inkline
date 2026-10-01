@@ -462,7 +462,7 @@ pub fn call_hook(f: Option<HookFn>) -> c_int {
 
 // ---- Suggestions ----
 
-// rl_readline_state flags; the same values in readline 8.0 and 8.2.
+// rl_readline_state flags (readline.h).
 const RL_STATE_READCMD: c_ulong = 0x8;
 const RL_STATE_DISPATCHING: c_ulong = 0x20;
 const RL_STATE_MOREINPUT: c_ulong = 0x40;
@@ -1225,13 +1225,11 @@ pub fn insert_comment(count: c_int, key: c_int) -> c_int {
 
 // ---- Lisp commands ----
 
-// readline's `enum undo_code` values (readline.h, the same in readline 8.0
-// and 8.3).
+// readline's `enum undo_code` values (readline.h).
 const UNDO_BEGIN: c_int = 2;
 const UNDO_END: c_int = 3;
 
-/// readline's `UNDO_LIST` entry (readline.h, the same in readline 8.0 and
-/// 8.3). The list is newest first.
+/// readline's `UNDO_LIST` entry (readline.h). The list is newest first.
 #[repr(C)]
 struct UndoList {
     next: *mut UndoList,
@@ -1366,7 +1364,7 @@ unsafe extern "C" {
     fn rl_copy_region_to_kill(count: c_int, key: c_int) -> c_int;
     fn rl_undo_command(count: c_int, key: c_int) -> c_int;
     fn rl_revert_line(count: c_int, key: c_int) -> c_int;
-    /// Named `vi-undo` from readline 8.1; exported, without a name, in 8.0.
+    /// readline's `vi-undo`.
     fn rl_vi_undo(count: c_int, key: c_int) -> c_int;
     /// In src/rlcall.c.
     fn inkline_call_command(f: CommandFn, count: c_int, key: c_int, jumped: *mut c_int) -> c_int;
@@ -1523,7 +1521,7 @@ pub fn line_editing_shell() -> bool {
 
 // ---- Keymaps ----
 
-// From readline's keymaps.h; the same in readline 8.0 and 8.3.
+// From readline's keymaps.h.
 const KEYMAP_SIZE: usize = 257;
 const ANYOTHERKEY: usize = KEYMAP_SIZE - 1;
 const ISFUNC: c_char = 0;

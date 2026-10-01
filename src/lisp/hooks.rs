@@ -264,8 +264,8 @@ pub fn after_key() -> bool {
     let Some(seen) = SEEN.try_with(|s| s.take()).ok().flatten() else {
         return false;
     };
-    // Readline 8.3 leaves `rl_last_func` at the search command when a key that
-    // ended an incremental search runs its command, so `this-command` is then
+    // Readline leaves `rl_last_func` at the search command when a key that
+    // ends an incremental search runs its command, so `this-command` is then
     // the search command.
     let this = crate::hooks::last_command().and_then(super::commands::command_symbol_of);
     if !after_change_has_functions() {

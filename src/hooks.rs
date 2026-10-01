@@ -171,8 +171,7 @@ thread_local! {
     /// Set when another signal interrupted inkline's wait for a key while
     /// Lisp was reading one: the signal, as `ffi::Wait::Signal` gives it.
     /// Readline handles it once the key is read; `after_lisp` runs bash's
-    /// part (traps, `read -e -t` timing out in bash 5.0) once Lisp has
-    /// stopped.
+    /// part (traps) once Lisp has stopped.
     static SIGNAL_IN_LISP: Cell<Option<c_int>> = const { Cell::new(None) };
     /// Set when shell code that a readline command run from Lisp ran jumped
     /// to bash's top level: the value it jumped with. `after_lisp` makes the
@@ -569,8 +568,7 @@ pub fn after_lisp() {
         // A `C-c` that came while Lisp ran but read no key is still waiting
         // in readline, which would only echo it, as inkline's key reader
         // does not call bash's hook: it is handed on here too. So is any
-        // other signal that came while Lisp read a key (bash 5.0 times out
-        // `read -e -t` in its hook).
+        // other signal that came while Lisp read a key.
         let interrupted = INTERRUPTED_IN_LISP.replace(false) || ffi::hold_interrupt();
         if interrupted {
             ffi::release_interrupt();
@@ -1297,7 +1295,7 @@ fn left_to_readline() -> bool {
         || !ffi::terminal_can_move_up()
         // Outside UTF-8, readline counts bytes and draws them as `\303`.
         || !ffi::utf8_locale()
-        // Readline 8.1+ highlights a search match or pasted text itself.
+        // Readline highlights a search match or pasted text itself.
         || ffi::region_active()
 }
 
