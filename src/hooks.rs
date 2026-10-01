@@ -1246,7 +1246,7 @@ extern "C" fn redisplay() {
     let lisp_ran = guard(
         || {
             rubout_while_searching();
-            region::end_if_changed();
+            region::update();
             let after_key = hooks_allowed()
                 && !ffi::dispatching()
                 && !ffi::reading_command_key()

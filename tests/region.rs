@@ -482,3 +482,77 @@ fn region_active_p_follows_the_region() {
     sh.send(&format!("{C_SPC}\x02\x18r"));
     sh.wait_for("a region", |s| cursor_row(s) == "$ xyauAAUu");
 }
+
+const C_R: &str = "\x12";
+
+/// An incremental search that ends on the line leaves the mark where it
+/// was and the region active, as Emacs's isearch does: readline moves the
+/// mark to the end of the match it finds.
+#[test]
+fn a_search_keeps_the_mark() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello");
+    sh.send(C_SPC);
+    sh.send(&format!("{C_R}ell"));
+    sh.wait_for("the match", |s| {
+        cursor_row(s) == "(reverse-i-search)`ell': echo hello"
+    });
+    // ESC ends the search, with the cursor at the match.
+    sh.send("\x1b");
+    sh.wait_for("the search ended", |s| {
+        cursor_row(s) == "$ echo hello" && s.cursor_position() == (0, 8)
+    });
+    sh.send("\x02");
+    sh.wait_for("the region from the mark", |s| {
+        s.cursor_position() == (0, 7) && every_cell(s, "hello", vt100::Cell::inverse)
+    });
+}
+
+/// `C-g` in a search puts the line, the cursor and the mark back and keeps
+/// the region, also after the search showed another line.
+#[test]
+fn ctrl_g_in_a_search_keeps_the_region() {
+    for (history, search) in [(vec![], "ell"), (vec!["echo world"], "wor")] {
+        let mut sh = Shell::start(Options {
+            history,
+            ..Options::default()
+        });
+        type_text(&mut sh, "echo hello");
+        sh.send(C_SPC);
+        sh.send(&format!("{C_R}{search}"));
+        sh.wait_for(search, |s| {
+            cursor_row(s).starts_with(&format!("(reverse-i-search)`{search}': "))
+        });
+        sh.send(C_G);
+        sh.wait_for("the search ended", |s| {
+            cursor_row(s) == "$ echo hello" && s.cursor_position() == (0, 12)
+        });
+        sh.send("\x02\x02");
+        sh.wait_for(&format!("the region after {search}"), |s| {
+            s.cursor_position() == (0, 10)
+                && every_cell(s, "lo", vt100::Cell::inverse)
+                && !any_cell(s, "echo hel", vt100::Cell::inverse)
+        });
+    }
+}
+
+/// A search that ends on another line ends the region.
+#[test]
+fn a_search_ending_on_another_line_ends_the_region() {
+    let mut sh = Shell::start(Options {
+        history: vec!["echo other"],
+        ..Options::default()
+    });
+    type_text(&mut sh, "echo x");
+    sh.send(C_SPC);
+    sh.send(&format!("{C_R}oth"));
+    sh.wait_for("the match", |s| {
+        cursor_row(s) == "(reverse-i-search)`oth': echo other"
+    });
+    sh.send("\x1b");
+    sh.wait_for("the search ended", |s| cursor_row(s) == "$ echo other");
+    sh.send("\x02");
+    sh.wait_for("the cursor moved", |s| s.cursor_position() == (0, 6));
+    let s = sh.settle();
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}

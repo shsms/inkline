@@ -6,7 +6,7 @@
 //! or end the region, so it is never active then: turning inkline off
 //! ends it, and `C-SPC` and `C-x C-x` run readline's own commands.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_int;
 use std::ops::Range;
 
@@ -17,6 +17,9 @@ thread_local! {
     /// While the region is active: the line's text when it became active.
     /// A draw that finds other text ends it (`end_if_changed`).
     static ACTIVE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// The mark when an incremental search started with the region active,
+    /// put back once the search has ended (see `update`).
+    static MARK_BEFORE_SEARCH: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 /// Whether the region is active.
@@ -31,14 +34,38 @@ fn activate() {
 /// Ends the region; returns whether it was active. Never panics, so
 /// `disable` can call it whatever state inkline is in.
 pub(super) fn end() -> bool {
+    let _ = MARK_BEFORE_SEARCH.try_with(|m| m.set(None));
     ACTIVE
         .try_with(|a| a.try_borrow_mut().is_ok_and(|mut a| a.take().is_some()))
         .unwrap_or(false)
 }
 
+/// Brings the region up to date before a draw: any change to the line's
+/// text but the region commands' own ends it. An incremental search (`C-r`,
+/// `C-s`) keeps the mark where it was, as Emacs's isearch does, though
+/// readline moves the mark to the end of each match it finds. Readline
+/// redraws when a search starts, before its first key, and once more when
+/// the search has ended, before the key that ended it runs its command.
+/// While the search runs the line shows the lines it finds, so the text is
+/// checked once it has ended: a search that ends on the text the region
+/// became active on keeps the region, with the mark back where it was.
+pub(super) fn update() {
+    if ffi::searching_incrementally() {
+        if active() && MARK_BEFORE_SEARCH.get().is_none() {
+            MARK_BEFORE_SEARCH.set(Some(ffi::mark()));
+        }
+        return;
+    }
+    end_if_changed();
+    // Ending the region forgets the mark.
+    if let Some(mark) = MARK_BEFORE_SEARCH.take() {
+        ffi::set_mark(mark.min(ffi::line_bytes().len()));
+    }
+}
+
 /// Ends the region when the line's text is not the text it became active
 /// on: any edit but the region commands' own ends it.
-pub(super) fn end_if_changed() {
+fn end_if_changed() {
     let changed = ACTIVE.with_borrow(|a| a.as_ref().is_some_and(|text| *text != ffi::line_bytes()));
     if changed {
         end();

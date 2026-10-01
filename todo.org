@@ -220,7 +220,10 @@ completion just before it: it does not list. Tab Tab still lists.
   item =a== placed before a typed backslash-newline and =~= is kept, and
   bash expands the =~=.
 
-** TODO C-r moves the mark of the active region
+** DONE C-r moves the mark of the active region
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-10-01 Do 22:59]
+:END:
 
 With the region active, an incremental search (=C-r=, =C-s=) leaves the
 mark at the end of the match it found, as readline sets the mark there
