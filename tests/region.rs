@@ -463,3 +463,22 @@ fn up_and_down_stay_within_the_command() {
         assert!(has_row(&sh.settle(), "$ echo one"));
     }
 }
+
+/// `region-active-p` follows the region; `use-region-p` also needs it not
+/// empty, as in Emacs.
+#[test]
+fn region_active_p_follows_the_region() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(
+            "(keymap-global-set \"C-x r\" (lambda () (insert (if (region-active-p) \"A\" \"a\") (if (use-region-p) \"U\" \"u\"))))\n"
+                .into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("xy\x18r");
+    sh.wait_for("no region", |s| cursor_row(s) == "$ xyau");
+    sh.send(&format!("{C_SPC}\x18r"));
+    sh.wait_for("an empty region", |s| cursor_row(s) == "$ xyauAu");
+    sh.send(&format!("{C_SPC}\x02\x18r"));
+    sh.wait_for("a region", |s| cursor_row(s) == "$ xyauAAUu");
+}

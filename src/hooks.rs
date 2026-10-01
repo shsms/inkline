@@ -2134,10 +2134,6 @@ fn is_numeric_argument(f: Option<ffi::CommandFn>) -> bool {
 }
 
 /// Whether inkline's region is active (see `region`).
-#[expect(
-    dead_code,
-    reason = "used by Lisp's `region-active-p` in a later commit"
-)]
 pub fn region_active() -> bool {
     region::active()
 }

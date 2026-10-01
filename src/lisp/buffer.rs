@@ -629,7 +629,8 @@ pub fn register(ctx: &mut TulispContext) {
         read(|text, point, mark, _buf| to_pos(text, point.max(mark)))
     });
     ctx.defun("use-region-p", || -> Result<bool, Error> {
-        read(|_text, _point, _mark, buf| buf.region_active())
+        // As in Emacs: an empty region is not used.
+        read(|_text, point, mark, buf| buf.region_active() && point != mark)
     });
     ctx.defun("region-active-p", || -> Result<bool, Error> {
         read(|_text, _point, _mark, buf| buf.region_active())
@@ -1198,6 +1199,59 @@ mod tests {
             let e = ctx.eval_string(program).unwrap_err();
             assert_eq!(e.desc(), "the line is not UTF-8", "{program}");
         }
+    }
+
+    /// A `TextBuffer` whose region is active.
+    struct Active(TextBuffer);
+
+    impl Buffer for Active {
+        fn text(&self) -> Result<String, String> {
+            self.0.text()
+        }
+        fn point(&self) -> usize {
+            self.0.point()
+        }
+        fn mark(&self) -> usize {
+            self.0.mark()
+        }
+        fn set_point(&mut self, byte: usize) {
+            self.0.set_point(byte);
+        }
+        fn set_mark(&mut self, byte: usize) {
+            self.0.set_mark(byte);
+        }
+        fn insert(&mut self, text: &str) -> Result<(), String> {
+            self.0.insert(text)
+        }
+        fn delete(&mut self, start: usize, end: usize) -> Result<(), String> {
+            self.0.delete(start, end)
+        }
+        fn kill(&mut self, start: usize, end: usize, backward: bool) -> Result<(), String> {
+            self.0.kill(start, end, backward)
+        }
+        fn copy(&mut self, start: usize, end: usize, backward: bool) -> Result<(), String> {
+            self.0.copy(start, end, backward)
+        }
+        fn region_active(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn use_region_p_needs_a_region_that_is_not_empty() {
+        let mut ctx = TulispContext::new();
+        crate::lisp::errors::register(&mut ctx);
+        register(&mut ctx);
+        let _installed = install(Box::new(Active(TextBuffer {
+            text: "abc".into(),
+            point: 1,
+            mark: 1,
+            kills: Vec::new(),
+        })));
+        let both = "(list (region-active-p) (use-region-p))";
+        assert_eq!(ctx.eval_string(both).unwrap().to_string(), "(t nil)");
+        ctx.eval_string("(set-mark 3)").unwrap();
+        assert_eq!(ctx.eval_string(both).unwrap().to_string(), "(t t)");
     }
 
     #[test]

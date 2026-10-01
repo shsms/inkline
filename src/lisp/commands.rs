@@ -806,7 +806,7 @@ impl Buffer for ReadlineBuffer {
     }
 
     fn region_active(&self) -> bool {
-        ffi::region_active()
+        ffi::region_active() || crate::hooks::region_active()
     }
 }
 
