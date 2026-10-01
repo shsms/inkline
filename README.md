@@ -7,9 +7,11 @@ for it — `inputrc`, and your own `bind` lines after `enable -f`, win.
 `(inkline-unbind-defaults)` in `init.el` gives every key in the layout back to
 readline.
 
-It is a bash loadable builtin written in Rust, for bash 5.0 and later,
+It is a bash loadable builtin written in Rust, for bash 5.3 and later,
 configured with `init.el`, a small Emacs Lisp file (see "Configuration"
-below).
+below). On an older bash, `enable -f` fails and inkline says which bash it
+needs. The `supports-bash-5.0` tag is the last version that works with bash
+5.0 to 5.2.
 
 ## Building
 
@@ -90,13 +92,12 @@ readline's own command when no menu shows.
 `C-u` and Backspace need `bind-tty-special-chars off`: otherwise readline binds
 the terminal's kill and erase characters back to `unix-line-discard` and
 `backward-delete-char` every time it sets up the terminal. inkline turns it off
-the first time it loads in a shell and on `inkline reload`, along with
-`enable-bracketed-paste on` on readline 8.0, and again whenever Lisp binds
-`DEL`, `C-h`, `C-u`, `C-v` or `C-w`; `inkline-unbind-defaults` turns it back on
-once inkline binds none of them, even when `inputrc` turned it off. `inputrc`
-can still turn `bind-tty-special-chars` back on, but only when inkline is the
-first thing to set readline up — that is, only when nothing runs `bind` before
-`enable -f` in `.bashrc`. When it can, an `inputrc` that turns
+the first time it loads in a shell and on `inkline reload`, and again whenever
+Lisp binds `DEL`, `C-h`, `C-u`, `C-v` or `C-w`; `inkline-unbind-defaults` turns
+it back on once inkline binds none of them, even when `inputrc` turned it off.
+`inputrc` can still turn `bind-tty-special-chars` back on, but only when inkline
+is the first thing to set readline up — that is, only when nothing runs `bind`
+before `enable -f` in `.bashrc`. When it can, an `inputrc` that turns
 `bind-tty-special-chars` back on makes readline rebind Backspace and `C-u` to
 the terminal's erase and kill characters on every line, undoing `delete-pair`
 and `numeric-argument`. With it off, readline also stops binding the
@@ -406,7 +407,7 @@ items, the last row says how many more.
   past the newest match puts back the line and cursor as they were when
   it started; on a command from history, `<down>` past the newest match
   rings the bell. `C-p` and `C-n` keep the substring search. With
-  readline 8.3's `search-ignore-case` on, case is ignored.
+  readline's `search-ignore-case` on, case is ignored.
 
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
 text off on their own, and `inkline-completion-style` set to `fuzzy` lets the
@@ -878,8 +879,8 @@ for the whole state.
   lines taller than the terminal, `horizontal-scroll-mode`,
   `show-mode-in-prompt`, `mark-modified-lines`, a `PS1` with escape sequences
   outside `\[ \]`, a terminal readline has no cursor-up capability for (such
-  as an unknown `TERM` over ssh), a locale that is not UTF-8, and, on bash
-  5.1+, while readline highlights a search match or pasted text.
+  as an unknown `TERM` over ssh), a locale that is not UTF-8, and while
+  readline highlights a search match or pasted text.
 - bash's items for a word are asked for once as you start it, then filtered
   as you type. bash is asked again once typing pauses, when nothing in the
   saved answer matches or when the answer was cut at 1000 items; otherwise a
@@ -910,11 +911,9 @@ for the whole state.
 - Indentation counts from the left edge of the terminal, not from the end of
   the prompt.
 - The syntax check cannot know aliases, and knows `extglob` only as it is set
-  now: an alias or `shopt` set earlier in the same block is not seen. An error
-  inside `$(…)` is underlined as bash 5.2 reports it, also on bash 5.0, which
-  checks it only when it runs the command. A few rare forms get a wrong
-  underline or keep Enter adding lines; Alt+Enter always sends the command to
-  bash as it is.
+  now: an alias or `shopt` set earlier in the same block is not seen. A few
+  rare forms get a wrong underline or keep Enter adding lines; Alt+Enter
+  always sends the command to bash as it is.
 - vi mode is not covered: `keymap-global-set` and the default layout only
   bind in the emacs keymap.
 - Readline commands that look at the command run before them — `yank-pop`,
@@ -972,8 +971,16 @@ make check      # fmt, clippy and the unit tests
 
 Building bash needs libncurses-dev / ncurses-devel. `cargo test` uses the
 bash 5.3 in `target/bash-5.3` when it is there, and otherwise the `bash` on
-`PATH`. To test with one bash, set `INKLINE_TEST_BASH`:
-`INKLINE_TEST_BASH=target/bash-5.0/bin/bash cargo test`.
+`PATH`. To test with another bash, set `INKLINE_TEST_BASH`:
+`INKLINE_TEST_BASH=/path/to/bash cargo test`. The bash tested must be 5.3 or
+later, or the tests stop at once saying so.
+
+The test that inkline refuses an older bash runs with
+`INKLINE_TEST_OLDER_BASH` when it is set, and otherwise with each bash older
+than 5.3 it finds in `target/` or on `PATH`. With none it is skipped, or fails
+when `INKLINE_TEST_REQUIRE_OLDER` is set, as `make test` and `make test-all`
+do; they build bash 5.2 for it. To build that bash yourself, run
+`scripts/build-bash.sh 5.2`.
 
 ## License
 

@@ -370,8 +370,8 @@ changed the line: after the command has returned, and before the line is drawn.
   the key before (`nil` for a lambda, and at the first key of a line), so the
   functions can tell these apart. In the default
   layout the arrows run the menu commands, so Up that brings back a history
-  entry gives `this-command` `menu-previous`, and Down `menu-next`. On bash
-  5.3, a key that ends an incremental search (`C-r`) runs its own command
+  entry gives `this-command` `menu-previous`, and Down `menu-next`. A key
+  that ends an incremental search (`C-r`) runs its own command
   with `this-command` still naming the search, such as
   `reverse-search-history`.
 - Their changes are one undo step of their own, after the key's: the first `C-_`
@@ -502,8 +502,7 @@ first character, and `(point-max)` is one past the last one.
 - `(region-beginning)`, `(region-end)` — the smaller or larger of point and
   the mark.
 - `(use-region-p)`, `(region-active-p)` — the same thing: whether readline
-  currently has an active mark. Needs readline 8.1 or later (bash 5.1 and
-  later); on bash 5.0 they are always `nil`.
+  currently has an active mark.
 - `(skip-chars-forward SPEC &optional LIM)`, `(skip-chars-backward SPEC
   &optional LIM)` — moves point over the characters matching `SPEC`,
   stopping at `LIM` (the line's other end, by default; clamped to the line

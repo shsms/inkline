@@ -82,7 +82,7 @@ Things to check before starting:
 - the non-incremental searches (~RL_STATE_NSEARCH~, ~RL_STATE_SEARCH~)
   read their text as a line of their own, which should not be coloured
   as a command.
-- bash 5.0, 5.2 and 5.3.
+- bash 5.3.
 
 ** TODO Show earlier accept errors when a later accept function refuses the line
 
