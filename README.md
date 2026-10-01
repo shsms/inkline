@@ -691,13 +691,13 @@ what you want to change; a change applies from the next key.
                         (operator . "1") (comment . "2") (suggestion . "90")
                         (number . "36") (function . "32") (script . "2")
                         (menu-selected . "7") (menu-source . "2")
-                        (menu-note . "2") (search-match . "7")))
+                        (menu-note . "2") (search-match . "7") (region . "7")))
 ```
 
 or, in the old string format:
 
 ```elisp
-(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2:menu-note=2:search-match=7")
+(setq inkline-colors "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2:menu-note=2:search-match=7:region=7")
 ```
 
 In the alist form, a name can be a symbol or a string, and the first entry
