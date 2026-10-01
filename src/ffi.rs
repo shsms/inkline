@@ -501,6 +501,11 @@ pub fn normal_editing() -> bool {
     unsafe { rl_readline_state & busy == 0 && rl_done == 0 }
 }
 
+/// Whether readline is in an incremental search (`C-r`, `C-s`).
+pub fn searching_incrementally() -> bool {
+    unsafe { rl_readline_state & RL_STATE_ISEARCH != 0 }
+}
+
 /// Forgets that readline was reading a count, or more keys for a command.
 /// `C-c` while readline waits for such a key leaves what it waited on
 /// noted, and `normal_editing` then stays false on later lines until
@@ -1145,6 +1150,11 @@ pub fn rubout(count: c_int, key: c_int) -> c_int {
     unsafe { rl_rubout(count, key) }
 }
 
+/// readline's `backward-delete-char`, as a command to bind.
+pub fn rubout_command() -> CommandFn {
+    rl_rubout
+}
+
 /// Deletes bytes `start..end` of the line.
 pub fn delete_text(start: usize, end: usize) {
     unsafe { rl_delete_text(start as c_int, end as c_int) };
@@ -1775,6 +1785,25 @@ pub fn restore(seq: &[u8], saved: &Found) {
     };
     // SAFETY: `slot_of` returns an entry of a readline keymap.
     unsafe { *slot = entry };
+}
+
+/// Binds each of `keys` that is bound to `from` in the emacs keymap, as a
+/// single key, to `to`, writing the keymap entry directly; the others are
+/// left as they are. Returns the keys it bound.
+pub fn rebind_keys(keys: impl IntoIterator<Item = u8>, from: CommandFn, to: CommandFn) -> Vec<u8> {
+    let map = (&raw mut emacs_standard_keymap).cast::<KeymapEntry>();
+    keys.into_iter()
+        .filter(|&key| {
+            // SAFETY: `map` is readline's emacs keymap of KEYMAP_SIZE
+            // entries, and a byte is below KEYMAP_SIZE.
+            let entry = unsafe { &mut *map.add(usize::from(key)) };
+            let bound = entry.kind == ISFUNC && std::ptr::eq(entry.function, from as *mut c_void);
+            if bound {
+                entry.function = to as *mut c_void;
+            }
+            bound
+        })
+        .collect()
 }
 
 /// The readline or inkline command called `name`. readline ignores case.

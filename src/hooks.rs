@@ -193,6 +193,10 @@ thread_local! {
     /// `deprep_terminal` to print above the command's output. Kept only while
     /// inkline is on, as `deprep_terminal` does not run while it is off.
     static ACCEPT_ERRORS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The keys bound to `delete-pair` that `backward-delete-char` is bound
+    /// to instead while an incremental search runs (see
+    /// `rubout_while_searching`).
+    static SEARCH_RUBOUT_KEYS: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static STATE: RefCell<State> = RefCell::new(State {
         enabled: false,
         lexer: Lexer::new(),
@@ -416,6 +420,7 @@ fn disable() {
     let _ = catch_unwind(erase_below);
     let _ = MESSAGE.try_with(|m| m.replace(None));
     let _ = ACCEPT_ERRORS.try_with(|e| e.try_borrow_mut().map(|mut e| e.clear()));
+    let _ = catch_unwind(put_back_delete_pair);
     crate::lisp::hooks::forget_line();
     unwrap_completion();
     session::forget();
@@ -1151,6 +1156,8 @@ extern "C" fn deprep_terminal() {
                 crate::lisp::hooks::forget_line();
             }
             clear_message();
+            // A search left by `C-c` is not redrawn once it has ended.
+            put_back_delete_pair();
             let (shown_at, below) = STATE.with_borrow_mut(|s| {
                 // A pause asked for belongs to the line that ends.
                 s.wants_pause = false;
@@ -1220,6 +1227,7 @@ extern "C" fn redisplay() {
     let lisp_started = Cell::new(false);
     let lisp_ran = guard(
         || {
+            rubout_while_searching();
             let after_key = hooks_allowed()
                 && !ffi::dispatching()
                 && !ffi::reading_command_key()
@@ -2163,6 +2171,38 @@ extern "C" fn insert_close(count: c_int, key: c_int) -> c_int {
         }
         moves_over
     })
+}
+
+/// Binds `backward-delete-char` to the keys bound to `delete-pair` while an
+/// incremental search (`C-r`, `C-s`) runs, and `delete-pair` back once it
+/// has ended. Readline's search deletes a character of the search text only
+/// for a key bound to `backward-delete-char`; any other command's key ends
+/// the search. Called from each redraw: readline redraws when a search
+/// starts and after each of its keys, typed or from a macro, and once more
+/// when the search command returns, before the key that ended the search
+/// runs its command (RET's line included), so that command finds
+/// `delete-pair` bound. A search left by `C-c` is redrawn only before it
+/// has ended: the terminal is reset next (`deprep_terminal`), which puts
+/// `delete-pair` back before bash moves on to a new prompt.
+fn rubout_while_searching() {
+    if !ffi::searching_incrementally() {
+        put_back_delete_pair();
+        return;
+    }
+    SEARCH_RUBOUT_KEYS.with_borrow_mut(|keys| {
+        if keys.is_empty() {
+            *keys = ffi::rebind_keys(0..=u8::MAX, delete_pair, ffi::rubout_command());
+        }
+    });
+}
+
+/// Binds `delete-pair` back to the keys `rubout_while_searching` took it
+/// from, unless they were bound to something else since.
+fn put_back_delete_pair() {
+    let keys = SEARCH_RUBOUT_KEYS.take();
+    if !keys.is_empty() {
+        ffi::rebind_keys(keys, ffi::rubout_command(), delete_pair);
+    }
 }
 
 extern "C" fn delete_pair(count: c_int, key: c_int) -> c_int {

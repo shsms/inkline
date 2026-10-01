@@ -250,7 +250,8 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   the closer moves over it; Backspace between an empty pair deletes both. It
   stays out of the way after letters and digits (`don't`), after a backslash,
   inside comments and strings, and with a count prefix. Pasted text is never
-  paired.
+  paired. During `C-r` or `C-s`, Backspace deletes a character of the search
+  text, as in plain bash.
 - **Multi-line commands.** Enter on an unfinished command (an open quote, a
   `for` without `done`, a trailing `|` or `\`) adds a line to it, indented to
   match. In bash code, but not inside a string or a here-document, the spaces
