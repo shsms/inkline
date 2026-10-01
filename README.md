@@ -966,7 +966,7 @@ for the whole state.
 
 ```sh
 make test       # with bash 5.3, built into target/ first
-make test-all   # with bash 5.0 and 5.3, built into target/ first
+make test-all   # with each bash in BASHES (just 5.3 for now)
 make check      # fmt, clippy and the unit tests
 ```
 

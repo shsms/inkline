@@ -5,7 +5,7 @@
 )]
 
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -16,16 +16,32 @@ pub use vt100::Color;
 
 /// The bash to test: `$INKLINE_TEST_BASH` (made absolute, since the shells
 /// start in other directories); else the bash 5.3 that `make test` builds
-/// into `target/bash-5.3`, when it is there; else `bash` from `PATH`.
+/// into `target/bash-5.3`, when it is there; else `bash` from `PATH`. It
+/// must be bash 5.3 or later, which is checked before the first shell
+/// starts.
 pub fn bash_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("INKLINE_TEST_BASH") {
-        return std::path::absolute(path).unwrap();
-    }
-    let built = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/bash-5.3/bin/bash");
-    if built.is_file() {
-        return built;
-    }
-    PathBuf::from("bash")
+    static PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let bash = match std::env::var_os("INKLINE_TEST_BASH") {
+            Some(path) => std::path::absolute(path).unwrap(),
+            None => {
+                let built = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/bash-5.3/bin/bash");
+                if built.is_file() {
+                    built
+                } else {
+                    PathBuf::from("bash")
+                }
+            }
+        };
+        let (major, minor) = version_of(&bash);
+        assert!(
+            (major, minor) >= (5, 3),
+            "the bash to test, {bash:?}, is {major}.{minor}, and inkline needs 5.3 or \
+             later: run `make test`, or set INKLINE_TEST_BASH to a bash 5.3 or later"
+        );
+        bash
+    })
+    .clone()
 }
 
 /// The library `cargo test` built for this run, next to the test binary in
@@ -45,7 +61,13 @@ fn empty_home() -> PathBuf {
 
 /// A non-interactive bash, for tests that need no terminal.
 pub fn bash_command() -> Command {
-    let mut cmd = Command::new(bash_path());
+    bash_command_at(&bash_path())
+}
+
+/// A non-interactive run of the bash at `bash`, set up as `bash_command`
+/// sets up the bash under test.
+pub fn bash_command_at(bash: &Path) -> Command {
+    let mut cmd = Command::new(bash);
     let home = empty_home();
     cmd.env("INPUTRC", "/dev/null")
         .env("HOME", &home)
@@ -54,7 +76,23 @@ pub fn bash_command() -> Command {
     cmd
 }
 
+/// The major and minor version of the bash at `bash`, such as (5, 3).
+pub fn version_of(bash: &Path) -> (u32, u32) {
+    let out = bash_command_at(bash)
+        .args(["-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"])
+        .output()
+        .unwrap_or_else(|err| panic!("cannot run {bash:?}: {err}"));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parts = text.split_whitespace().map(str::parse);
+    match (parts.next(), parts.next()) {
+        (Some(Ok(major)), Some(Ok(minor))) => (major, minor),
+        _ => panic!("cannot tell the version of {bash:?}: it printed {text:?}"),
+    }
+}
+
 pub struct Options {
+    /// The bash to start; the bash under test (`bash_path`) when None.
+    pub bash: Option<PathBuf>,
     pub rows: u16,
     pub cols: u16,
     /// Load inkline.
@@ -90,6 +128,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Options {
         Options {
+            bash: None,
             rows: 24,
             cols: 80,
             inkline: true,
@@ -186,7 +225,7 @@ impl Shell {
             pixel_height: 0,
         };
         let pty = native_pty_system().openpty(size).unwrap();
-        let mut cmd = CommandBuilder::new(bash_path());
+        let mut cmd = CommandBuilder::new(opts.bash.clone().unwrap_or_else(bash_path));
         cmd.args(["--noprofile", "--rcfile"]);
         cmd.arg(&rcfile);
         cmd.arg("-i");
@@ -481,13 +520,7 @@ pub const LITERAL_TAB: &str = "\x16\t";
 
 /// The major and minor version of the bash under test, such as (5, 2).
 pub fn bash_version() -> (u32, u32) {
-    let out = bash_command()
-        .args(["-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"])
-        .output()
-        .unwrap();
-    let text = String::from_utf8(out.stdout).unwrap();
-    let mut parts = text.split_whitespace().map(|p| p.parse().unwrap());
-    (parts.next().unwrap(), parts.next().unwrap())
+    version_of(&bash_path())
 }
 
 /// Whether any cell on the screen is underlined.

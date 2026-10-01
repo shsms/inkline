@@ -87,11 +87,99 @@ unsafe extern "C" fn inkline_builtin(list: *mut WordList) -> c_int {
 }
 
 /// Called by `enable -f` after loading. Returning 0 makes bash refuse the
-/// builtin.
+/// builtin, which inkline does on a bash older than 5.3 or a readline older
+/// than 8.3, saying why.
 #[unsafe(no_mangle)]
 pub extern "C" fn inkline_builtin_load(_name: *mut c_char) -> c_int {
+    if let Err(problem) = check_versions() {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "inkline: {problem}");
+        return 0;
+    }
     crate::hooks::load();
     1
+}
+
+/// The oldest bash inkline works with.
+const OLDEST_BASH: (u32, u32) = (5, 3);
+
+/// The oldest readline inkline works with, as `rl_readline_version` gives
+/// it: 8.3, which comes with bash 5.3.
+const OLDEST_READLINE: c_int = 0x0803;
+
+unsafe extern "C" {
+    /// bash's version without its patch level, such as "5.3". Unlike
+    /// `BASH_VERSION`, the user cannot unset or change it.
+    static dist_version: *const c_char;
+}
+
+/// Checks that this bash and its readline are new enough, and looks up the
+/// symbols in `LookedUp`. The error says what to tell the user: that bash
+/// 5.3 is needed, or, for a bash 5.3 built with an older readline, that
+/// readline 8.3 is.
+fn check_versions() -> Result<(), String> {
+    // SAFETY: bash sets `dist_version` to a constant string.
+    let dist = unsafe { c_str(dist_version) }
+        .map(CStr::to_string_lossy)
+        .unwrap_or_default();
+    let Some(bash) = crate::version::major_minor(&dist) else {
+        return Err(format!(
+            "cannot tell which bash this is from its dist_version {dist:?}"
+        ));
+    };
+    if bash < OLDEST_BASH {
+        return Err(format!(
+            "needs bash 5.3 or later; this is bash {}.{}",
+            bash.0, bash.1
+        ));
+    }
+    let readline = unsafe { rl_readline_version };
+    if readline < OLDEST_READLINE {
+        return Err(format!(
+            "needs readline 8.3 or later; this bash uses readline {}.{}",
+            readline >> 8,
+            readline & 0xff
+        ));
+    }
+    look_up_symbols()
+}
+
+/// Readline functions that an older bash may lack. They are looked up when
+/// `enable -f` loads the library, once `check_versions` has found bash and
+/// readline new enough, instead of being linked: a linked symbol that bash
+/// lacks fails the load before inkline can say which bash it needs.
+struct LookedUp {
+    bracketed_read_key: unsafe extern "C" fn() -> c_int,
+}
+
+static LOOKED_UP: std::sync::OnceLock<LookedUp> = std::sync::OnceLock::new();
+
+/// The symbols `check_versions` looked up.
+fn looked_up() -> &'static LookedUp {
+    LOOKED_UP.get().expect("looked up when the library loaded")
+}
+
+fn look_up_symbols() -> Result<(), String> {
+    fn find(name: &CStr) -> Result<*mut c_void, String> {
+        let at = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
+        if at.is_null() {
+            return Err(format!("readline has no {}", name.to_string_lossy()));
+        }
+        Ok(at)
+    }
+    if LOOKED_UP.get().is_some() {
+        return Ok(());
+    }
+    type KeyFn = unsafe extern "C" fn() -> c_int;
+    let bracketed_read_key = find(c"_rl_bracketed_read_key")?;
+    // SAFETY: each symbol has the type readline 8.3 declares for it.
+    let looked_up = unsafe {
+        LookedUp {
+            bracketed_read_key: std::mem::transmute::<*mut c_void, KeyFn>(bracketed_read_key),
+        }
+    };
+    let _ = LOOKED_UP.set(looked_up);
+    Ok(())
 }
 
 /// Called by `enable -d` before it removes the builtin.
@@ -884,7 +972,6 @@ unsafe extern "C" {
     static mut _rl_argcxt: c_int;
     static mut rl_numeric_arg: c_int;
     static mut rl_arg_sign: c_int;
-    fn _rl_bracketed_read_key() -> c_int;
     fn rl_save_prompt();
     fn rl_restore_prompt();
     fn rl_message(format: *const c_char, ...) -> c_int;
@@ -934,7 +1021,7 @@ pub fn run_next_key() -> c_int {
         rl_save_prompt();
         rl_readline_state |= RL_STATE_NUMERICARG;
         rl_message(c"(arg: %d) ".as_ptr(), rl_arg_sign * rl_numeric_arg);
-        let key = _rl_bracketed_read_key();
+        let key = (looked_up().bracketed_read_key)();
         rl_restore_prompt();
         rl_clear_message();
         rl_readline_state &= !RL_STATE_NUMERICARG;

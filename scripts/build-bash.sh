@@ -1,8 +1,8 @@
 #!/bin/sh
 # Builds a bash release into target/bash-<version> for the end-to-end tests:
 #
-#   scripts/build-bash.sh 5.0
-#   INKLINE_TEST_BASH=target/bash-5.0/bin/bash cargo test
+#   scripts/build-bash.sh 5.3
+#   INKLINE_TEST_BASH=target/bash-5.3/bin/bash cargo test
 #
 # Needs the ncurses development files (Debian: libncurses-dev, Fedora:
 # ncurses-devel). Without them bash falls back to its bundled termcap, which

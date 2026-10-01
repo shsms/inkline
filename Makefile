@@ -2,11 +2,13 @@
 # make install    copy it to $(LIBDIR)
 # make test       run the tests with bash 5.3, built into target/ first
 # make test-all   run them with each of $(BASHES), built into target/ first
+#                 Both also build bash $(OLDER_BASH), which inkline must refuse.
 # make check      fmt, clippy and the unit tests
 # make clean      remove target/, including the bashes built for testing
 
 LIBDIR ?= $(HOME)/.local/lib
-BASHES ?= 5.0 5.3
+BASHES ?= 5.3
+OLDER_BASH ?= 5.2
 
 .PHONY: all build install test test-all check clean
 
@@ -21,10 +23,15 @@ build:
 install: build
 	install -D -m 755 target/release/libinkline.so $(LIBDIR)/libinkline.so
 
-test: target/bash-5.3/bin/bash
+# inkline supports bash 5.3 and later only. The test that it refuses an
+# older bash runs with bash $(OLDER_BASH), and fails if it is missing.
+test test-all: export INKLINE_TEST_OLDER_BASH = target/bash-$(OLDER_BASH)/bin/bash
+test test-all: export INKLINE_TEST_REQUIRE_OLDER = 1
+
+test: target/bash-5.3/bin/bash target/bash-$(OLDER_BASH)/bin/bash
 	INKLINE_TEST_BASH=target/bash-5.3/bin/bash cargo test
 
-test-all: $(BASHES:%=target/bash-%/bin/bash)
+test-all: $(BASHES:%=target/bash-%/bin/bash) target/bash-$(OLDER_BASH)/bin/bash
 	for v in $(BASHES); do \
 	    INKLINE_TEST_BASH=target/bash-$$v/bin/bash cargo test || exit 1; \
 	done
