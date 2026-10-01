@@ -965,13 +965,14 @@ for the whole state.
 ## Testing
 
 ```sh
-make test       # with the system bash
-make test-all   # also with bash 5.0 and 5.3, built into target/ first
+make test       # with bash 5.3, built into target/ first
+make test-all   # with bash 5.0 and 5.3, built into target/ first
 make check      # fmt, clippy and the unit tests
 ```
 
-Building the older bashes needs libncurses-dev / ncurses-devel. To test
-with one bash, set `INKLINE_TEST_BASH`:
+Building bash needs libncurses-dev / ncurses-devel. `cargo test` uses the
+bash 5.3 in `target/bash-5.3` when it is there, and otherwise the `bash` on
+`PATH`. To test with one bash, set `INKLINE_TEST_BASH`:
 `INKLINE_TEST_BASH=target/bash-5.0/bin/bash cargo test`.
 
 ## License

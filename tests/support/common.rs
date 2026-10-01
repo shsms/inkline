@@ -15,12 +15,17 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 pub use vt100::Color;
 
 /// The bash to test: `$INKLINE_TEST_BASH` (made absolute, since the shells
-/// start in other directories), or `bash` from `PATH`.
+/// start in other directories); else the bash 5.3 that `make test` builds
+/// into `target/bash-5.3`, when it is there; else `bash` from `PATH`.
 pub fn bash_path() -> PathBuf {
-    match std::env::var_os("INKLINE_TEST_BASH") {
-        Some(path) => std::path::absolute(path).unwrap(),
-        None => PathBuf::from("bash"),
+    if let Some(path) = std::env::var_os("INKLINE_TEST_BASH") {
+        return std::path::absolute(path).unwrap();
     }
+    let built = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/bash-5.3/bin/bash");
+    if built.is_file() {
+        return built;
+    }
+    PathBuf::from("bash")
 }
 
 /// The library `cargo test` built for this run, next to the test binary in
