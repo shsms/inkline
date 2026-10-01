@@ -456,6 +456,15 @@ fn disable() {
     }
 }
 
+/// Runs `draw`, which draws the line, with no menu or grey text: on a line
+/// that is about to run or be thrown away they would only flash before
+/// `deprep_terminal` erases them.
+fn without_menu(draw: impl FnOnce()) {
+    let hidden = STATE.with_borrow_mut(|s| std::mem::replace(&mut s.hidden_on, ffi::line()));
+    draw();
+    STATE.with_borrow_mut(|s| s.hidden_on = hidden);
+}
+
 /// Runs the line as it is, even when unfinished, after the accept hook.
 extern "C" fn accept_as_is(count: c_int, key: c_int) -> c_int {
     accept_line(count, key)
@@ -472,14 +481,9 @@ pub(super) fn accept_line(count: c_int, key: c_int) -> c_int {
     use crate::lisp::hooks::{Accept, run_accept};
     let runs = guard(
         || {
-            // The line that runs stays on screen: drawn without the region,
-            // and with no menu or grey text, which would only flash before
-            // `deprep_terminal` erases them.
+            // The line that runs stays on screen: drawn without the region.
             if region::end() {
-                let hidden =
-                    STATE.with_borrow_mut(|s| std::mem::replace(&mut s.hidden_on, ffi::line()));
-                repaint_now();
-                STATE.with_borrow_mut(|s| s.hidden_on = hidden);
+                without_menu(repaint_now);
             }
             // A `C-c` still waiting for bash makes it throw the line away, so
             // the hook does not run for it.
@@ -1243,10 +1247,13 @@ fn end_update() {
 /// `guard`: bash may jump from there to a new prompt.
 extern "C" fn redisplay() {
     let lisp_started = Cell::new(false);
+    // Whether readline ended the region: it is about to run the line, which
+    // is drawn without it, or gave up on a command.
+    let region_ended = Cell::new(false);
     let lisp_ran = guard(
         || {
             rubout_while_searching();
-            region::update();
+            region_ended.set(region::update());
             let after_key = hooks_allowed()
                 && !ffi::dispatching()
                 && !ffi::reading_command_key()
@@ -1273,7 +1280,16 @@ extern "C" fn redisplay() {
     if !(lisp_ran && lisp_must_stop()) {
         ffi::call_redisplay(originals().redisplay);
         if !panicked() {
-            guard(draw, draw_below_notice);
+            guard(
+                || {
+                    if region_ended.get() {
+                        without_menu(draw);
+                    } else {
+                        draw();
+                    }
+                },
+                draw_below_notice,
+            );
         }
     }
     end_update();
@@ -1324,8 +1340,9 @@ fn left_to_readline() -> bool {
         || !ffi::utf8_locale()
         // Readline highlights pasted text, or the match a non-incremental
         // search found, itself. inkline marks the match of an incremental
-        // search while it runs.
-        || ffi::region_active() && !ffi::searching_incrementally()
+        // search while it runs, and draws its own region, which keeps
+        // readline's mark active (see `region`).
+        || ffi::region_active() && !region::active() && !ffi::searching_incrementally()
         // A non-incremental search reads the text to search for in the
         // line, which is not a command.
         || ffi::searching_non_incrementally()

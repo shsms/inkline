@@ -301,8 +301,10 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   region is active; with a count other than 1, Backspace and `C-d` delete
   that many characters instead of the region, as in Emacs. Where readline
   draws the line itself (see "Limitations": a locale that is not UTF-8,
-  `show-mode-in-prompt`, `mark-modified-lines`, `horizontal-scroll-mode`,
-  echo turned off) the region still works but is not drawn.
+  `show-mode-in-prompt`, `mark-modified-lines`, `horizontal-scroll-mode`)
+  the region still works, and readline draws it with its own highlight
+  (`active-region-start-color`) instead of the `region` colour; with echo
+  turned off it is not drawn.
 - **Syntax errors.** A command bash would reject is underlined in wavy red
   when you pause typing, on the word bash would complain about. The word you
   are typing is never underlined.

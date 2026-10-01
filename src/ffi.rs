@@ -152,6 +152,8 @@ fn check_versions() -> Result<(), String> {
 struct LookedUp {
     bracketed_read_key: IntFn,
     mark_active_p: IntFn,
+    activate_mark: VoidFn,
+    deactivate_mark: VoidFn,
     timeout_remaining: TimeoutFn,
     full_quoting_desired: *mut c_int,
 }
@@ -180,6 +182,8 @@ fn look_up_symbols() -> Result<(), String> {
     }
     let bracketed_read_key = find(c"_rl_bracketed_read_key")?;
     let mark_active_p = find(c"rl_mark_active_p")?;
+    let activate_mark = find(c"rl_activate_mark")?;
+    let deactivate_mark = find(c"rl_deactivate_mark")?;
     let timeout_remaining = find(c"rl_timeout_remaining")?;
     let full_quoting_desired = find(c"rl_full_quoting_desired")?;
     // SAFETY: each symbol has the type readline 8.3 declares for it.
@@ -187,6 +191,8 @@ fn look_up_symbols() -> Result<(), String> {
         LookedUp {
             bracketed_read_key: std::mem::transmute::<*mut c_void, IntFn>(bracketed_read_key),
             mark_active_p: std::mem::transmute::<*mut c_void, IntFn>(mark_active_p),
+            activate_mark: std::mem::transmute::<*mut c_void, VoidFn>(activate_mark),
+            deactivate_mark: std::mem::transmute::<*mut c_void, VoidFn>(deactivate_mark),
             timeout_remaining: std::mem::transmute::<*mut c_void, TimeoutFn>(timeout_remaining),
             full_quoting_desired: full_quoting_desired.cast::<c_int>(),
         }
@@ -331,10 +337,25 @@ pub fn utf8_locale() -> bool {
     unsafe { c_str(libc::nl_langinfo(libc::CODESET)) }.is_some_and(|c| c.to_bytes() == b"UTF-8")
 }
 
-/// Whether readline is highlighting an active region (a search match or pasted
-/// text).
+/// Whether readline's mark is active: readline highlights the region (a search
+/// match, pasted text, or inkline's region, see `hooks::region`).
 pub fn region_active() -> bool {
     unsafe { (looked_up().mark_active_p)() != 0 }
+}
+
+/// Turns readline's active mark on, which readline draws, until the command
+/// that runs now has returned: readline turns it off after each command
+/// unless the command asked to keep it, which this does.
+pub fn activate_mark() {
+    unsafe { (looked_up().activate_mark)() }
+}
+
+/// Turns readline's active mark off. Does nothing before the symbols are
+/// looked up, so it never panics.
+pub fn deactivate_mark() {
+    if let Some(looked_up) = LOOKED_UP.get() {
+        unsafe { (looked_up.deactivate_mark)() }
+    }
 }
 
 /// The bytes of the line in readline's active region, between the mark and

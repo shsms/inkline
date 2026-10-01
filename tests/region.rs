@@ -508,6 +508,28 @@ fn a_search_keeps_the_mark() {
     });
 }
 
+/// While a search runs, only the match it found is marked, as with no
+/// region active.
+#[test]
+fn a_search_marks_only_its_match() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello");
+    sh.send(&format!("{C_SPC}\x02\x02"));
+    sh.wait_for("the region", |s| every_cell(s, "lo", vt100::Cell::inverse));
+    sh.send(C_R);
+    sh.wait_for("the search", |s| {
+        cursor_row(s) == "(reverse-i-search)`': echo hello"
+    });
+    let s = sh.settle();
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+    sh.send("ec");
+    sh.wait_for("the match", |s| {
+        cursor_row(s) == "(reverse-i-search)`ec': echo hello"
+            && every_cell(s, "ec", vt100::Cell::inverse)
+            && !any_cell(s, "ho hello", vt100::Cell::inverse)
+    });
+}
+
 /// `C-g` in a search puts the line, the cursor and the mark back and keeps
 /// the region, also after the search showed another line.
 #[test]
@@ -553,6 +575,208 @@ fn a_search_ending_on_another_line_ends_the_region() {
     sh.wait_for("the search ended", |s| cursor_row(s) == "$ echo other");
     sh.send("\x02");
     sh.wait_for("the cursor moved", |s| s.cursor_position() == (0, 6));
+    let s = sh.settle();
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+const C_O: &str = "\x0f";
+
+/// `C-o` (`operate-and-get-next`) runs the line, which stays on screen
+/// without the highlight, and brings back the next history entry.
+#[test]
+fn ctrl_o_runs_the_line_without_the_region() {
+    let mut sh = Shell::start(Options {
+        history: vec!["echo one", "echo two"],
+        ..Options::default()
+    });
+    sh.wait_for("the prompt", |s| cursor_row(s) == "$");
+    sh.send("\x10\x10");
+    sh.wait_for("the first entry", |s| cursor_row(s) == "$ echo one");
+    sh.send(C_SPC);
+    sh.send("\x01");
+    sh.wait_for("the region", |s| {
+        every_cell(s, "echo one", vt100::Cell::inverse)
+    });
+    sh.send(C_O);
+    let s = sh.wait_for("the output and the next entry", |s| {
+        has_row(s, "one") && cursor_row(s) == "$ echo two"
+    });
+    assert_eq!(row_text(&s, 0), "$ echo one", "{}", dump(&s));
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+/// The line drawn again without the region on `C-o` shows no grey text: it
+/// would flash before the command's output.
+#[test]
+fn ctrl_o_draws_no_grey_text() {
+    let mut sh = Shell::start(Options {
+        history: vec!["echo one more"],
+        ..Options::default()
+    });
+    sh.send("echo one");
+    sh.wait_for("the grey text", |s| cursor_row(s) == "$ echo one more");
+    sh.send("\x01");
+    sh.wait_for("the cursor at the start", |s| s.cursor_position() == (0, 2));
+    sh.send(&format!("{C_SPC}\x05"));
+    sh.wait_for("the region", |s| {
+        s.cursor_position() == (0, 10) && every_cell(s, "echo one", vt100::Cell::inverse)
+    });
+    sh.take_output();
+    sh.send(C_O);
+    let s = sh.wait_for("the output", |s| {
+        has_row(s, "one") && s.cursor_position().0 == 2
+    });
+    let out = sh.take_output();
+    assert!(find_bytes(&out, b"more").is_none(), "{out:?}");
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+/// readline's `abort` from a failed command, such as `C-y` with nothing
+/// killed yet, ends the region, as `C-g` does.
+#[test]
+fn a_failed_yank_ends_the_region() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello");
+    sh.send(&format!("{C_SPC}\x02\x02"));
+    sh.wait_for("the region", |s| every_cell(s, "lo", vt100::Cell::inverse));
+    sh.send(C_Y);
+    sh.wait_for("no region", |s| !any_on_screen(s, vt100::Cell::inverse));
+    sh.send("\x02");
+    sh.wait_for("the cursor moved", |s| s.cursor_position() == (0, 9));
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ echo hello");
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+/// `M-#` comments out the line and runs it: the line left on screen shows
+/// no grey text, which would flash before the next prompt.
+#[test]
+fn meta_hash_draws_no_grey_text() {
+    let mut sh = Shell::start(Options {
+        history: vec!["#echo one more"],
+        ..Options::default()
+    });
+    type_text(&mut sh, "echo one");
+    sh.send("\x01");
+    sh.wait_for("the cursor at the start", |s| s.cursor_position() == (0, 2));
+    sh.send(&format!("{C_SPC}\x05"));
+    sh.wait_for("the region", |s| {
+        s.cursor_position() == (0, 10) && every_cell(s, "echo one", vt100::Cell::inverse)
+    });
+    sh.take_output();
+    sh.send("\x1b#");
+    let s = sh.wait_for("the next prompt", |s| {
+        has_row(s, "$ #echo one") && s.cursor_position() == (1, 2)
+    });
+    let out = sh.take_output();
+    assert!(find_bytes(&out, b"more").is_none(), "{out:?}");
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+/// A command that changes the line and then runs it through readline's
+/// `rl_newline`, with no draw in between, leaves the line on screen with
+/// no grey text, which would flash before the command's output.
+#[test]
+fn a_changed_line_run_by_readline_draws_no_grey_text() {
+    let mut sh = Shell::start(Options {
+        history: vec!["echo one more"],
+        init_el: Some(
+            "(keymap-global-set \"C-x r\" (lambda () (insert \"e\") (call-interactively 'operate-and-get-next)))\n"
+                .into(),
+        ),
+        ..Options::default()
+    });
+    sh.send("echo on");
+    sh.wait_for("the grey text", |s| cursor_row(s) == "$ echo one more");
+    sh.send("\x01");
+    sh.wait_for("the cursor at the start", |s| s.cursor_position() == (0, 2));
+    sh.send(&format!("{C_SPC}\x05"));
+    sh.wait_for("the region", |s| {
+        s.cursor_position() == (0, 9) && every_cell(s, "echo on", vt100::Cell::inverse)
+    });
+    sh.take_output();
+    sh.send("\x18r");
+    let s = sh.wait_for("the output", |s| {
+        has_row(s, "$ echo one") && has_row(s, "one") && s.cursor_position().0 == 2
+    });
+    let out = sh.take_output();
+    assert!(find_bytes(&out, b"more").is_none(), "{out:?}");
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+/// readline's `abort` (`C-x C-g`) ends the region, as `C-g` does.
+#[test]
+fn abort_ends_the_region() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello");
+    sh.send(&format!("{C_SPC}\x02\x02"));
+    sh.wait_for("the region", |s| every_cell(s, "lo", vt100::Cell::inverse));
+    sh.send("\x18\x07");
+    sh.wait_for("no region", |s| !any_on_screen(s, vt100::Cell::inverse));
+    sh.send("\x02");
+    sh.wait_for("the cursor moved", |s| s.cursor_position() == (0, 9));
+    let s = sh.settle();
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+/// A count and a macro move the cursor as other keys do: the region
+/// stretches and stays active.
+#[test]
+fn counts_and_macros_keep_the_region() {
+    let mut sh = Shell::start(Options {
+        rc: "bind '\"\\C-xm\": \"\\C-b\\C-b\"'\n".into(),
+        ..Options::default()
+    });
+    type_text(&mut sh, "echo hello");
+    sh.send(C_SPC);
+    sh.send("\x152\x02");
+    sh.wait_for("C-u 2 C-b", |s| {
+        s.cursor_position() == (0, 10) && every_cell(s, "lo", vt100::Cell::inverse)
+    });
+    sh.send("\x18m");
+    sh.wait_for("the macro", |s| {
+        s.cursor_position() == (0, 8) && every_cell(s, "ello", vt100::Cell::inverse)
+    });
+    sh.send("\x02");
+    sh.wait_for("one more C-b", |s| {
+        s.cursor_position() == (0, 7) && every_cell(s, "hello", vt100::Cell::inverse)
+    });
+}
+
+/// Where readline draws the line itself, as with `show-mode-in-prompt`, it
+/// draws the region with its own highlight.
+#[test]
+fn readline_draws_the_region_where_it_draws_the_line() {
+    let mut sh = Shell::start(Options {
+        rc: "bind 'set show-mode-in-prompt on'\n".into(),
+        prompt: "@",
+        ..Options::default()
+    });
+    sh.send("echo hello");
+    sh.wait_for("the typed text", |s| {
+        cursor_row(s).ends_with("$ echo hello")
+    });
+    sh.send(C_SPC);
+    sh.send("\x02\x02");
+    let s = sh.wait_for("the region", |s| every_cell(s, "lo", vt100::Cell::inverse));
+    assert!(
+        !any_cell(&s, "echo hel", vt100::Cell::inverse),
+        "{}",
+        dump(&s)
+    );
+}
+
+/// Pasting with the region active ends the region, and the pasted text is
+/// not highlighted either: readline's highlight of pasted text ends with
+/// the region.
+#[test]
+fn a_paste_ends_the_region() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello");
+    sh.send(&format!("{C_SPC}\x02\x02"));
+    sh.wait_for("the region", |s| every_cell(s, "lo", vt100::Cell::inverse));
+    sh.send("\x1b[200~XY\x1b[201~");
+    sh.wait_for("the pasted text", |s| cursor_row(s) == "$ echo helXYlo");
     let s = sh.settle();
     assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
 }
