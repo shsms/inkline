@@ -220,6 +220,20 @@ completion just before it: it does not list. Tab Tab still lists.
   item =a== placed before a typed backslash-newline and =~= is kept, and
   bash expands the =~=.
 
+** TODO C-r moves the mark of the active region
+
+With the region active, an incremental search (=C-r=, =C-s=) leaves the
+mark at the end of the match it found, as readline sets the mark there
+to highlight the match. The region then runs from there, not from where
+=C-SPC= set it. Keep the mark where it was, as Emacs's isearch does.
+
+** TODO The line left on screen after C-o or C-c keeps the region drawn
+
+The line that ~operate-and-get-next~ (=C-o=) runs, or that =C-c= throws
+away, stays on screen with the region still highlighted: only Enter
+draws the line again without it first. For =C-c=, ~before_signal~ is the
+natural place to draw it again.
+
 * Code
 
 ** TODO Write the "single function" check for hooks once

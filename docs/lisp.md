@@ -96,8 +96,9 @@ change takes effect on the next key.
   (default `7`), drawn on top of the colours over the text `C-r` or `C-s`
   matched in the command it found, in place of readline's
   `active-region-start-color` (the match of `M-p` and `M-n` keeps
-  readline's colour). See the README's "Colours" section for the colour
-  words.
+  readline's colour); and `region` (default `7`), the active region
+  (see the README's "What it does"; empty draws nothing, and the region
+  still works). See the README's "Colours" section for the colour words.
 - `inkline-command-mode-alist` (default `nil`): which commands use which
   [command mode](#command-modes).
 
@@ -136,7 +137,8 @@ change takes effect on the next key.
   does not change what unset puts back.
 - `(inkline-unbind-defaults &optional GROUPS)` — unsets the default layout's
   groups named in `GROUPS` (a symbol, or a list of symbols: `suggestions`,
-  `multi-line`, `pairing`, `menu`); with no argument, unsets the whole layout.
+  `multi-line`, `pairing`, `menu`, `region`); with no argument, unsets the
+  whole layout.
   Unsetting `menu` while `multi-line` stays makes `C-n`, `C-p`, `<down>` and
   `<up>`, where they still run `menu-next` and `menu-previous`, run the
   command they run with no menu. Once inkline binds none of `DEL`, `C-h`,
@@ -514,8 +516,10 @@ first character, and `(point-max)` is one past the last one.
 - `(set-mark POS)` — moves the mark to `POS`, clamped to the line.
 - `(region-beginning)`, `(region-end)` — the smaller or larger of point and
   the mark.
-- `(use-region-p)`, `(region-active-p)` — the same thing: whether readline
-  currently has an active mark.
+- `(region-active-p)` — whether a region is active: true while inkline's
+  region is active, or readline has an active mark of its own (an
+  incremental search's match, pasted text).
+- `(use-region-p)` — the same, but false for an empty region, as in Emacs.
 - `(skip-chars-forward SPEC &optional LIM)`, `(skip-chars-backward SPEC
   &optional LIM)` — moves point over the characters matching `SPEC`,
   stopping at `LIM` (the line's other end, by default; clamped to the line

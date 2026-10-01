@@ -62,6 +62,11 @@ lines of your own after `enable -f`; they run after inkline's and win.
 | menu | `<backtab>` (Shift-Tab) | `menu-take-previous` | unbound |
 | menu | `TAB` | `menu-take` | `complete` |
 | menu | `C-g` | `menu-hide` | `abort` |
+| region | `C-@` (`C-SPC`) | `set-mark-command` | `set-mark` |
+| region | `C-x C-x` | `swap-point-and-mark` | `exchange-point-and-mark` |
+| region | `C-w` | `kill-region-or-word` | `unix-word-rubout` |
+| region | `M-w` | `kill-ring-save` | unbound |
+| region | `C-d` | `delete-char-or-region` | `delete-char` |
 
 `<right>`, `<end>`, `<home>`, `<up>` and `<down>` are also taken when they are
 unbound (many terminals send sequences for them that plain bash never binds
@@ -76,7 +81,7 @@ they run `previous-line-or-search` and `next-line-or-search` instead, which
 search for commands starting with it.
 
 Turn part of the layout off in `init.el`, naming one of its groups
-(`suggestions`, `multi-line`, `pairing`, `menu`):
+(`suggestions`, `multi-line`, `pairing`, `menu`, `region`):
 
 ```elisp
 ;; ~/.config/inkline/init.el
@@ -89,23 +94,26 @@ single group name also works, as `(inkline-unbind-defaults 'pairing)`. With
 those commands. With `multi-line` turned off and `menu` kept, they run
 readline's own command when no menu shows.
 
-`C-u` and Backspace need `bind-tty-special-chars off`: otherwise readline binds
-the terminal's kill and erase characters back to `unix-line-discard` and
-`backward-delete-char` every time it sets up the terminal. inkline turns it off
+`C-u`, `C-w` and Backspace need `bind-tty-special-chars off`: otherwise readline
+binds the terminal's kill, word-erase and erase characters back to
+`unix-line-discard`, `unix-word-rubout` and `backward-delete-char` every time
+it sets up the terminal. inkline turns it off
 the first time it loads in a shell and on `inkline reload`, and again whenever
 Lisp binds `DEL`, `C-h`, `C-u`, `C-v` or `C-w`; `inkline-unbind-defaults` turns
-it back on once inkline binds none of them, even when `inputrc` turned it off.
+it back on once inkline binds none of them (so with `multi-line`, `pairing`
+and `region` all turned off), even when `inputrc` turned it off.
 `inputrc` can still turn `bind-tty-special-chars` back on, but only when inkline
 is the first thing to set readline up — that is, only when nothing runs `bind`
 before `enable -f` in `.bashrc`. When it can, an `inputrc` that turns
-`bind-tty-special-chars` back on makes readline rebind Backspace and `C-u` to
-the terminal's erase and kill characters on every line, undoing `delete-pair`
-and `numeric-argument`. With it off, readline also stops binding the
-terminal's kill, word-erase and literal-next characters for you. Those default
-to `C-u`, `C-w` and `C-v`, which bash's emacs bindings already cover, so this
-only matters if you changed them with `stty`. In inkline's layout `C-u` gives
-a count instead of killing the line; `C-x DEL` kills back to the start of the
-line.
+`bind-tty-special-chars` back on makes readline rebind Backspace, `C-u` and
+`C-w` to the terminal's erase, kill and word-erase characters on every line,
+undoing `delete-pair`, `numeric-argument` and `kill-region-or-word`. With it
+off, readline also stops binding the terminal's kill, word-erase and
+literal-next characters for you. Those default to `C-u`, `C-w` and `C-v`,
+which bash's emacs bindings already cover, so this only matters if you changed
+them with `stty`. In inkline's layout `C-u` gives a count instead of killing
+the line; `C-w` kills the active region, and otherwise kills the word before
+the cursor; `C-x DEL` kills back to the start of the line.
 
 ## Configuration
 
@@ -279,6 +287,22 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   to the start of the second line down, `C-u 0 C-k` kills back to the start
   of the line, and `C-u - C-k` kills from the start of the line above to the
   cursor. `M-#` comments out every line. Pasted text keeps its own spacing.
+- **Region.** `C-SPC` sets the mark at the cursor and starts the region, the
+  text between the mark and the cursor, as in Emacs. While it is active the
+  region is drawn in reverse video (the `region` colour), no menu or grey
+  text shows, and moving the cursor stretches it; `C-p`, `C-n` and the
+  arrows move between the lines of a command only. `C-w` kills the region,
+  `M-w` copies it, and Backspace and `C-d` delete it without putting it on
+  the kill ring. `C-x C-x` swaps the cursor and the mark. `C-SPC` again at
+  the mark, `C-g`, or any other change to the line ends the region. With no
+  active region `C-w` and `C-d` do what they do in bash, and `M-w` rings the
+  bell. A region with the mark at the cursor is empty: Backspace and `C-d`
+  delete a character, as in Emacs. A count before `C-w` is ignored while the
+  region is active; with a count other than 1, Backspace and `C-d` delete
+  that many characters instead of the region, as in Emacs. Where readline
+  draws the line itself (see "Limitations": a locale that is not UTF-8,
+  `show-mode-in-prompt`, `mark-modified-lines`, `horizontal-scroll-mode`,
+  echo turned off) the region still works but is not drawn.
 - **Syntax errors.** A command bash would reject is underlined in wavy red
   when you pause typing, on the word bash would complain about. The word you
   are typing is never underlined.
@@ -758,6 +782,10 @@ and neither does inkline. While the search runs, the line shows no grey text,
 menu or error underline, and readline's search prompt
 (`` (reverse-i-search)`text': ``) keeps its own look.
 
+`region` draws the active region (see "What it does"), reverse video (`7`) by
+default; `region=` (or `(region . "")`) leaves it undrawn, and the region
+still works.
+
 `error` sets the syntax-error underline. By default it is a plain underline
 (`4`) followed by a wavy red one (`4:3`, then `58:5:1`), so terminals that do
 not know the wavy form still underline. `error=4` (or `(error . "4")`) gives a
@@ -817,8 +845,8 @@ entry of its own, so a commented block comes back one line at a time.
 ## Commands
 
 - `inkline on` / `inkline off`: switch highlighting, suggestions, the syntax
-  underline and the multi-line commands; while off, the multi-line keys do
-  what readline's own commands do. Pairing is only controlled by its
+  underline, the multi-line commands and the region; while off, the
+  multi-line and region keys do what readline's own commands do. Pairing is only controlled by its
   bindings. Lisp commands still run while inkline is off; a message they
   show goes on a row of its own above the prompt.
 - `inkline status`: three lines — whether inkline is on, `init.el`'s
