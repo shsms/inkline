@@ -56,27 +56,52 @@ pub struct Item {
 }
 
 /// How the typed text matches an item (`inkline-completion-style`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Style {
     /// The item starts with the typed text.
-    #[default]
     Prefix,
+    /// The item contains the typed text.
+    Substring,
     /// The typed text's characters appear in the item in order, with gaps.
     Fuzzy,
 }
 
 /// How items are matched: the style and whether case counts
 /// (`inkline-completion-ignore-case`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Matching {
     pub style: Style,
     pub ignore_case: bool,
 }
 
+/// `c` lowercased, or `c` itself when it lowercases to more than one
+/// character (as `İ` does). Two characters are the same with case ignored
+/// exactly when they fold to the same character, so a folded text has one
+/// character for each of the text's. Each character folds on its own: a
+/// capital sigma folds to `σ` wherever it falls, never to the final `ς`.
+fn fold(c: char) -> char {
+    if c.is_ascii() {
+        return c.to_ascii_lowercase();
+    }
+    let mut lower = c.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(l), None) => l,
+        _ => c,
+    }
+}
+
+/// `text` with each character folded (see [`fold`]).
+fn folded(text: &str) -> String {
+    if text.is_ascii() {
+        return text.to_ascii_lowercase();
+    }
+    text.chars().map(fold).collect()
+}
+
 impl Matching {
     /// Whether `a` and `b` match as characters.
     fn same(self, a: char, b: char) -> bool {
-        a == b || (self.ignore_case && a.to_lowercase().eq(b.to_lowercase()))
+        a == b || (self.ignore_case && fold(a) == fold(b))
     }
 
     /// Whether `text` starts with `typed`: `Prefix` in the typed case,
@@ -95,6 +120,13 @@ impl Matching {
             .then_some(Rank::OtherCasePrefix)
     }
 
+    /// Whether `text` contains `typed`, in any case when case is ignored.
+    /// `folded_typed` is `typed` folded (see [`folded`]), made once by a
+    /// caller that looks for it in many texts.
+    fn contains(self, typed: &str, folded_typed: &str, text: &str) -> bool {
+        text.contains(typed) || (self.ignore_case && folded(text).contains(folded_typed))
+    }
+
     /// Whether the characters of `typed` appear in `text` in order.
     fn in_order(self, typed: &str, text: &str) -> bool {
         let mut rest = text.chars();
@@ -104,7 +136,8 @@ impl Matching {
 
 /// The most history items gathered for one line of each kind: those that
 /// start with it in the same case, those that start with it in another case,
-/// and those that match it with gaps.
+/// and the others that match it: those that contain it, in the substring
+/// style, or match it with gaps, in the fuzzy style.
 pub const HISTORY_LIMIT: usize = 50;
 
 /// Whether `text` can be drawn: it has no control character other than a
@@ -116,12 +149,15 @@ pub fn drawable(text: &str) -> bool {
 }
 
 /// How well an item matched, lower first: every item that starts with the typed
-/// text, then those that start with it in another case, then the others by the
-/// length of their tightest match and then by where it starts (in characters).
+/// text, then those that start with it in another case, then the others. In
+/// the substring style those contain it and keep their list order; in the
+/// fuzzy style they match it with gaps and go by the length of their tightest
+/// match and then by where it starts (in characters).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     Prefix,
     OtherCasePrefix,
+    Contains,
     Gapped { span: usize, start: usize },
 }
 
@@ -173,6 +209,9 @@ fn rank(how: Matching, typed: &str, text: &str) -> Option<Rank> {
     }
     match how.style {
         Style::Prefix => None,
+        Style::Substring => how
+            .contains(typed, &folded(typed), text)
+            .then_some(Rank::Contains),
         Style::Fuzzy => {
             let typed: Vec<char> = typed.chars().collect();
             let text: Vec<char> = text.chars().collect();
@@ -191,7 +230,8 @@ pub fn matches(how: Matching, typed: &str, text: &str) -> bool {
 /// text after that mark, so `fi` finds `` `first name` ``: starting with the
 /// typed text there ranks as starting with it, and in the fuzzy style a match
 /// with gaps there ranks by where it falls after the mark. The better of the
-/// two ranks counts.
+/// two ranks counts, so in the substring style `fi` ranks `` `first name` ``
+/// with the items that start with `fi`, not with those that only contain it.
 fn item_rank(how: Matching, typed: &str, item: &Item) -> Option<Rank> {
     let whole = rank(how, typed, &item.text);
     if item.source != Source::Mode || whole == Some(Rank::Prefix) {
@@ -206,6 +246,9 @@ fn item_rank(how: Matching, typed: &str, item: &Item) -> Option<Rank> {
 /// Gathers history items for `line`: offered entries come newest first.
 pub struct HistoryGather {
     line: String,
+    /// `line` folded (see [`folded`]), for the substring style with case
+    /// ignored.
+    folded_line: String,
     how: Matching,
     items: Vec<Item>,
     seen: HashSet<String>,
@@ -220,15 +263,17 @@ enum Kind {
     SameCase,
     /// It starts with the line in another case.
     OtherCase,
-    /// It does not start with the line: it is taken only when it matches
-    /// with gaps, in the fuzzy style.
-    Gapped,
+    /// It does not start with the line: it is taken only when it contains
+    /// the line, in the substring style, or matches it with gaps, in the
+    /// fuzzy style.
+    NotPrefix,
 }
 
 impl HistoryGather {
     pub fn new(line: &str, how: Matching) -> HistoryGather {
         HistoryGather {
             line: line.to_owned(),
+            folded_line: folded(line),
             how,
             items: Vec::new(),
             seen: HashSet::new(),
@@ -246,14 +291,17 @@ impl HistoryGather {
         let kind = match self.how.starts(&self.line, entry) {
             Some(Rank::Prefix) => Kind::SameCase,
             Some(Rank::OtherCasePrefix) => Kind::OtherCase,
-            Some(Rank::Gapped { .. }) | None => Kind::Gapped,
+            Some(Rank::Contains | Rank::Gapped { .. }) | None => Kind::NotPrefix,
         };
         let room = self.taken[kind as usize] < HISTORY_LIMIT;
         let matches = room
             && match (kind, self.how.style) {
                 (Kind::SameCase | Kind::OtherCase, _) => true,
-                (Kind::Gapped, Style::Prefix) => false,
-                (Kind::Gapped, Style::Fuzzy) => self.how.in_order(&self.line, entry),
+                (Kind::NotPrefix, Style::Prefix) => false,
+                (Kind::NotPrefix, Style::Substring) => {
+                    self.how.contains(&self.line, &self.folded_line, entry)
+                }
+                (Kind::NotPrefix, Style::Fuzzy) => self.how.in_order(&self.line, entry),
             };
         if matches && entry != self.line && !self.seen.contains(entry) && drawable(entry) {
             self.taken[kind as usize] += 1;
@@ -280,8 +328,8 @@ fn applied(line: &str, item: &Item) -> String {
 }
 
 /// The items of one source that match, in the order `how` gives: those
-/// that start with the typed text in list order, then the others. See
-/// [`item_rank`] for a mode server's quoted items.
+/// that start with the typed text in list order, then the others (see
+/// [`Rank`]). See [`item_rank`] for a mode server's quoted items.
 fn ordered(line: &str, point: usize, how: Matching, items: Vec<Item>) -> Vec<Item> {
     let mut ranked: Vec<(Rank, Item)> = items
         .into_iter()
@@ -491,6 +539,10 @@ mod tests {
     };
     const FUZZY: Matching = Matching {
         style: Style::Fuzzy,
+        ignore_case: false,
+    };
+    const SUBSTRING: Matching = Matching {
+        style: Style::Substring,
         ignore_case: false,
     };
 
@@ -721,6 +773,137 @@ mod tests {
     }
 
     #[test]
+    fn substring_matches_the_typed_text_anywhere() {
+        assert!(matches(SUBSTRING, "stat", "git status"));
+        assert!(matches(SUBSTRING, "git", "git status"));
+        assert!(matches(SUBSTRING, "tus", "git status"));
+        assert!(matches(SUBSTRING, "", "anything"));
+        // The letters must be next to each other, in the typed case.
+        assert!(!matches(SUBSTRING, "gst", "git status"));
+        assert!(!matches(SUBSTRING, "Stat", "git status"));
+        assert!(!matches(SUBSTRING, "status!", "git status"));
+    }
+
+    #[test]
+    fn substring_puts_prefixes_first_then_the_others_in_list_order() {
+        let how = Matching {
+            style: Style::Substring,
+            ignore_case: true,
+        };
+        let items = assemble(
+            "st",
+            2,
+            how,
+            vec![],
+            None,
+            vec![],
+            vec![],
+            vec![
+                word("git status", 0, 2),
+                word("St", 0, 2),
+                word("stash", 0, 2),
+                word("a-st", 0, 2),
+                word("s-t", 0, 2),
+                word("Stamp", 0, 2),
+                word("best", 0, 2),
+                word("LAST", 0, 2),
+                word("stack", 0, 2),
+            ],
+        );
+        let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        // Not by where the typed text falls: "git status" has it at 4,
+        // "a-st" at 2.
+        assert_eq!(
+            texts,
+            [
+                "stash",
+                "stack",
+                "St",
+                "Stamp",
+                "git status",
+                "a-st",
+                "best",
+                "LAST"
+            ]
+        );
+    }
+
+    #[test]
+    fn substring_can_ignore_case() {
+        let how = Matching {
+            style: Style::Substring,
+            ignore_case: true,
+        };
+        assert!(matches(how, "STAT", "git status"));
+        assert!(matches(how, "stat", "GIT STATUS"));
+        assert!(matches(how, "é", "CAFÉ"));
+        assert!(!matches(how, "gst", "git status"));
+    }
+
+    /// Each character is compared on its own, as when matching the start of
+    /// an item: a capital sigma matches `σ` even at the end of a word, where
+    /// lowercasing the whole word would give `ς`, and `İ`, which lowercases
+    /// to two characters, matches only itself.
+    #[test]
+    fn substring_ignores_case_one_character_at_a_time() {
+        let how = Matching {
+            style: Style::Substring,
+            ignore_case: true,
+        };
+        assert!(matches(how, "δοσ", "ΟΔΟΣ"));
+        assert!(matches(how, "δοσ", "x ΟΔΟΣ"));
+        assert!(!matches(how, "δος", "x ΟΔΟΣ"));
+        assert!(matches(how, "İ", "xİy"));
+        assert!(!matches(how, "i", "xİy"));
+        assert!(!matches(how, "xi", "xİy"));
+        assert_eq!(history("δοσ", how, &["x ΟΔΟΣ", "x İ"]), ["x ΟΔΟΣ"]);
+    }
+
+    #[test]
+    fn substring_history_takes_entries_that_contain_the_line() {
+        let found = history(
+            "stat",
+            SUBSTRING,
+            &[
+                "git status",
+                "ls",
+                "stat x",
+                "gist at",
+                "git status",
+                "stat",
+            ],
+        );
+        // Newest first, without repeats or the line itself; those that start
+        // with the line are ordered first by `assemble`, not here.
+        assert_eq!(found, ["git status", "stat x"]);
+        let how = Matching {
+            style: Style::Substring,
+            ignore_case: true,
+        };
+        assert_eq!(
+            history("stat", how, &["GIT STATUS", "Stat", "ls"]),
+            ["GIT STATUS", "Stat"]
+        );
+    }
+
+    /// Newer entries that only contain the line do not crowd out an older one
+    /// that starts with it, and are themselves taken up to the limit.
+    #[test]
+    fn substring_history_keeps_room_for_entries_that_start_with_the_line() {
+        let mut entries: Vec<String> = (0..80).map(|i| format!("x ls {i}")).collect();
+        entries.push("ls -la".to_owned());
+        let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let found = history("ls", SUBSTRING, &refs);
+        assert_eq!(found.len(), HISTORY_LIMIT + 1);
+        assert_eq!(found[0], "x ls 0");
+        assert_eq!(
+            found[HISTORY_LIMIT - 1],
+            format!("x ls {}", HISTORY_LIMIT - 1)
+        );
+        assert_eq!(found.last().map(String::as_str), Some("ls -la"));
+    }
+
+    #[test]
     fn the_tightest_match_may_overlap_an_earlier_one() {
         let chars = |s: &str| s.chars().collect::<Vec<char>>();
         let t = |typed: &str, text: &str| tightest(PREFIX, &chars(typed), &chars(text));
@@ -854,6 +1037,17 @@ mod tests {
         assert_eq!(
             texts("sort fn", FUZZY, vec![mode("`first name`", 5, 7)], vec![]),
             ["`first name`"]
+        );
+        // In the substring style a prefix after the mark comes before an item
+        // that only contains the typed text.
+        assert_eq!(
+            texts(
+                "sort fi",
+                SUBSTRING,
+                vec![mode("profile", 5, 7), mode("`first name`", 5, 7)],
+                vec![]
+            ),
+            ["`first name`", "profile"]
         );
         // Only a mode server's items: a quoted Lisp word must start with the
         // typed text.
