@@ -337,6 +337,22 @@ pub fn region_active() -> bool {
     unsafe { (looked_up().mark_active_p)() != 0 }
 }
 
+/// The bytes of the line in readline's active region, between the mark and
+/// the cursor; None when the region is not active, or not inside the line,
+/// where readline does not highlight it either.
+pub fn active_region() -> Option<std::ops::Range<usize>> {
+    if !region_active() {
+        return None;
+    }
+    // SAFETY: rl_point, rl_mark and rl_end are plain ints readline keeps.
+    let (point, mark, end) = unsafe { (rl_point, rl_mark, rl_end) };
+    if !(0..=end).contains(&point) || !(0..=end).contains(&mark) {
+        return None;
+    }
+    let (start, end) = (point.min(mark), point.max(mark));
+    Some(start as usize..end as usize)
+}
+
 /// The value of a shell variable, exported or not.
 pub fn shell_variable(name: &str) -> Option<String> {
     let name = CString::new(name).ok()?;
@@ -501,9 +517,17 @@ pub fn normal_editing() -> bool {
     unsafe { rl_readline_state & busy == 0 && rl_done == 0 }
 }
 
-/// Whether readline is in an incremental search (`C-r`, `C-s`).
+/// Whether readline is in an incremental search (`C-r`, `C-s`), which shows
+/// the line it found after a search prompt of its own.
 pub fn searching_incrementally() -> bool {
     unsafe { rl_readline_state & RL_STATE_ISEARCH != 0 }
+}
+
+/// Whether readline is in a non-incremental search (such as `M-p`), which
+/// reads the text to search for in the line buffer, or is searching the
+/// history for it.
+pub fn searching_non_incrementally() -> bool {
+    unsafe { rl_readline_state & (RL_STATE_NSEARCH | RL_STATE_SEARCH) != 0 }
 }
 
 /// Forgets that readline was reading a count, or more keys for a command.

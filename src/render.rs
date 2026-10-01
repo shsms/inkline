@@ -32,6 +32,9 @@ pub struct Repaint<'a> {
     pub suggestion_lines: usize,
     /// The bytes of `line` to underline as a syntax error.
     pub error: Option<Range<usize>>,
+    /// The bytes of `line` an incremental search matched, drawn with the
+    /// `search-match` colour on top of everything else.
+    pub search_match: Option<Range<usize>>,
     /// Sorted, not overlapping byte ranges of `line` drawn with the `script`
     /// style added on top of their kind's colour (and alone on uncoloured
     /// bytes).
@@ -74,8 +77,9 @@ impl Repaint<'_> {
 }
 
 /// How one character is drawn: its kind's colour and the set that colour
-/// comes from (`None` for `Repaint::colors`), whether it is underlined, and
-/// whether it has the script style and the set that comes from.
+/// comes from (`None` for `Repaint::colors`), whether it is underlined,
+/// whether it has the script style and the set that comes from, and whether
+/// it is in a search's match.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Style {
     kind: Option<Kind>,
@@ -83,6 +87,7 @@ struct Style {
     error: bool,
     script: bool,
     script_set: Option<usize>,
+    search_match: bool,
 }
 
 /// Columns used by the last line of `prompt`, skipping the parts between `\001`
@@ -474,6 +479,11 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
             error: repaint.error.as_ref().is_some_and(|e| e.contains(&i)),
             script: in_script,
             script_set: script_set.filter(|_| in_script),
+            search_match: repaint
+                .search_match
+                .as_ref()
+                .is_some_and(|m| m.contains(&i))
+                && !repaint.colors.search_match().is_empty(),
         };
         if want != style {
             if style != Style::default() {
@@ -487,6 +497,9 @@ fn paint_line(out: &mut Vec<u8>, repaint: &Repaint, start: (usize, usize)) {
             }
             if want.script {
                 let _ = write!(out, "\x1b[{}m", repaint.colors_of(want.script_set).script());
+            }
+            if want.search_match {
+                let _ = write!(out, "\x1b[{}m", repaint.colors.search_match());
             }
             style = want;
         }
@@ -637,6 +650,7 @@ mod tests {
             suggestion: None,
             suggestion_lines: 5,
             error: None,
+            search_match: None,
             script: &[],
             sets: &[],
             span_sets: &[],
@@ -942,6 +956,37 @@ mod tests {
         })
         .unwrap();
         assert_eq!(text(&out), "\x1b7\r\x1b[2C\x1b[32m\x1b[4mfi\x1b[0m x\x1b8");
+    }
+
+    #[test]
+    fn the_search_match_goes_on_top_of_the_colour_and_the_underline() {
+        let colors = Colors::parse("error=4");
+        let spans = [Span {
+            start: 0,
+            end: 4,
+            kind: Kind::Command,
+        }];
+        let out = build(&Repaint {
+            error: Some(2..6),
+            search_match: Some(1..3),
+            ..repaint("echo x", 1, &spans, &colors)
+        })
+        .unwrap();
+        assert_eq!(
+            text(&out),
+            "\x1b7\r\x1b[2C\x1b[32me\x1b[0m\x1b[32m\x1b[7mc\x1b[0m\x1b[32m\x1b[4m\x1b[7mh\x1b[0m\x1b[32m\x1b[4mo\x1b[0m\x1b[4m x\x1b[0m\x1b8"
+        );
+    }
+
+    #[test]
+    fn an_empty_search_match_colour_marks_nothing() {
+        let colors = Colors::from_entries(&[("search-match".to_owned(), String::new())]).unwrap();
+        let out = build(&Repaint {
+            search_match: Some(0..2),
+            ..repaint("ab", 2, &[], &colors)
+        })
+        .unwrap();
+        assert_eq!(text(&out), "\x1b7\r\x1b[2Cab\x1b8");
     }
 
     #[test]

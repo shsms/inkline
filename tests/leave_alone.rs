@@ -74,23 +74,30 @@ fn terminal_without_cursor_up() {
     );
 }
 
+/// The cells shown in reverse video.
+fn inverse_cells(screen: &vt100::Screen) -> Vec<(u16, u16)> {
+    let (rows, cols) = screen.size();
+    (0..rows)
+        .flat_map(|row| (0..cols).map(move |col| (row, col)))
+        .filter(|&(row, col)| screen.cell(row, col).is_some_and(vt100::Cell::inverse))
+        .collect()
+}
+
+/// Readline marks pasted text as its active region, and draws it itself.
 #[test]
-fn search_highlight_is_kept() {
-    let opts = || Options {
-        history: vec!["echo hello-world"],
-        ..Options::default()
-    };
-    let (mut with, mut plain) = with_and_without(opts);
-    with.send("\x12hel");
-    plain.send("\x12hel");
-    let w = with.settle();
-    let p = plain.settle();
-    assert_eq!(cursor_row(&w), cursor_row(&p));
-    assert_eq!(
-        cell(&w, "hel").map(|c| c.inverse()),
-        cell(&p, "hel").map(|c| c.inverse()),
-        "search match highlight"
+fn paste_highlight_is_kept() {
+    let (mut with, mut plain) = with_and_without(Options::default);
+    let paste = "\x1b[200~ls -l\x1b[201~";
+    with.send(paste);
+    plain.send(paste);
+    wait_same(&with, &plain, "pasting");
+    let (w, p) = (with.screen(), plain.screen());
+    assert!(
+        cell(&p, "ls -l").is_some_and(|c| c.inverse()),
+        "{}",
+        dump(&p)
     );
+    assert_eq!(inverse_cells(&w), inverse_cells(&p), "{}", dump(&w));
 }
 
 #[test]

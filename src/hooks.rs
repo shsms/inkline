@@ -1303,8 +1303,13 @@ fn left_to_readline() -> bool {
         || !ffi::terminal_can_move_up()
         // Outside UTF-8, readline counts bytes and draws them as `\303`.
         || !ffi::utf8_locale()
-        // Readline highlights a search match or pasted text itself.
-        || ffi::region_active()
+        // Readline highlights pasted text, or the match a non-incremental
+        // search found, itself. inkline marks the match of an incremental
+        // search while it runs.
+        || ffi::region_active() && !ffi::searching_incrementally()
+        // A non-incremental search reads the text to search for in the
+        // line, which is not a command.
+        || ffi::searching_non_incrementally()
 }
 
 /// Whether readline draws a newline in the line as a line break. With
@@ -1320,11 +1325,12 @@ fn repaint_now() {
 }
 
 /// Repaints the line readline just drew, in colour, with a suggestion after it
-/// when the cursor is at the end and the completion menu under it. Outside
-/// plain editing (a count prefix, a search) the stored suggestion and menu are
-/// kept, so `M-3 C-f` can still take from the suggestion and `M-2 C-n` can
-/// move through the menu; `accept` checks the suggestion against the line
-/// before using it.
+/// when the cursor is at the end and the completion menu under it. During an
+/// incremental search, the line found is drawn with its colours and the
+/// match marked, and nothing else. Outside plain editing (a count prefix, a
+/// search) the stored suggestion and menu are kept, so `M-3 C-f` can still
+/// take from the suggestion and `M-2 C-n` can move through the menu;
+/// `accept` checks the suggestion against the line before using it.
 fn draw() {
     if !repaint_line() {
         // Readline's plain drawing has no underline, and an error that shows
@@ -1346,6 +1352,7 @@ fn draw() {
 /// Does `draw`'s work. Returns whether it repainted the line.
 fn repaint_line() -> bool {
     let editing = ffi::normal_editing();
+    let searching = ffi::searching_incrementally();
     let line = ffi::line();
     let point = ffi::point();
     // While moving through the menu, its rows are drawn as they were at the
@@ -1393,8 +1400,15 @@ fn repaint_line() -> bool {
     {
         return false;
     }
+    let prompt = ffi::display_prompt();
+    // A newline typed into the search text (`C-v C-j`) is part of readline's
+    // search prompt, which readline measures whole, not from its last
+    // newline as it does `PS1`.
+    if searching && prompt.contains(&b'\n') {
+        return false;
+    }
     let (rows, cols) = ffi::screen_size();
-    let Some(prompt_end) = render::prompt_end(&ffi::display_prompt(), cols) else {
+    let Some(prompt_end) = render::prompt_end(&prompt, cols) else {
         return false;
     };
     let colors = crate::lisp::settings::colors();
@@ -1430,7 +1444,9 @@ fn repaint_line() -> bool {
         .map(str::to_owned);
     let menu_lines = crate::lisp::settings::menu_lines();
     let (found, sets) = highlight::with_sets(found, &colors, mode_server::colors);
-    show_mode_server_notices(&line);
+    if !searching {
+        show_mode_server_notices(&line);
+    }
     // Read after the suggestion hook and the mode server notices, which may
     // have set it.
     let message = MESSAGE.with_borrow(Clone::clone);
@@ -1440,7 +1456,13 @@ fn repaint_line() -> bool {
             !commands::is_plain(word) || commands::exists(word, &path, paths, ffi::known_to_bash)
         });
         let mut painted = highlight::paint(line.len(), &spans, &found);
-        let (error, error_message) = error_to_underline(s, &line, point, painted.error.take());
+        // A search shows a line from history, not one being typed: no
+        // error is underlined on it.
+        let (error, error_message) = if searching {
+            (None, None)
+        } else {
+            error_to_underline(s, &line, point, painted.error.take())
+        };
         // A message set with `show_message` (Lisp's, or why a mode server
         // was turned off) comes first; the error's message is only for this
         // draw.
@@ -1456,6 +1478,8 @@ fn repaint_line() -> bool {
             suggestion: suggestion.as_deref(),
             suggestion_lines,
             error: error.clone(),
+            search_match: ffi::active_region()
+                .filter(|m| line.is_char_boundary(m.start) && line.is_char_boundary(m.end)),
             script: &painted.script,
             sets: &sets,
             span_sets: &painted.span_sets,
