@@ -148,6 +148,9 @@ pub const LAYOUT: &[Entry] = &[
         "swap-point-and-mark",
         &["exchange-point-and-mark"],
     ),
+    e(Region, "C-w", "kill-region-or-word", &["unix-word-rubout"]),
+    e(Region, "M-w", "kill-ring-save", &[""]),
+    e(Region, "C-d", "delete-char-or-region", &["delete-char"]),
 ];
 
 /// `menu_key_fallback` for a key that had the readline command named `had`

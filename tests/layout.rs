@@ -78,11 +78,12 @@ fn the_layout_counts_on_c_u_and_kills_back_on_c_x_del() {
 }
 
 /// Unbinding the multi-line group gives `C-u` and `C-x DEL` back to
-/// readline's commands, and readline's terminal keys back too.
+/// readline's commands; with the pairing and region groups, which hold DEL
+/// and `C-w`, readline's terminal keys come back too.
 #[test]
 fn unbinding_multi_line_gives_back_c_u_and_c_x_del() {
     let mut sh = Shell::start(Options {
-        init_el: Some("(inkline-unbind-defaults '(multi-line pairing))\n".into()),
+        init_el: Some("(inkline-unbind-defaults '(multi-line pairing region))\n".into()),
         ..Options::default()
     });
     sh.send("bind -q unix-line-discard; bind -q backward-kill-line; bind -v | grep tty-special\r");
@@ -508,12 +509,17 @@ fn backtab_is_bound_to_menu_take_previous() {
     });
 }
 
-/// The layout puts the region commands on `C-@` (`C-SPC`) and `C-x C-x`.
+/// The layout puts the region commands on `C-@` (`C-SPC`), `C-x C-x`,
+/// `C-w`, `M-w` and `C-d`.
 #[test]
 fn the_layout_binds_the_region_keys() {
     let mut sh = Shell::start(Options::default());
-    sh.send("inkline keys | grep -E '^(C-@|C-x C-x)\\s'\r");
+    sh.send("inkline keys | grep -E '^(C-@|C-x C-x|C-w|M-w|C-d)\\s'\r");
     sh.wait_for("the bindings", |s| {
-        lists(s, "C-@", "set-mark-command") && lists(s, "C-x C-x", "swap-point-and-mark")
+        lists(s, "C-@", "set-mark-command")
+            && lists(s, "C-x C-x", "swap-point-and-mark")
+            && lists(s, "C-w", "kill-region-or-word")
+            && lists(s, "M-w", "kill-ring-save")
+            && lists(s, "C-d", "delete-char-or-region")
     });
 }

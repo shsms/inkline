@@ -290,3 +290,133 @@ fn the_region_covers_wide_characters() {
     assert!(cell(&s, "本").is_some_and(|c| c.inverse()), "{}", dump(&s));
     assert!(!any_cell(&s, "echo", vt100::Cell::inverse), "{}", dump(&s));
 }
+
+const C_W: &str = "\x17";
+const C_Y: &str = "\x19";
+
+/// `C-w` kills the region; `C-y` yanks it back.
+#[test]
+fn ctrl_w_kills_the_region() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello world");
+    sh.send(&format!("{C_SPC}\x1bb\x1bb"));
+    sh.wait_for("the region", |s| {
+        every_cell(s, "hello world", vt100::Cell::inverse)
+    });
+    sh.send(C_W);
+    let s = sh.wait_for("killed", |s| cursor_row(s) == "$ echo");
+    assert_eq!(s.cursor_position(), (0, 7));
+    sh.settle();
+    assert!(!any_on_screen(&sh.screen(), vt100::Cell::inverse));
+    sh.send(&format!("\x01{C_Y}"));
+    sh.wait_for("yanked at the start", |s| {
+        cursor_row(s) == "$ hello worldecho"
+    });
+}
+
+/// With no active region, `C-w` kills the word before the cursor, as
+/// bash's `unix-word-rubout`.
+#[test]
+fn ctrl_w_without_a_region_kills_a_word() {
+    let mut sh = Shell::start(Options::default());
+    sh.send(&format!("echo hello world{C_W}"));
+    sh.wait_for("one word gone", |s| cursor_row(s) == "$ echo hello");
+}
+
+/// `M-w` copies the region and leaves the line; the region ends.
+#[test]
+fn meta_w_copies_the_region() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello");
+    sh.send(&format!("{C_SPC}\x1bb"));
+    sh.wait_for("the region", |s| {
+        every_cell(s, "hello", vt100::Cell::inverse)
+    });
+    sh.send("\x1bw");
+    sh.wait_for("the region ended", |s| {
+        !any_on_screen(s, vt100::Cell::inverse)
+    });
+    sh.send(&format!("\x05 {C_Y}"));
+    sh.wait_for("yanked", |s| cursor_row(s) == "$ echo hello hello");
+}
+
+/// `M-w` with no active region rings the bell and changes nothing.
+#[test]
+fn meta_w_without_a_region_rings_the_bell() {
+    let mut sh = Shell::start(Options {
+        rc: "bind 'set bell-style audible'\n".into(),
+        ..Options::default()
+    });
+    sh.send("echo hello");
+    sh.wait_for("the line", |s| cursor_row(s) == "$ echo hello");
+    sh.take_output();
+    sh.send("\x1bw");
+    sh.wait_for_output("the bell", b"\x07");
+    assert_eq!(cursor_row(&sh.settle()), "$ echo hello");
+}
+
+/// DEL and `C-d` delete the region without putting it on the kill ring:
+/// `C-y` yanks the kill before.
+#[test]
+fn del_and_ctrl_d_delete_the_region_off_the_kill_ring() {
+    for (name, key) in [("DEL", "\x7f"), ("C-d", "\x04")] {
+        let mut sh = Shell::start(Options::default());
+        // `C-w` puts `x` on the kill ring.
+        sh.send(&format!("x{C_W}"));
+        type_text(&mut sh, "echo hello world");
+        sh.send(&format!("{C_SPC}\x1bb"));
+        sh.wait_for(name, |s| every_cell(s, "world", vt100::Cell::inverse));
+        sh.send(key);
+        // Rows are read without trailing blanks.
+        sh.wait_for(name, |s| {
+            cursor_row(s) == "$ echo hello" && s.cursor_position() == (0, 13)
+        });
+        sh.send(C_Y);
+        sh.wait_for(name, |s| cursor_row(s) == "$ echo hello x");
+    }
+}
+
+/// Undo brings back a deleted region.
+#[test]
+fn undo_brings_a_deleted_region_back() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello world");
+    sh.send(&format!("{C_SPC}\x1bb\x7f"));
+    sh.wait_for("deleted", |s| {
+        cursor_row(s) == "$ echo hello" && s.cursor_position() == (0, 13)
+    });
+    sh.send("\x1f");
+    sh.wait_for("back", |s| cursor_row(s) == "$ echo hello world");
+}
+
+/// A count other than 1 before DEL or `C-d` deletes that many characters,
+/// not the region, as in Emacs.
+#[test]
+fn a_count_before_del_or_ctrl_d_deletes_characters() {
+    for (name, key, left) in [
+        ("DEL", "\x7f", "$ echo hellworld"),
+        ("C-d", "\x04", "$ echo hello rld"),
+    ] {
+        let mut sh = Shell::start(Options::default());
+        type_text(&mut sh, "echo hello world");
+        sh.send(&format!("{C_SPC}\x1bb"));
+        sh.wait_for(name, |s| every_cell(s, "world", vt100::Cell::inverse));
+        sh.send(&format!("\x1b2{key}"));
+        sh.wait_for(name, |s| cursor_row(s) == left);
+    }
+}
+
+/// With an active but empty region, DEL and `C-d` delete a character, as
+/// in Emacs.
+#[test]
+fn del_and_ctrl_d_on_an_empty_region_delete_a_character() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("abcd\x02");
+    sh.wait_for("the cursor before d", |s| {
+        cursor_row(s) == "$ abcd" && s.cursor_position() == (0, 5)
+    });
+    sh.send(&format!("{C_SPC}\x7f"));
+    sh.wait_for("DEL", |s| cursor_row(s) == "$ abd");
+    sh.send(&format!("{C_SPC}\x04"));
+    sh.wait_for("C-d", |s| cursor_row(s) == "$ ab");
+}

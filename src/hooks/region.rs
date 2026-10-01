@@ -57,7 +57,6 @@ pub(super) fn range() -> Option<Range<usize>> {
 }
 
 /// The region to act on: active and not empty, as Emacs's `use-region-p`.
-#[expect(dead_code, reason = "used by the region commands in the next commit")]
 pub(super) fn in_use() -> Option<Range<usize>> {
     range().filter(|r| !r.is_empty())
 }
@@ -115,4 +114,92 @@ pub(super) extern "C" fn swap_point_and_mark(count: c_int, key: c_int) -> c_int 
         Some(saved) => super::run_fallback(saved, count, key),
         None => 0,
     }
+}
+
+/// `C-w`: kills the region onto the kill ring, with the cursor at its
+/// start, and ends it; a count is ignored, as Emacs's `kill-region` does.
+/// With no active region, runs what the key had before inkline bound it
+/// (bash's `unix-word-rubout`), with the count.
+pub(super) extern "C" fn kill_region_or_word(count: c_int, key: c_int) -> c_int {
+    use crate::lisp::keys::{self, Fallback};
+    let saved = guard(
+        || {
+            let Some(r) = range() else {
+                return Some(keys::saved_binding_of(kill_region_or_word));
+            };
+            end();
+            if !r.is_empty() {
+                ffi::kill_text(r.start, r.end);
+            }
+            ffi::set_point(r.start);
+            ffi::set_mark(r.start);
+            None
+        },
+        || Some(Fallback::Nothing),
+    );
+    match saved {
+        Some(saved) => super::run_fallback(saved, count, key),
+        None => 0,
+    }
+}
+
+/// `M-w`: copies the region to the kill ring, leaves the line, and ends
+/// the region. With no active region, rings the bell.
+pub(super) extern "C" fn kill_ring_save(_count: c_int, key: c_int) -> c_int {
+    let copied = guard(
+        || {
+            let Some(r) = range() else {
+                return false;
+            };
+            end();
+            if !r.is_empty() {
+                // readline copies between the cursor and the mark; the mark
+                // may have been past the end.
+                let point = ffi::point();
+                ffi::set_mark(if point == r.start { r.end } else { r.start });
+                ffi::run_command(ffi::copy_region_command(), 1, key);
+            }
+            true
+        },
+        || false,
+    );
+    if !copied {
+        ffi::ding();
+    }
+    0
+}
+
+/// `C-d`: deletes the region in use, not onto the kill ring (see
+/// `delete_in_use`). Otherwise, or with a count other than 1, runs what
+/// the key had before inkline bound it (`delete-char`), with the count.
+pub(super) extern "C" fn delete_char_or_region(count: c_int, key: c_int) -> c_int {
+    use crate::lisp::keys::{self, Fallback};
+    let saved = guard(
+        || (!delete_in_use(count)).then(|| keys::saved_binding_of(delete_char_or_region)),
+        || Some(Fallback::Nothing),
+    );
+    match saved {
+        Some(saved) => super::run_fallback(saved, count, key),
+        None => 0,
+    }
+}
+
+/// For DEL and `C-d` run with `count`: deletes the region in use
+/// (`in_use`), not onto the kill ring, puts the cursor and the mark at its
+/// start, and ends the region, as one undo step. Returns whether it
+/// deleted the region. As in Emacs, an empty active region, or a count
+/// other than 1, is left to the key's own command, which deletes
+/// characters.
+pub(super) fn delete_in_use(count: c_int) -> bool {
+    if count != 1 {
+        return false;
+    }
+    let Some(r) = in_use() else {
+        return false;
+    };
+    end();
+    ffi::delete_text(r.start, r.end);
+    ffi::set_point(r.start);
+    ffi::set_mark(r.start);
+    true
 }

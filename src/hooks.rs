@@ -283,6 +283,9 @@ pub fn load() {
                 ffi::add_command(c"numeric-argument", numeric_argument);
                 ffi::add_command(c"set-mark-command", region::set_mark_command);
                 ffi::add_command(c"swap-point-and-mark", region::swap_point_and_mark);
+                ffi::add_command(c"kill-region-or-word", region::kill_region_or_word);
+                ffi::add_command(c"kill-ring-save", region::kill_ring_save);
+                ffi::add_command(c"delete-char-or-region", region::delete_char_or_region);
                 ffi::add_command(c"inkline-lisp-key", crate::lisp::commands::SHARED);
             });
             crate::lisp::start_for_shell();
@@ -2268,7 +2271,14 @@ fn put_back_delete_pair() {
     }
 }
 
+/// DEL: deletes an empty pair around the cursor, or else runs
+/// `backward-delete-char`. With a region in use and a count of 1, deletes
+/// the region instead.
 extern "C" fn delete_pair(count: c_int, key: c_int) -> c_int {
+    // An active region in use is deleted whole (see `region::delete_in_use`).
+    if guard(|| region::delete_in_use(count), || false) {
+        return 0;
+    }
     pairing(count, key, ffi::rubout, |line, point| {
         let deletes = pairs::backspace(line, point, ffi::count_given(count)) == Action::DeletePair;
         if deletes {

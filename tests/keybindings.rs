@@ -11,6 +11,8 @@ const SEQUENCES: &[(&str, &str)] = &[
     ("C-w", "\x17"),
     ("C-w C-w C-y M-y", "\x17\x17\x19\x1by"),
     ("C-w C-_", "\x17\x1f"),
+    ("M-2 C-w", "\x1b2\x17"),
+    ("C-a M-f C-d", "\x01\x1bf\x04"),
     ("C-b C-b C-t", "\x02\x02\x14"),
     ("M-b M-t", "\x1bb\x1bt"),
     ("C-a M-u M-f M-l M-c", "\x01\x1bu\x1bf\x1bl\x1bc"),
