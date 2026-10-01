@@ -150,15 +150,19 @@ pub fn drawable(text: &str) -> bool {
 
 /// How well an item matched, lower first: every item that starts with the typed
 /// text, then those that start with it in another case, then the others. In
-/// the substring style those contain it and keep their list order; in the
-/// fuzzy style they match it with gaps and go by the length of their tightest
-/// match and then by where it starts (in characters).
+/// the substring style those contain it and all rank the same; in the fuzzy
+/// style they match it with gaps and go by how many characters their tightest
+/// match skips and then by where it starts (in characters). The menu is
+/// ordered by rank before source (see [`assemble`]), and a history entry is
+/// matched against the whole line but other items only against the typed part
+/// of it, so the characters skipped compare across sources where the length
+/// of the match would not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Rank {
     Prefix,
     OtherCasePrefix,
     Contains,
-    Gapped { span: usize, start: usize },
+    Gapped { skipped: usize, start: usize },
 }
 
 /// The tightest place `typed` (not empty) matches in `text`, in order with
@@ -215,7 +219,10 @@ fn rank(how: Matching, typed: &str, text: &str) -> Option<Rank> {
         Style::Fuzzy => {
             let typed: Vec<char> = typed.chars().collect();
             let text: Vec<char> = text.chars().collect();
-            tightest(how, &typed, &text).map(|(span, start)| Rank::Gapped { span, start })
+            tightest(how, &typed, &text).map(|(span, start)| Rank::Gapped {
+                skipped: span - typed.len(),
+                start,
+            })
         }
     }
 }
@@ -327,26 +334,40 @@ fn applied(line: &str, item: &Item) -> String {
     format!("{}{}{}", &line[..item.start], item.text, &line[item.end..])
 }
 
-/// The items of one source that match, in the order `how` gives: those
-/// that start with the typed text in list order, then the others (see
-/// [`Rank`]). See [`item_rank`] for a mode server's quoted items.
-fn ordered(line: &str, point: usize, how: Matching, items: Vec<Item>) -> Vec<Item> {
-    let mut ranked: Vec<(Rank, Item)> = items
+/// The items of `sources` that match, in the order `how` gives: by rank (see
+/// [`Rank`]), then, within one rank, by source in the order given, and then
+/// in each source's own list order. See [`item_rank`] for a mode server's
+/// quoted items.
+fn ordered(
+    line: &str,
+    point: usize,
+    how: Matching,
+    sources: impl IntoIterator<Item = Vec<Item>>,
+) -> Vec<Item> {
+    let mut ranked: Vec<(Rank, Item)> = sources
         .into_iter()
+        .flatten()
         .filter(|i| i.start <= point && point <= i.end && i.end <= line.len())
         .filter_map(|i| Some((item_rank(how, &line[i.start..point], &i)?, i)))
         .collect();
-    // A stable sort keeps list order among equal ranks.
+    // A stable sort keeps source order, and list order within a source,
+    // among equal ranks.
     ranked.sort_by_key(|(rank, _)| *rank);
     ranked.into_iter().map(|(_, item)| item).collect()
 }
 
-/// The menu's items for `line` with the cursor at byte `point`: `history`,
-/// then `whole` (the suggestion hook's line), then `mode` (a mode server's
-/// items), then `bash` (bash's own completion), then `words` (the completion
-/// hook's items), each source matched and ordered under `how`. An item that
-/// cannot be drawn, that would leave the line as it is, or that gives the
-/// same line as an item before it is left out.
+/// The menu's items for `line` with the cursor at byte `point`, matched
+/// under `how` and ordered by how well they match (see [`Rank`]): every item
+/// that starts with the typed text first, whatever its source. Within one
+/// rank the sources go in this order: `history`, `whole` (the suggestion
+/// hook's line), `mode` (a mode server's items), `bash` (bash's own
+/// completion), then `words` (the completion hook's items), and each keeps
+/// its own list order. So the top item, which the grey text comes from,
+/// starts with the typed text whenever one does, unless a mode server's item
+/// that starts with it only after a quote mark, which ranks with those that
+/// start with it (see [`item_rank`]), comes first. An item that cannot be
+/// drawn, that would leave the line as it is, or that gives the same line as
+/// an item before it is left out.
 #[expect(
     clippy::too_many_arguments,
     reason = "one argument per source, in menu order"
@@ -362,20 +383,11 @@ pub fn assemble(
     words: Vec<Item>,
 ) -> Vec<Item> {
     let mut seen = HashSet::from([line.to_owned()]);
-    let mut items = Vec::new();
-    let groups = [
-        ordered(line, point, how, history),
-        ordered(line, point, how, whole.into_iter().collect()),
-        ordered(line, point, how, mode),
-        ordered(line, point, how, bash),
-        ordered(line, point, how, words),
-    ];
-    for item in groups.into_iter().flatten() {
-        if drawable(&item.text) && seen.insert(applied(line, &item)) {
-            items.push(item);
-        }
-    }
-    items
+    let sources = [history, whole.into_iter().collect(), mode, bash, words];
+    ordered(line, point, how, sources)
+        .into_iter()
+        .filter(|item| drawable(&item.text) && seen.insert(applied(line, item)))
+        .collect()
 }
 
 /// Which items the menu lists: those from `sources` of which at least
@@ -914,6 +926,8 @@ mod tests {
         assert_eq!(t("ab", "ba"), None);
     }
 
+    /// Every item here starts with the typed text, so all rank the same
+    /// and go by source.
     #[test]
     fn sources_keep_their_order_and_repeats_go() {
         let hist = vec![Item {
@@ -940,6 +954,153 @@ mod tests {
         assert_eq!(texts, [("git status", 'h'), ("stash", 'l')]);
     }
 
+    /// A past command that only contains the line does not push down an
+    /// item from a later source that starts with it, and the grey text
+    /// comes from that item.
+    #[test]
+    fn items_go_by_how_well_they_match_before_their_source() {
+        let hist = vec![Item {
+            source: Source::History,
+            ..word("git status", 0, 4)
+        }];
+        let whole = Some(word("statistics", 0, 4));
+        let items = assemble("stat", 4, SUBSTRING, hist, whole, vec![], vec![], vec![]);
+        let got: Vec<(char, &str)> = items
+            .iter()
+            .map(|i| (i.source.letter(), i.text.as_str()))
+            .collect();
+        assert_eq!(got, [('l', "statistics"), ('h', "git status")]);
+        let menu = Menu::new("stat", 4, items);
+        let top = menu.grey_item().unwrap();
+        assert_eq!(grey("stat", 4, top), Some("istics"));
+    }
+
+    /// Within one rank the sources keep their order, and each source its own
+    /// list order.
+    #[test]
+    fn within_a_rank_items_go_by_source_then_list_order() {
+        let source = |source, text: &str, start| Item {
+            source,
+            ..word(text, start, 6)
+        };
+        let items = assemble(
+            "git st",
+            6,
+            SUBSTRING,
+            vec![source(Source::History, "echo git st", 0)],
+            None,
+            vec![
+                source(Source::Mode, "stamp", 4),
+                source(Source::Mode, "fast", 4),
+            ],
+            vec![
+                source(Source::Bash, "status ", 4),
+                source(Source::Bash, "last ", 4),
+            ],
+            vec![word("best", 4, 6), word("stage", 4, 6)],
+        );
+        let got: Vec<(char, &str)> = items
+            .iter()
+            .map(|i| (i.source.letter(), i.text.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ('m', "stamp"),
+                ('c', "status "),
+                ('l', "stage"),
+                ('h', "echo git st"),
+                ('m', "fast"),
+                ('c', "last "),
+                ('l', "best"),
+            ]
+        );
+        let menu = Menu::new("git st", 6, items);
+        assert_eq!(grey("git st", 6, menu.grey_item().unwrap()), Some("amp"));
+        // With case ignored, those that start with the typed text in another
+        // case come between.
+        let how = Matching {
+            style: Style::Substring,
+            ignore_case: true,
+        };
+        let items = assemble(
+            "st",
+            2,
+            how,
+            vec![
+                Item {
+                    source: Source::History,
+                    ..word("a st", 0, 2)
+                },
+                Item {
+                    source: Source::History,
+                    ..word("St x", 0, 2)
+                },
+            ],
+            None,
+            vec![],
+            vec![],
+            vec![word("best", 0, 2), word("Stamp", 0, 2), word("stack", 0, 2)],
+        );
+        let got: Vec<(char, &str)> = items
+            .iter()
+            .map(|i| (i.source.letter(), i.text.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ('l', "stack"),
+                ('h', "St x"),
+                ('l', "Stamp"),
+                ('h', "a st"),
+                ('l', "best"),
+            ]
+        );
+    }
+
+    /// Of two items that give the same line, the one that comes first in
+    /// the order stays, whatever its source.
+    #[test]
+    fn a_repeat_keeps_the_item_that_matches_better() {
+        let hist = vec![Item {
+            source: Source::History,
+            ..word("x `stamp`", 0, 4)
+        }];
+        // The history entry matches "x st" with a gap, over the quote mark;
+        // the mode server's item, which gives the same line, starts with "st"
+        // after its quote mark.
+        let mode = vec![Item {
+            source: Source::Mode,
+            ..word("`stamp`", 2, 4)
+        }];
+        let items = assemble("x st", 4, FUZZY, hist, None, mode, vec![], vec![]);
+        let got: Vec<(char, &str)> = items
+            .iter()
+            .map(|i| (i.source.letter(), i.text.as_str()))
+            .collect();
+        assert_eq!(got, [('m', "`stamp`")]);
+    }
+
+    /// In the fuzzy style a history entry, matched against the whole line,
+    /// and a word, matched against the typed part of it, go by how many
+    /// characters their matches skip, not by how long those are.
+    #[test]
+    fn fuzzy_ranks_across_sources_by_the_characters_skipped() {
+        let hist = vec![Item {
+            source: Source::History,
+            ..word("x aXb", 0, 4)
+        }];
+        let words = vec![word("aXXb", 2, 4), word("aXXXb", 2, 4)];
+        let items = assemble("x ab", 4, FUZZY, hist, None, vec![], vec![], words);
+        let got: Vec<(char, &str)> = items
+            .iter()
+            .map(|i| (i.source.letter(), i.text.as_str()))
+            .collect();
+        assert_eq!(got, [('h', "x aXb"), ('l', "aXXb"), ('l', "aXXXb")]);
+    }
+
+    /// Every item here starts with the typed text, so all rank the same
+    /// and go by source.
     #[test]
     fn mode_items_come_between_the_whole_line_and_lisp_words() {
         let hist = vec![Item {
@@ -1171,6 +1332,8 @@ mod tests {
         assert_eq!(Source::named("zsh"), None);
     }
 
+    /// Every item here starts with the typed text, so all rank the same
+    /// and go by source.
     #[test]
     fn bash_items_come_after_mode_items_and_before_lisp_words() {
         let bash = |text: &str| Item {

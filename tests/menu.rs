@@ -57,6 +57,27 @@ fn no_menu_on_an_empty_line_or_without_a_match() {
     assert_eq!(row_text(&s, 1), "");
 }
 
+/// An item that starts with the typed text comes before a past command
+/// that only contains it, whatever its source, so the grey text still
+/// shows.
+#[test]
+fn an_item_that_starts_with_the_line_comes_before_history_that_contains_it() {
+    let sh = menu_showing(
+        with_init(
+            r#"(setq inkline-completion-style 'substring)
+               (add-hook 'inkline-suggestion-functions
+                 (lambda (line)
+                   (when (string-prefix-p line "statistics") "statistics")))"#,
+            vec!["git status"],
+        ),
+        "stat",
+        "l  statistics",
+    );
+    let s = sh.screen();
+    assert_eq!(cursor_row(&s), "$ statistics", "the grey text");
+    assert_eq!(row_text(&s, 2), "h  git status", "{}", dump(&s));
+}
+
 #[test]
 fn erased_after_enter() {
     let mut sh = menu_showing(

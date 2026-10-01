@@ -1490,9 +1490,11 @@ fn repaint_line() -> bool {
 /// The menu for `line` with the cursor at `point`: the one kept in `STATE` when
 /// it was made for the same line and cursor, else a new one gathered from
 /// the sources: history and the suggestion hook when the cursor is at the
-/// end of the line, then the mode server's items (`mode`), then bash's own
-/// completion (`bash`), then the completion hook. It lists only the items
-/// `settings::menu_listed` allows; its grey text comes from all of them.
+/// end of the line, the mode server's items (`mode`), bash's own completion
+/// (`bash`), and the completion hook. Its items go by how well they match
+/// and then by source, in that order (see `menu::assemble`). It lists only
+/// the items `settings::menu_listed` allows; its grey text comes from the
+/// top item of all of them.
 fn menu_for(line: &str, point: usize, mode: ModeItems, bash: session::Found) -> Menu {
     let lisp_runs = crate::lisp::RUNNING.load(Ordering::Relaxed);
     let waiting = mode.waiting;
