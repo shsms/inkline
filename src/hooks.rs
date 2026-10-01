@@ -1070,6 +1070,33 @@ extern "C" fn getc(stream: *mut libc::FILE) -> c_int {
 /// `ffi::Wait::Signal`: bash may print while it does, which can move the
 /// cursor, and readline then draws the rest of the line on its own.
 fn before_signal(signal: c_int) {
+    // `C-c` throws the line away, which stays on screen: it is drawn again
+    // without the region before readline echoes `^C` at the cursor.
+    // Readline's own drawing function is in place while waiting for a key,
+    // so the line is drawn as `redisplay` draws it. Readline handles a `C-c`
+    // it caught as its drawing ends, so the `C-c` is held until the line is
+    // drawn, even if drawing it panics. While readline completes, the cursor
+    // is on the rows it shows under the line: the region and readline's
+    // mark are left alone, as turning the mark off makes readline draw the
+    // line again there as it handles the `C-c`.
+    if signal == libc::SIGINT && !ffi::completing() && region::end() {
+        let held = ffi::hold_interrupt();
+        guard(
+            || {
+                begin_update();
+                erase_below();
+                without_menu(|| {
+                    ffi::call_redisplay(originals().redisplay);
+                    draw();
+                });
+                end_update();
+            },
+            draw_below_notice,
+        );
+        if held {
+            ffi::release_interrupt();
+        }
+    }
     let may_print = ffi::signal_may_print(signal);
     if may_print {
         STATE.with_borrow_mut(|s| {

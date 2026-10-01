@@ -780,3 +780,98 @@ fn a_paste_ends_the_region() {
     let s = sh.settle();
     assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
 }
+
+/// `C-c` throws the line away, which stays on screen in colour, without
+/// the highlight, and with no grey text either.
+#[test]
+fn ctrl_c_leaves_the_line_without_the_region() {
+    let mut sh = Shell::start(Options {
+        history: vec!["echo hello world"],
+        ..Options::default()
+    });
+    sh.send("echo hello");
+    sh.wait_for("the grey text", |s| cursor_row(s) == "$ echo hello world");
+    sh.send("\x01");
+    sh.wait_for("the cursor at the start", |s| s.cursor_position() == (0, 2));
+    sh.send(&format!("{C_SPC}\x05"));
+    sh.wait_for("the region", |s| {
+        s.cursor_position() == (0, 12) && every_cell(s, "echo hello", vt100::Cell::inverse)
+    });
+    sh.take_output();
+    sh.send("\x03");
+    let s = sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    assert_eq!(row_text(&s, 0), "$ echo hello^C", "{}", dump(&s));
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+    // Drawn by inkline, in colour.
+    assert!(fg_is(&s, "echo", Color::Idx(2)), "{}", dump(&s));
+    let out = sh.take_output();
+    assert!(find_bytes(&out, b"world").is_none(), "{out:?}");
+}
+
+/// `C-c` with the cursor inside the line: readline echoes `^C` at the
+/// cursor, as without inkline, and the rest of the line stays.
+#[test]
+fn ctrl_c_inside_the_line_leaves_it_without_the_region() {
+    let mut sh = Shell::start(Options::default());
+    type_text(&mut sh, "echo hello");
+    sh.send(C_SPC);
+    sh.send("\x01");
+    sh.wait_for("the region", |s| {
+        s.cursor_position() == (0, 2) && every_cell(s, "echo hello", vt100::Cell::inverse)
+    });
+    sh.send("\x03");
+    let s = sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    assert_eq!(row_text(&s, 0), "$ ^Cho hello", "{}", dump(&s));
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+/// `C-c` at readline's completion question, or in its `--More--` pager,
+/// leaves the text on screen as it is without inkline: the cursor is on
+/// readline's rows there, not on the line.
+#[test]
+fn ctrl_c_while_listing_completions_matches_plain_bash() {
+    let words: Vec<String> = (1..=30).map(|i| format!("a{i}")).collect();
+    let rc = format!("complete -W '{}' foo\n", words.join(" "));
+    for (what, inputrc, shown) in [
+        (
+            "the question",
+            "set completion-query-items 2\n",
+            "Display all 30 possibilities? (y or n)",
+        ),
+        (
+            "the pager",
+            "set completion-query-items 1000\nset completion-display-width 0\n",
+            "--More--",
+        ),
+    ] {
+        let start = |inkline| {
+            Shell::start(Options {
+                inkline,
+                rc: rc.clone(),
+                inputrc: Some(inputrc.into()),
+                ..Options::default()
+            })
+        };
+        let (mut with, mut plain) = (start(true), start(false));
+        for sh in [&mut with, &mut plain] {
+            type_text(sh, "foo a");
+            sh.send("\x01");
+            sh.wait_for("the cursor at the start", |s| s.cursor_position() == (0, 2));
+            sh.send(C_SPC);
+            sh.send("\x05");
+            sh.wait_for("the cursor at the end", |s| s.cursor_position() == (0, 7));
+            sh.send("\t\t");
+            sh.wait_for(what, |s| cursor_row(s).starts_with(shown));
+        }
+        for sh in [&mut with, &mut plain] {
+            sh.send("\x03");
+        }
+        // The line above readline's rows keeps its highlight: nothing
+        // draws it again there.
+        wait_same(&with, &plain, &format!("C-c at {what}"));
+    }
+}

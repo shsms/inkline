@@ -1889,6 +1889,13 @@ type IgnoreFn = unsafe extern "C" fn(*mut *mut c_char) -> c_int;
 /// `RL_STATE_COMPLETING` in readline.h.
 const RL_STATE_COMPLETING: c_ulong = 0x0004000;
 
+/// Whether readline is completing. While it lists the matches, asks whether
+/// to show them all, or pages through them (`--More--`), the cursor is on
+/// the rows under the line, not where readline thinks it is.
+pub fn completing() -> bool {
+    unsafe { rl_readline_state & RL_STATE_COMPLETING != 0 }
+}
+
 unsafe extern "C" {
     fn _rl_find_completion_word(found_quote: *mut c_int, delimiter: *mut c_int) -> c_char;
     fn rl_complete_internal(what_to_do: c_int) -> c_int;
