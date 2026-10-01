@@ -430,10 +430,6 @@ fn an_undo_with_count_0_keeps_the_step_open() {
 
 #[test]
 fn vi_undo_from_a_command_takes_back_whole_steps() {
-    // readline names `vi-undo` from 8.1 (bash 5.1).
-    if bash_version() < (5, 1) {
-        return;
-    }
     let mut sh = calls_shell();
     sh.send("ab\x18u");
     sh.wait_for("upcased", |s| cursor_row(s) == "$ AB");
@@ -1347,11 +1343,6 @@ fn c_c_at_read_e_in_shell_code_run_from_lisp() {
 /// keep working.
 #[test]
 fn a_question_after_a_timed_out_read_e_leaves_lisp_working() {
-    // bash 5.0 leaves its line broken after such a read (`C-c` gives no new
-    // prompt), with or without Lisp.
-    if bash_version() < (5, 1) {
-        return;
-    }
     let mut sh = Shell::start(Options {
         init_el: Some(format!(
             "{INIT}{}",
@@ -1429,9 +1420,8 @@ fn c_c_in_a_slow_readline_command_run_from_lisp(command: &str, line: &str) {
     sh.wait_for("on", |s| has_row(s, "inkline: on"));
 }
 
-/// Readline handles a `C-c` during completion itself and passes it on to bash.
-/// Bash 5.0 to 5.2 let the completion function finish, with no jump. Bash 5.3
-/// stops the function and jumps to its top level.
+/// Readline handles a `C-c` during completion itself and passes it on to bash,
+/// which stops the completion function and jumps to its top level.
 #[test]
 fn c_c_in_slow_completion_run_from_lisp_gives_a_new_prompt() {
     c_c_in_a_slow_readline_command_run_from_lisp("complete", "slowcmd ");
@@ -1446,9 +1436,8 @@ fn c_c_in_slow_expansion_run_from_lisp_gives_a_new_prompt() {
 }
 
 /// A question on a `read -e -t` line whose time runs out while it waits:
-/// the read ends (in bash 5.0 once the question is answered, else at
-/// once), Lisp keeps working, and inkline's suggestions still show on the
-/// next line.
+/// the read ends at once, Lisp keeps working, and inkline's suggestions
+/// still show on the next line.
 #[test]
 fn a_question_on_a_line_that_times_out() {
     let mut sh = Shell::start(Options {
@@ -1459,13 +1448,6 @@ fn a_question_on_a_line_that_times_out() {
     sh.send("read -e -t 1 -p 'x? ' v; echo \"rc=$?\"\r");
     sh.wait_for("the read", |s| cursor_row(s) == "x?");
     sh.send("\x18q");
-    if bash_version() < (5, 1) {
-        // bash 5.0 times the read out in its own signal check, which runs
-        // once Lisp has stopped.
-        sh.wait_for("the question", |s| has_row(s, "Sure? (y or n)"));
-        std::thread::sleep(std::time::Duration::from_millis(1200));
-        sh.send("y");
-    }
     sh.wait_for("the timeout", |s| {
         (0..s.size().0).any(|r| row_text(s, r).starts_with("rc=")) && cursor_row(s) == "$"
     });

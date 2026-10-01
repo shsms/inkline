@@ -1041,15 +1041,11 @@ fn a_recalled_line_shows_no_menu_until_it_changes() {
     });
 }
 
-/// Whether `C-p` went back from `git st`, the line a search left: to the
-/// entry before it, by walking history or by a new search for `git st`, or,
-/// where readline puts its history place back after a search (before 8.3)
-/// and `C-p` walks, to the newest entry. No menu row is picked.
+/// Whether `C-p` went back from `git st`, the line a search left, to the
+/// entry before it, `git status`, by walking history or by a new search for
+/// `git st`. No menu row is picked.
 fn walked_back_from_the_search(s: &vt100::Screen) -> bool {
-    let row = cursor_row(s);
-    (row == "$ ls" || row == "$ git status")
-        && s.cursor_position() == (0, row.len() as u16)
-        && !picked(s, 1)
+    cursor_row(s) == "$ git status" && s.cursor_position() == (0, 12) && !picked(s, 1)
 }
 
 /// A line that Up found with `previous-line-or-search` counts as brought

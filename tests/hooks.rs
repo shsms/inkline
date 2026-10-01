@@ -766,14 +766,6 @@ fn c_c_in_completion_a_line_start_function_runs() {
     });
     let s = sh.settle();
     assert!(!s.contents().contains("slowword"), "{}", dump(&s));
-    if bash_version() < (5, 3) {
-        assert_eq!(
-            rows(&s),
-            ["$ inkline eval '(setq go t)'", "t", "$ slowcmd ^C", "$"],
-            "{}",
-            dump(&s)
-        );
-    }
 }
 
 /// No hook runs at bash's `>` prompt, where it asks for the rest of an

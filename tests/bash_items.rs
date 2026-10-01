@@ -631,24 +631,18 @@ fn a_child_of_the_shell_leaves_its_copy_alone() {
     assert!(has_row(&s, "bash completion: on"), "{}", dump(&s));
 }
 
-/// bash 5.3's `compopt -o fullquote` quotes a match that is not a file name,
-/// as Tab does. Earlier bash has no such option, and the match stays as it
-/// is.
+/// bash's `compopt -o fullquote` quotes a match that is not a file name, as
+/// Tab does.
 #[test]
 fn a_rule_s_full_quoting_is_kept() {
     let dir = files();
     let mut sh = shell_in(
         dir.path(),
-        "_fq() { compopt -o fullquote 2>/dev/null; COMPREPLY=('foo bar'); }\n\
+        "_fq() { compopt -o fullquote; COMPREPLY=('foo bar'); }\n\
          complete -F _fq fq\n",
         "",
     );
-    let row = if bash_version() >= (5, 3) {
-        "c  foo\\ bar"
-    } else {
-        "c  foo bar"
-    };
-    typed_then(&mut sh, "fq f", row);
+    typed_then(&mut sh, "fq f", "c  foo\\ bar");
 }
 
 /// A macro types many words at once: a copy of the shell is asked once the

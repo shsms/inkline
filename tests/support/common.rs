@@ -518,11 +518,6 @@ pub const LITERAL_NEWLINE: &str = "\x16\n";
 /// `C-v Tab`: a tab inserted as text.
 pub const LITERAL_TAB: &str = "\x16\t";
 
-/// The major and minor version of the bash under test, such as (5, 2).
-pub fn bash_version() -> (u32, u32) {
-    version_of(&bash_path())
-}
-
 /// Whether any cell on the screen is underlined.
 pub fn any_underlined(screen: &vt100::Screen) -> bool {
     let (rows, cols) = screen.size();

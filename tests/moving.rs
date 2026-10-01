@@ -1206,8 +1206,8 @@ fn a_prefix_search_that_finds_nothing_sets_the_mark_at_the_line_end() {
     sh.wait_for("the cursor at the mark", |s| s.cursor_position() == (0, 12));
 }
 
-/// With readline's `search-ignore-case` on (readline 8.3 and later), the
-/// prefix search ignores case, as readline's own does.
+/// With readline's `search-ignore-case` on, the prefix search ignores case,
+/// as readline's own does.
 #[test]
 fn search_ignore_case_finds_prefix_matches_in_any_case() {
     let mut options = arrow_keys(
@@ -1215,23 +1215,16 @@ fn search_ignore_case_finds_prefix_matches_in_any_case() {
         "next-line-or-search",
         vec!["GIT status", "ls"],
     );
-    options
-        .rc
-        .push_str("bind 'set search-ignore-case on' 2>/dev/null\n");
+    options.rc.push_str("bind 'set search-ignore-case on'\n");
     let mut sh = Shell::start(options);
     sh.send("git");
     sh.wait_for("the typed text", |s| s.cursor_position() == (0, 5));
     sh.send("\x07");
     sh.wait_for("no grey text", |s| cursor_row(s) == "$ git");
     sh.send(UP);
-    if bash_version() >= (5, 3) {
-        sh.wait_for("the match", |s| {
-            cursor_row(s) == "$ GIT status" && s.cursor_position() == (0, 5)
-        });
-    } else {
-        let s = sh.settle();
-        assert_eq!(cursor_row(&s), "$ git", "{}", dump(&s));
-    }
+    sh.wait_for("the match", |s| {
+        cursor_row(s) == "$ GIT status" && s.cursor_position() == (0, 5)
+    });
 }
 
 /// With case ignored, the cursor goes after as many characters of the
@@ -1244,9 +1237,7 @@ fn search_ignore_case_puts_the_cursor_after_whole_characters() {
         "next-line-or-search",
         vec!["\u{212A}ubectl get pods", "ls"],
     );
-    options
-        .rc
-        .push_str("bind 'set search-ignore-case on' 2>/dev/null\n");
+    options.rc.push_str("bind 'set search-ignore-case on'\n");
     let mut sh = Shell::start(options);
     sh.send("k");
     sh.wait_for("the typed text", |s| s.cursor_position() == (0, 3));
@@ -1262,25 +1253,17 @@ fn search_ignore_case_puts_the_cursor_after_whole_characters() {
     });
 }
 
-/// With readline's `search-ignore-case` on (readline 8.3 and later), the
-/// search ignores case, as readline's own substring search does; older
-/// readline has no such setting, and the search keeps to case.
+/// With readline's `search-ignore-case` on, the search ignores case, as
+/// readline's own substring search does.
 #[test]
 fn search_ignore_case_finds_entries_in_any_case() {
     let mut options = substring_keys(vec!["git STATUS", "ls"]);
-    options
-        .rc
-        .push_str("bind 'set search-ignore-case on' 2>/dev/null\n");
+    options.rc.push_str("bind 'set search-ignore-case on'\n");
     let mut sh = Shell::start(options);
     sh.send("stat");
     sh.wait_for("the typed text", |s| cursor_row(s) == "$ stat");
     sh.send(UP);
-    if bash_version() >= (5, 3) {
-        sh.wait_for("the match", |s| cursor_row(s) == "$ git STATUS");
-    } else {
-        let s = sh.settle();
-        assert_eq!(cursor_row(&s), "$ stat", "{}", dump(&s));
-    }
+    sh.wait_for("the match", |s| cursor_row(s) == "$ git STATUS");
 }
 
 /// An entry that is not valid UTF-8 is searched too.

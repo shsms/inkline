@@ -19,9 +19,8 @@ fn read_with_a_timeout_times_out() {
     sh.wait_for("the timeout", |s| has_row(s, "status 142"));
 }
 
-/// Readline stops reading when SIGTERM arrives; bash 5.0 then exits as at the
-/// end of input, later versions carry on. inkline's wait for a key must not
-/// change that.
+/// Readline stops reading when SIGTERM arrives, and bash carries on.
+/// inkline's wait for a key must not change that.
 #[test]
 fn sigterm_while_waiting_acts_as_in_plain_bash() {
     let exits = |inkline| {
