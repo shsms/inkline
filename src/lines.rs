@@ -74,8 +74,8 @@ pub fn kill_forward(text: &str, point: usize) -> Range<usize> {
     }
 }
 
-/// What `C-u` kills: back to the start of the line, or at its start, the
-/// newline before it.
+/// What `C-x DEL` (`kill-to-line-start`) kills: back to the start of the
+/// line, or at its start, the newline before it.
 pub fn kill_backward(text: &str, point: usize) -> Range<usize> {
     let start = line_start(text, point);
     if start == point && start > 0 {

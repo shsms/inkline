@@ -27,7 +27,8 @@ const SEQUENCES: &[(&str, &str)] = &[
     ("DEL", "\x7f"),
     ("M-2 DEL", "\x1b2\x7f"),
     ("C-a C-f DEL", "\x01\x06\x7f"),
-    ("C-a M-f M-f C-u", "\x01\x1bf\x1bf\x15"),
+    ("C-a M-f M-f C-x DEL", "\x01\x1bf\x1bf\x18\x7f"),
+    ("C-a M-f M-- C-x DEL", "\x01\x1bf\x1b-\x18\x7f"),
     ("Home End", "\x1b[H\x1b[F"),
 ];
 
@@ -84,7 +85,6 @@ const COUNTS: &[(&str, &str)] = &[
 fn numeric_argument_counts_as_universal_argument_does() {
     let mut with = Shell::start(Options {
         rows: 60,
-        init_el: Some("(keymap-global-set \"C-u\" 'numeric-argument)\n".into()),
         ..Options::default()
     });
     let mut plain = Shell::start(Options {
@@ -114,10 +114,7 @@ fn numeric_argument_counts_as_universal_argument_does() {
 /// place of the prompt, as with readline's `universal-argument`.
 #[test]
 fn c_u_after_digits_shows_the_count_while_it_waits() {
-    let mut sh = Shell::start(Options {
-        init_el: Some("(keymap-global-set \"C-u\" 'numeric-argument)\n".into()),
-        ..Options::default()
-    });
+    let mut sh = Shell::start(Options::default());
     sh.send("\x152\x15");
     sh.wait_for("the count", |s| cursor_row(s) == "(arg: 2)");
     sh.send("x");
@@ -132,7 +129,6 @@ fn c_u_after_digits_shows_the_count_while_it_waits() {
 fn c_u_after_digits_hides_the_suggestion_while_it_waits() {
     let mut sh = Shell::start(Options {
         history: vec!["abcdef"],
-        init_el: Some("(keymap-global-set \"C-u\" 'numeric-argument)\n".into()),
         ..Options::default()
     });
     sh.send("ab");

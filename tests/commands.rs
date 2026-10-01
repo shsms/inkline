@@ -161,9 +161,9 @@ fn readline_and_lisp_commands_through_call_interactively() {
     let mut sh = calls_shell();
     sh.send("abcd\x01\x18tX");
     sh.wait_for("two forward-chars", |s| cursor_row(s) == "$ abXcd");
-    sh.send("\x05\x15ab\x18v");
+    sh.send("\x05\x18\x7fab\x18v");
     sh.wait_for("a Lisp command by name", |s| cursor_row(s) == "$ AB");
-    sh.send("\x15\x18i");
+    sh.send("\x18\x7f\x18i");
     sh.wait_for("the key that ran the command", |s| cursor_row(s) == "$ i");
 }
 
@@ -172,7 +172,7 @@ fn current_prefix_arg_is_the_count() {
     let mut sh = calls_shell();
     sh.send("\x18c");
     sh.wait_for("three keys", |s| cursor_row(s) == "$ ccc");
-    sh.send("\x15\x1b4\x18i");
+    sh.send("\x18\x7f\x1b4\x18i");
     sh.wait_for("the typed count", |s| cursor_row(s) == "$ iiii");
 }
 
@@ -189,7 +189,7 @@ fn yank_with_an_empty_kill_ring_is_a_quiet_quit() {
     );
     sh.send("\x18u");
     sh.wait_for("still working", |s| cursor_row(s) == "$ AB");
-    sh.send("\x15inkline status\r");
+    sh.send("\x18\x7finkline status\r");
     sh.wait_for("on", |s| has_row(s, "inkline: on"));
 }
 
@@ -271,7 +271,7 @@ fn a_backward_kill_goes_in_front_of_the_previous_kill() {
         });
         sh.send("\x19");
         sh.wait_for("the yank", |s| cursor_row(s) == yanked);
-        sh.send("\x15");
+        sh.send("\x18\x7f");
         sh.wait_for("an empty line", |s| cursor_row(s) == "$");
     }
 }
@@ -677,9 +677,9 @@ fn c_c_at_y_or_n_p_gives_a_new_prompt() {
     sh.wait_for("asks again", |s| row_below(s).starts_with("Sure?"));
     sh.send("n");
     sh.wait_for("answered", |s| cursor_row(s) == "$ no");
-    sh.send("\x15cd\x18u");
+    sh.send("\x18\x7fcd\x18u");
     sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
-    sh.send("\x15inkline status\r");
+    sh.send("\x18\x7finkline status\r");
     sh.wait_for("on", |s| has_row(s, "inkline: on"));
 }
 
@@ -720,7 +720,7 @@ fn y_or_n_p_asks_from_macro_text() {
     sh.wait_for("the question", |s| row_below(s) == "Sure? (y or n)");
     sh.send("y");
     sh.wait_for("the answer", |s| cursor_row(s) == "$ ayes");
-    sh.send("\x15\x18z");
+    sh.send("\x18\x7f\x18z");
     sh.wait_for("the answer from the macro", |s| cursor_row(s) == "$ cyes");
 }
 
@@ -780,7 +780,7 @@ fn y_or_n_p_asks_above_the_line_where_inkline_does_not_draw() {
     sh.wait_for("the answer", |s| cursor_row(s) == "$ yes");
     // `C-c` while Lisp reads a key still waits for Lisp to stop, with
     // inkline off too: in `y-or-n-p`, and in a readline command Lisp ran.
-    sh.send("\x15\x18q");
+    sh.send("\x18\x7f\x18q");
     sh.wait_for("the question above", |s| {
         let row = s.cursor_position().0;
         cursor_row(s) == "$" && row > 0 && row_text(s, row - 1) == "Sure? (y or n)"
@@ -855,7 +855,7 @@ fn lisp_keys_fall_back_to_macro_text_after_enable_d() {
     });
     sh.send("\x18m");
     sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ M");
-    sh.send("\x15enable -d inkline\r");
+    sh.send("\x18\x7fenable -d inkline\r");
     sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
     sh.send("\x18j\x18m");
     sh.wait_for("the macro text", |s| cursor_row(s) == "$ hello");
@@ -876,7 +876,7 @@ fn lisp_keys_fall_back_after_a_panic() {
     });
     sh.send("xy\x01Q");
     sh.wait_for("beginning-of-line", |s| cursor_row(s) == "$ Qxy");
-    sh.send("\x05\x15inkline on\r");
+    sh.send("\x05\x18\x7finkline on\r");
     sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
     sh.send("xy\x01");
     sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ xyL");
@@ -909,9 +909,9 @@ fn this_and_last_command() {
     sh.wait_for("a Lisp command", |s| {
         cursor_row(s) == "$ awho/self-insertwho/who"
     });
-    sh.send("\x15\x18l\x18w");
+    sh.send("\x18\x7f\x18l\x18w");
     sh.wait_for("a lambda", |s| cursor_row(s) == "$ nilwho/nil");
-    sh.send("\x15");
+    sh.send("\x18\x7f");
     sh.wait_for("an empty line", |s| cursor_row(s) == "$");
     sh.send("inkline eval '(list this-command last-command)'\r");
     sh.wait_for("unbound again", |s| has_row(s, "(nil nil)"));
@@ -923,7 +923,7 @@ fn this_and_last_command() {
 fn last_command_after_a_c_u_count_is_the_counted_command() {
     let mut sh = Shell::start(Options {
         init_el: Some(
-            "(defun who () (insert (format \"%s/%s\" this-command last-command)))\n(keymap-global-set \"C-x w\" 'who)\n(keymap-global-set \"C-u\" 'numeric-argument)\n"
+            "(defun who () (insert (format \"%s/%s\" this-command last-command)))\n(keymap-global-set \"C-x w\" 'who)\n"
                 .into(),
         ),
         ..Options::default()
@@ -962,13 +962,13 @@ fn more_than_256_lisp_commands() {
     });
     sh.send("\x18zln");
     sh.wait_for("the 300th", |s| cursor_row(s) == "$ 299");
-    sh.send("\x15\x18zaa");
+    sh.send("\x18\x7f\x18zaa");
     sh.wait_for("the first", |s| cursor_row(s) == "$ 0");
-    sh.send("\x15\x18zll\x18zl \x18y\x01");
+    sh.send("\x18\x7f\x18zll\x18zl \x18y\x01");
     sh.wait_for("the prefix and a named command", |s| {
         cursor_row(s) == "$ 297P lateA"
     });
-    sh.send("\x15bind -p | grep -q '\"\\\\C-a\": inkline-lisp-key' && echo shown\r");
+    sh.send("\x18\x7fbind -p | grep -q '\"\\\\C-a\": inkline-lisp-key' && echo shown\r");
     sh.wait_for("bind shows the shared function", |s| has_row(s, "shown"));
 }
 
@@ -1042,7 +1042,7 @@ fn save_excursion_around_a_readline_command_that_shortens_the_line() {
     sh.wait_for("typing goes on", |s| {
         cursor_row(s) == "$ XY" && s.cursor_position().1 == 4
     });
-    sh.send("\x15xx\u{e9}\u{e9}\x02\x18d");
+    sh.send("\x18\x7fxx\u{e9}\u{e9}\x02\x18d");
     sh.wait_for("the line", |s| cursor_row(s) == "$ x\u{e9}X\u{e9}");
     sh.send("Y");
     sh.wait_for("typing goes on", |s| cursor_row(s) == "$ x\u{e9}XY\u{e9}");
@@ -1073,7 +1073,7 @@ fn a_shell_error_in_a_readline_command_run_from_lisp_gives_a_new_prompt() {
     assert!(!has_row(&s, "after"), "{}", dump(&s));
     sh.send("cd\x18u");
     sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
-    sh.send("\x15inkline eval '(+ 40 2)'\r");
+    sh.send("\x18\x7finkline eval '(+ 40 2)'\r");
     sh.wait_for("Lisp still runs", |s| has_row(s, "42"));
 }
 
@@ -1098,7 +1098,7 @@ fn a_panic_in_a_command_takes_its_change_back() {
     });
     let s = sh.settle();
     assert_eq!(cursor_row(&s), "$ ab", "{}", dump(&s));
-    sh.send("\x15inkline on\r");
+    sh.send("\x18\x7finkline on\r");
     sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
     sh.send("inkline eval '(condition-case nil marker (error \"fresh\"))'\r");
     sh.wait_for("a fresh interpreter", |s| has_row(s, "\"fresh\""));
@@ -1133,11 +1133,11 @@ fn inkline_on_from_a_lisp_command_while_off() {
     });
     sh.send("echo ) x");
     sh.wait_for("the underline", |s| underlined(s, ")"));
-    sh.send("\x15inkline off\r");
+    sh.send("\x18\x7finkline off\r");
     sh.settle();
     sh.send("ab\x18u");
     sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ AB");
-    sh.send("\x15inkline eval '(+ 40 2)'\r");
+    sh.send("\x18\x7finkline eval '(+ 40 2)'\r");
     sh.wait_for("Lisp still runs", |s| {
         has_row(s, "42") && cursor_row(s) == "$"
     });
@@ -1420,7 +1420,7 @@ fn c_c_in_a_slow_readline_command_run_from_lisp(command: &str, line: &str) {
     sh.wait_for("the Lisp command", |s| cursor_row(s) == "$ AB");
     sh.send("\x1f");
     sh.wait_for("one undo", |s| cursor_row(s) == "$ ab");
-    sh.send("\x15inkline status\r");
+    sh.send("\x18\x7finkline status\r");
     sh.wait_for("on", |s| has_row(s, "inkline: on"));
 }
 
@@ -1466,7 +1466,7 @@ fn a_question_on_a_line_that_times_out() {
     });
     sh.send("git st");
     sh.wait_for("the suggestion", |s| cursor_row(s) == "$ git status");
-    sh.send("\x15inkline eval '(+ 40 2)'\r");
+    sh.send("\x18\x7finkline eval '(+ 40 2)'\r");
     sh.wait_for("Lisp still runs", |s| {
         has_row(s, "42") && cursor_row(s) == "$"
     });

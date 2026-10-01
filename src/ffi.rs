@@ -1096,7 +1096,7 @@ pub fn explicit_count() -> bool {
 unsafe extern "C" {
     fn rl_beg_of_line(count: c_int, key: c_int) -> c_int;
     fn rl_kill_line(count: c_int, key: c_int) -> c_int;
-    fn rl_unix_line_discard(count: c_int, key: c_int) -> c_int;
+    fn rl_backward_kill_line(count: c_int, key: c_int) -> c_int;
     fn rl_kill_text(from: c_int, to: c_int) -> c_int;
 }
 
@@ -1110,9 +1110,9 @@ pub fn kill_line(count: c_int, key: c_int) -> c_int {
     unsafe { rl_kill_line(count, key) }
 }
 
-/// readline's `unix-line-discard`.
-pub fn unix_line_discard(count: c_int, key: c_int) -> c_int {
-    unsafe { rl_unix_line_discard(count, key) }
+/// readline's `backward-kill-line`.
+pub fn backward_kill_line(count: c_int, key: c_int) -> c_int {
+    unsafe { rl_backward_kill_line(count, key) }
 }
 
 /// Moves bytes `from..to` of the line to the kill ring, after the last kill

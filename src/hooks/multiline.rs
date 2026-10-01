@@ -712,7 +712,7 @@ pub(super) extern "C" fn kill_to_line_end(count: c_int, key: c_int) -> c_int {
 }
 
 pub(super) extern "C" fn kill_to_line_start(count: c_int, key: c_int) -> c_int {
-    on_line(count, key, ffi::unix_line_discard, |line, point| {
+    on_line(count, key, ffi::backward_kill_line, |line, point| {
         let kill = lines::kill_backward(line, point);
         ffi::kill_text(kill.end, kill.start);
         ffi::set_point(kill.start);

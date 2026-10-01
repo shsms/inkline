@@ -119,7 +119,7 @@ fn an_underline_is_forgotten_with_the_line() {
     let mut sh = Shell::start(plain_underline());
     sh.send("echo ) x");
     sh.wait_for("the underline", |s| underlined(s, ")"));
-    sh.send("\x15");
+    sh.send("\x18\x7f");
     sh.wait_for("the empty line", |s| cursor_row(s) == "$");
     sh.settle();
     sh.take_output();

@@ -13,7 +13,7 @@ fn init_el_is_read_at_start() {
     });
     sh.send("ls");
     sh.wait_for("the new colour", |s| fg_is(s, "ls", Color::Idx(5)));
-    sh.send("\x15inkline status\r");
+    sh.send("\x18\x7finkline status\r");
     sh.wait_for("the status", |s| {
         (0..s.size().0).any(|r| {
             row_text(s, r).starts_with("init.el: ") && row_text(s, r).ends_with("(loaded)")

@@ -20,7 +20,7 @@ fn keymap_global_set_binds_every_sequence_and_unset_puts_it_back() {
     });
     sh.send("abc\x18\x01X");
     sh.wait_for("the binding", |s| cursor_row(s) == "$ Xabc");
-    sh.send("\x15inkline eval '(keymap-global-unset \"C-x C-a\")'\r");
+    sh.send("\x18\x7finkline eval '(keymap-global-unset \"C-x C-a\")'\r");
     sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
     sh.send("abc\x18\x01X");
     // C-x C-a is unbound again: readline rings the bell and inserts nothing.
@@ -64,6 +64,33 @@ fn inkline_keys_lists_bindings() {
     });
     sh.send("inkline keys\r");
     sh.wait_for("the list", |s| lists(s, "C-x C-a", "beginning-of-line"));
+}
+
+/// The layout puts `numeric-argument` on `C-u` and `kill-to-line-start` on
+/// `C-x DEL`.
+#[test]
+fn the_layout_counts_on_c_u_and_kills_back_on_c_x_del() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("inkline keys | grep -E '^(C-u|C-x DEL)\\s'\r");
+    sh.wait_for("the bindings", |s| {
+        lists(s, "C-u", "numeric-argument") && lists(s, "C-x DEL", "kill-to-line-start")
+    });
+}
+
+/// Unbinding the multi-line group gives `C-u` and `C-x DEL` back to
+/// readline's commands, and readline's terminal keys back too.
+#[test]
+fn unbinding_multi_line_gives_back_c_u_and_c_x_del() {
+    let mut sh = Shell::start(Options {
+        init_el: Some("(inkline-unbind-defaults '(multi-line pairing))\n".into()),
+        ..Options::default()
+    });
+    sh.send("bind -q unix-line-discard; bind -q backward-kill-line; bind -v | grep tty-special\r");
+    sh.wait_for("readline's bindings", |s| {
+        has_row(s, "unix-line-discard can be invoked via \"\\C-u\".")
+            && has_row(s, "backward-kill-line can be invoked via \"\\C-x\\C-?\".")
+            && has_row(s, "set bind-tty-special-chars on")
+    });
 }
 
 #[test]
@@ -124,7 +151,7 @@ fn the_layout_is_bound_on_load() {
     sh.wait_for("C-e took the suggestion", |s| {
         cursor_row(s) == "$ git status" && s.cursor_position().1 == 12
     });
-    sh.send("\x15echo (");
+    sh.send("\x18\x7fecho (");
     sh.wait_for("pairing", |s| cursor_row(s) == "$ echo ()");
 }
 
@@ -136,7 +163,7 @@ fn layout_leaves_inputrc_keys_alone() {
     });
     sh.send("ab\x0b");
     sh.wait_for("C-k transposes", |s| cursor_row(s) == "$ ba");
-    sh.send("\x15inkline keys\r");
+    sh.send("\x18\x7finkline keys\r");
     sh.wait_for("the left-alone line", |s| {
         (0..s.size().0).any(|r| {
             row_text(s, r).starts_with("C-k (\\C-k)")
@@ -208,7 +235,7 @@ fn unbinding_the_menu_gives_ctrl_p_and_ctrl_n_back_to_multi_line() {
     });
     sh.send("\x0e");
     sh.wait_for("the second line", |s| s.cursor_position().0 == 1);
-    sh.send("\x15\x0binkline keys | grep -E '^(C-[np]|<up>)\\s'\r");
+    sh.send("\x18\x7f\x0binkline keys | grep -E '^(C-[np]|<up>)\\s'\r");
     sh.wait_for("the bindings", |s| {
         lists(s, "C-p", "previous-line-or-substring-search")
             && lists(s, "<up>", "previous-line-or-substring-search")
@@ -466,7 +493,7 @@ fn reload_takes_del_and_c_u_again() {
     sh.send("inkline keys | grep -E '^(DEL|C-u)'; echo done\r");
     let s = sh.wait_for("done", |s| has_row(s, "done"));
     assert!(lists(&s, "DEL", "delete-pair"), "{}", dump(&s));
-    assert!(lists(&s, "C-u", "kill-to-line-start"), "{}", dump(&s));
+    assert!(lists(&s, "C-u", "numeric-argument"), "{}", dump(&s));
 }
 
 #[test]

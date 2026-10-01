@@ -96,7 +96,7 @@ fn command_names_show_from_one_character() {
     let mut sh = shell_in(dir.path(), "", "");
     let s = typed_then(&mut sh, "zzf", "c  zzfunc_one");
     assert!(has_row(&s, "c  zzfunc_two"), "{}", dump(&s));
-    sh.send("\x15ls | ");
+    sh.send("\x18\x7fls | ");
     let s = sh.settle();
     assert!(bash_rows(&s).is_empty(), "{}", dump(&s));
 }
@@ -114,7 +114,7 @@ fn files_and_directories_are_taken_as_tab_would() {
             && s.cursor_position().1 == 19
             && has_row(s, "c  alpha.txt")
     });
-    sh.send("\x15cat s");
+    sh.send("\x18\x7fcat s");
     sh.wait_for("the directory", |s| has_row(s, "c  src/"));
     sh.send("\t");
     sh.wait_for("the directory taken and its files", |s| {
@@ -278,7 +278,7 @@ fn an_answer_that_came_during_a_search_is_not_a_time_out() {
     sh.send("\x12");
     sh.wait_for("the search", |s| find(s, "reverse-i-search").is_some());
     std::thread::sleep(std::time::Duration::from_millis(1300));
-    sh.send("\x07\x15inkline status\r");
+    sh.send("\x07\x18\x7finkline status\r");
     let s = sh.wait_for("the status", |s| find(s, "bash completion:").is_some());
     assert!(has_row(&s, "bash completion: on"), "{}", dump(&s));
 }
@@ -320,7 +320,7 @@ fn a_rule_s_error_ends_only_the_copy() {
         "{}",
         dump(&s)
     );
-    sh.send("\x15echo still-$((1 + 1))\r");
+    sh.send("\x18\x7fecho still-$((1 + 1))\r");
     sh.wait_for("the next command", |s| has_row(s, "still-2"));
     assert!(sh.keys_one_by_one());
     sh.send("inkline status\r");
@@ -391,7 +391,7 @@ fn a_slow_rule_never_holds_up_typing_and_is_killed_at_its_limit() {
     );
     let group = written_group(&pid);
     eventually("the rule killed", || !group_alive(&group));
-    sh.send("\x15inkline status\r");
+    sh.send("\x18\x7finkline status\r");
     sh.wait_for("the status", |s| {
         has_row(s, "bash completion: on (1 timed out)")
     });
@@ -495,7 +495,7 @@ fn a_rude_rule_leaves_the_screen_and_the_shell_alone() {
     );
     let s = typed_then(&mut sh, "rude ", "c  polite");
     assert!(find(&s, "RUDE").is_none(), "{}", dump(&s));
-    sh.send("\x15pwd\r");
+    sh.send("\x18\x7fpwd\r");
     let here = dir.path().canonicalize().unwrap();
     let here = here.to_str().unwrap().to_owned();
     sh.wait_for("the shell's directory", |s| has_row(s, &here));
@@ -524,7 +524,7 @@ fn a_rule_that_exits_runs_no_trap_and_writes_no_history() {
     // reads that before it replaces the copy: the failure is counted.
     let group = written_group(&home.join("ran"));
     eventually("the copy ended", || !group_alive(&group));
-    sh.send("\x15inkline status\r");
+    sh.send("\x18\x7finkline status\r");
     sh.wait_for("the failure", |s| {
         has_row(s, "bash completion: on (1 failed)")
     });
@@ -626,7 +626,7 @@ fn a_child_of_the_shell_leaves_its_copy_alone() {
     assert!(group_alive(&group), "the rule is not running");
     sh.send("\x14");
     sh.wait_for("the answer", |s| has_row(s, "c  late"));
-    sh.send("\x07\x15inkline status\r");
+    sh.send("\x07\x18\x7finkline status\r");
     let s = sh.wait_for("the status", |s| find(s, "bash completion:").is_some());
     assert!(has_row(&s, "bash completion: on"), "{}", dump(&s));
 }

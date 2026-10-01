@@ -40,10 +40,7 @@ fn a_run_of_moves_keeps_its_column() {
 /// column the run started with.
 #[test]
 fn a_c_u_counted_move_keeps_the_runs_column() {
-    let mut sh = Shell::start(Options {
-        init_el: Some("(keymap-global-set \"C-u\" 'numeric-argument)\n".into()),
-        ..Options::default()
-    });
+    let mut sh = Shell::start(Options::default());
     block(&mut sh, &["echo abcdefghij", "x", "y", "echo 12345678"]);
     sh.send(&format!("\x152{UP}"));
     sh.wait_for("the short line", |s| s.cursor_position() == (1, 1));
@@ -125,14 +122,18 @@ fn kills_stop_at_the_line() {
     });
     sh.send("\x19");
     sh.wait_for("the yank", |s| row_text(s, 1) == "echo b");
+    sh.send("\x18\x7f");
+    sh.wait_for("killed back to the line's start", |s| {
+        row_text(s, 0) == "$ echo a" && row_text(s, 1).is_empty()
+    });
 }
 
 #[test]
 fn at_a_line_edge_the_kills_join_lines() {
     let mut sh = Shell::start(Options::default());
     block(&mut sh, &["echo a", "echo b"]);
-    sh.send("\x01\x15");
-    sh.wait_for("joined by C-u", |s| row_text(s, 0) == "$ echo aecho b");
+    sh.send("\x01\x18\x7f");
+    sh.wait_for("joined by C-x DEL", |s| row_text(s, 0) == "$ echo aecho b");
     sh.send("\x1f");
     sh.wait_for("undone", |s| row_text(s, 1) == "echo b");
     sh.send(UP);

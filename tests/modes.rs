@@ -44,7 +44,7 @@ fn underlined_on_row(screen: &vt100::Screen, row: u16, needle: &str) -> bool {
 /// and for the next prompt.
 fn status_row(sh: &mut Shell, want: &str) {
     sh.wait_for("the prompt", |s| cursor_row(s).starts_with('$'));
-    sh.send("\x15inkline status\r");
+    sh.send("\x18\x7finkline status\r");
     sh.wait_for(want, |s| has_row(s, want) && cursor_row(s) == "$");
 }
 
@@ -56,7 +56,7 @@ fn run(sh: &mut Shell, command: &str) {
         "ran {}",
         RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    sh.send(&format!("\x15{command}; echo {mark}\r"));
+    sh.send(&format!("\x18\x7f{command}; echo {mark}\r"));
     sh.wait_for(&mark, |s| {
         let row = s.cursor_position().0;
         cursor_row(s) == "$" && row > 0 && row_text(s, row - 1) == mark
@@ -166,11 +166,11 @@ fn defining_again_and_removing() {
         ["command csvm: no mode named csvm-mode"],
         "{rows:?}"
     );
-    sh.send("\x15csvm 'select b'");
+    sh.send("\x18\x7fcsvm 'select b'");
     sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'select b'");
     let s = sh.settle();
     assert!(!fg_is(&s, "select", COMMAND), "{}", dump(&s));
-    sh.send("\x15inkline eval '(inkline-define-mode 1 nil)'\r");
+    sh.send("\x18\x7finkline eval '(inkline-define-mode 1 nil)'\r");
     sh.wait_for("the type error", |s| {
         has_row(
             s,
@@ -195,7 +195,7 @@ fn reload_stops_mode_servers() {
         ),
     );
     status_row(&mut sh, "mode other-mode (other): not started");
-    sh.send("\x15other 'a'");
+    sh.send("\x18\x7fother 'a'");
     sh.wait_for("typed", |s| cursor_row(s) == "$ other 'a'");
     status_row(&mut sh, "mode other-mode (other): running");
     // Keys typed ahead while `inkline reload` runs are sometimes lost: `run`
@@ -276,7 +276,7 @@ fn a_server_gets_the_shells_exported_variables() {
         ..Options::default()
     });
     run(&mut sh, "export CSVM_X=1");
-    sh.send("\x15csvm 'a'");
+    sh.send("\x18\x7fcsvm 'a'");
     wait_for_log(&log, "CSVM_X:1");
 }
 
@@ -323,7 +323,7 @@ fn the_server_holds_none_of_bashs_descriptors() {
         &mut sh,
         &format!("exec 4> >(cat >/dev/null; echo >{})", done.display()),
     );
-    sh.send("\x15csvm 'a'");
+    sh.send("\x18\x7fcsvm 'a'");
     wait_for_log(&log, "CSVM_X:unset");
     run(&mut sh, "exec 4>&-");
     wait_for_file(&done);
@@ -400,7 +400,7 @@ fn a_mode_can_have_colours_of_its_own() {
         &mut sh,
         &format!("inkline eval '{}'", again.trim_end().replace('\'', "'\\''")),
     );
-    sh.send("\x15csvm 'select b'");
+    sh.send("\x18\x7fcsvm 'select b'");
     sh.wait_for("the new colours", |s| fg_is(s, "select", Color::Idx(3)));
     let s = sh.settle();
     assert!(
@@ -509,7 +509,7 @@ fn a_push_at_the_prompt_colours_the_next_line() {
         &mut sh,
         "inkline eval '(push (cons \"csvm\" (quote csvm-mode)) inkline-command-mode-alist)'",
     );
-    sh.send("\x15csvm 'two'");
+    sh.send("\x18\x7fcsvm 'two'");
     sh.wait_for("the mode's colours", |s| fg_is(s, "two", COMMAND));
 }
 
@@ -535,7 +535,7 @@ fn a_bad_alist_is_reported() {
         "{}",
         dump(&s)
     );
-    sh.send("\x15csvm 'one'");
+    sh.send("\x18\x7fcsvm 'one'");
     sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'one'");
     let s = sh.settle();
     assert!(!fg_is(&s, "one", COMMAND), "{}", dump(&s));
@@ -585,7 +585,7 @@ fn a_users_descriptor_is_left_alone(fd: u32) {
     sh.send("csvm 'select a'");
     sh.wait_for("colours", |s| fg_is(s, "select", Color::Idx(2)));
     run(&mut sh, &format!("exec {fd}>{}", file.display()));
-    sh.send("\x15csvm 'sort b'");
+    sh.send("\x18\x7fcsvm 'sort b'");
     sh.wait_for("colours", |s| fg_is(s, "sort", Color::Idx(2)));
     run(&mut sh, &format!("echo hi >&{fd}"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hi\n");
@@ -627,7 +627,7 @@ fn a_socket_taken_over_is_left_to_the_user() {
             file.display()
         ),
     );
-    sh.send("\x15csvm 'sort b'");
+    sh.send("\x18\x7fcsvm 'sort b'");
     sh.wait_for("off", |s| {
         has_row(s, "inkline: mode csvm-mode: off (connection lost)")
     });
@@ -646,7 +646,7 @@ fn a_server_that_exits_is_turned_off() {
         has_row(s, "inkline: mode csvm-mode: off (exited)")
     });
     sh.send(" 'b'");
-    sh.send("\x15echo still here\r");
+    sh.send("\x18\x7fecho still here\r");
     sh.wait_for("bash is alive", |s| has_row(s, "still here"));
 }
 
@@ -685,7 +685,7 @@ fn a_stale_reply_is_dropped() {
     // The reply for `7` makes its first byte a number.
     sh.send("csvm '7'");
     wait_for_log(&log, "final:7");
-    sh.send("\x15csvm 'zz'");
+    sh.send("\x18\x7fcsvm 'zz'");
     // The request for `zz` goes out once the reply for `7` has come, and
     // its reply comes about 0.5 s later.
     wait_for_log(&log, "final:zz");
@@ -1237,7 +1237,7 @@ fn a_dash_leaves_a_line_indented_by_hand() {
         "{}",
         dump(&s)
     );
-    // C-u would clear only the last line of the command: C-c drops it all.
+    // C-x DEL would clear only the last line of the command: C-c drops it all.
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
     status_row(&mut sh, "mode csvm-mode (csvm): running (indent)");
@@ -1330,7 +1330,7 @@ fn no_depths_in_time_keeps_the_line_above() {
         took < std::time::Duration::from_millis(450),
         "took {took:?}"
     );
-    // C-u would clear only the last line of the command: C-c drops it all.
+    // C-x DEL would clear only the last line of the command: C-c drops it all.
     sh.send("\x03");
     sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
     status_row(&mut sh, "mode csvm-mode (csvm): running (indent)");

@@ -108,7 +108,7 @@ fn off_and_on() {
     let s = sh.settle();
     assert_eq!(cursor_row(&s), "$ ls");
     assert_eq!(fg(&s, "ls"), Color::Default);
-    sh.send("\x15inkline on\r");
+    sh.send("\x18\x7finkline on\r");
     sh.wait_for("the next prompt", |s| {
         s.cursor_position().0 == 2 && cursor_row(s) == "$"
     });

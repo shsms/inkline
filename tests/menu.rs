@@ -241,7 +241,7 @@ fn a_completion_function_that_changes_the_line_is_removed() {
         )
     });
     assert_eq!(cursor_row(&s), "$ ab", "the line is as typed");
-    sh.send("\x15inkline eval '(length inkline-completion-functions)'\r");
+    sh.send("\x18\x7finkline eval '(length inkline-completion-functions)'\r");
     sh.wait_for("the empty hook", |s| has_row(s, "0"));
 }
 
@@ -258,7 +258,7 @@ fn a_menu_is_made_again_when_the_text_comes_back() {
     sh.send("gst");
     let s = sh.wait_for("the typed text", |s| cursor_row(s) == "$ gst");
     assert_eq!(row_text(&s, 1), "", "no prefix match: {}", dump(&s));
-    sh.send("\x15\x18f\x19");
+    sh.send("\x18\x7f\x18f\x19");
     sh.wait_for("the fuzzy menu", |s| {
         cursor_row(s) == "$ gst" && row_text(s, 1) == "h  git status"
     });
@@ -278,7 +278,7 @@ fn nothing_is_gathered_with_the_menu_and_grey_text_off() {
     sh.send("x");
     sh.wait_for("the typed text", |s| cursor_row(s) == "$ x");
     sh.settle();
-    sh.send("\x15inkline eval asked\r");
+    sh.send("\x18\x7finkline eval asked\r");
     sh.wait_for("the answer", |s| has_row(s, "\"not asked\""));
 }
 
@@ -415,24 +415,14 @@ fn a_count_moves_the_pick_that_many_rows() {
     });
 }
 
-/// `C-u` as `numeric-argument`.
-const COUNT_KEY: &str = "(keymap-global-set \"C-u\" 'numeric-argument)\n";
+/// `C-u`, which runs `numeric-argument`.
 const C_U: &str = "\x15";
-
-/// `three_items` with `C-u` running `numeric-argument`.
-fn three_items_counting() -> Shell {
-    menu_showing(
-        with_init(COUNT_KEY, vec!["git stage", "git stash", "git status"]),
-        "git st",
-        "h  git status",
-    )
-}
 
 /// A `C-u` count moves that many rows, and the moving goes on: the next
 /// `C-n` moves one row more, and `C-g` gives back the typed text.
 #[test]
 fn a_c_u_count_moves_that_many_rows_and_keeps_moving() {
-    let mut sh = three_items_counting();
+    let mut sh = three_items();
     sh.send(&format!("{C_U}2{C_N}"));
     sh.wait_for("the second row", |s| {
         picked(s, 2) && !picked(s, 1) && cursor_row(s) == "$ git stash"
@@ -454,7 +444,7 @@ fn a_c_u_count_moves_that_many_rows_and_keeps_moving() {
 /// `C-g` right after a `C-u` count's move gives back the typed text.
 #[test]
 fn ctrl_g_after_a_c_u_count_gives_back_the_typed_text() {
-    let mut sh = three_items_counting();
+    let mut sh = three_items();
     sh.send(&format!("{C_U}2{C_N}"));
     sh.wait_for("the second row", |s| cursor_row(s) == "$ git stash");
     sh.send(C_G);
@@ -466,7 +456,7 @@ fn ctrl_g_after_a_c_u_count_gives_back_the_typed_text() {
 /// Enter right after a `C-u` count's move keeps the row without running it.
 #[test]
 fn enter_after_a_c_u_count_keeps_the_row() {
-    let mut sh = three_items_counting();
+    let mut sh = three_items();
     sh.send(&format!("{C_U}2{C_N}"));
     sh.wait_for("the second row", |s| cursor_row(s) == "$ git stash");
     sh.send("\r");
@@ -486,10 +476,7 @@ fn enter_after_a_c_u_count_keeps_the_row() {
 #[test]
 fn c_u_alone_moves_four_rows() {
     let mut sh = menu_showing(
-        with_init(
-            COUNT_KEY,
-            vec!["git st1", "git st2", "git st3", "git st4", "git st5"],
-        ),
+        with_history(vec!["git st1", "git st2", "git st3", "git st4", "git st5"]),
         "git st",
         "h  git st5",
     );
@@ -1014,7 +1001,7 @@ fn ctrl_g_without_a_menu_aborts_and_the_shell_goes_on() {
     sh.take_output();
     sh.send(C_G);
     sh.wait_for_output("the bell", b"\x07");
-    sh.send("\x15echo ok\r");
+    sh.send("\x18\x7fecho ok\r");
     sh.wait_for("the output", |s| has_row(s, "ok"));
 }
 

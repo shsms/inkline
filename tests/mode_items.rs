@@ -292,7 +292,7 @@ fn a_bad_item_turns_the_server_off() {
 #[test]
 fn status_shows_complete() {
     let mut sh = shell("complete");
-    sh.send("csvm 'x'\x15inkline status\r");
+    sh.send("csvm 'x'\x18\x7finkline status\r");
     sh.wait_for("the status", |s| {
         has_row(s, "mode fake-mode (csvm): running (complete)")
     });

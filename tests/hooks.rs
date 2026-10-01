@@ -29,7 +29,7 @@ fn a_refused_line_stays_with_the_message() {
     sh.wait_for("the refusal", |s| has_row(s, "no rm here"));
     let s = sh.settle();
     assert_eq!(cursor_row(&s), "$ rm x", "{}", dump(&s));
-    sh.send("\x15echo ok\r");
+    sh.send("\x18\x7fecho ok\r");
     sh.wait_for("the line ran", |s| has_row(s, "ok"));
 }
 
@@ -364,12 +364,7 @@ fn after_change_gets_the_part_and_the_commands() {
 /// ran, not `numeric-argument`.
 #[test]
 fn after_change_names_the_command_a_c_u_count_ran() {
-    let mut sh = Shell::start(Options {
-        init_el: Some(format!(
-            "{SHOW_CHANGES}\n(keymap-global-set \"C-u\" 'numeric-argument)"
-        )),
-        ..Options::default()
-    });
+    let mut sh = shell(SHOW_CHANGES);
     sh.send("ab\x152\x02");
     sh.wait_for("the move", |s| s.cursor_position() == (0, 2));
     sh.send("x");
@@ -442,7 +437,7 @@ fn no_after_change_at_read_e_or_while_searching() {
         "{}",
         dump(&s)
     );
-    sh.send("\x07\x15read -e v\r");
+    sh.send("\x07\x18\x7fread -e v\r");
     sh.send("q");
     let s = sh.settle();
     assert!(
@@ -587,7 +582,7 @@ fn typing_through_a_lisp_suggestion_asks_once() {
     );
     sh.send("git st");
     sh.wait_for("still suggested", |s| cursor_row(s) == "$ git status");
-    sh.send("\x15inkline eval asked\r");
+    sh.send("\x18\x7finkline eval asked\r");
     sh.wait_for("the count", |s| has_row(s, "1"));
 }
 
@@ -647,7 +642,7 @@ fn readme_examples_work() {
         cursor_row(s) == "$ git status" && s.cursor_position().1 == 13
     });
     // The abbreviation, expanded by the accept function as the line runs.
-    sh.send("\x15ll\r");
+    sh.send("\x18\x7fll\r");
     sh.wait_for("the expanded line ran", |s| {
         has_row(s, "$ ls -l") && cursor_row(s) == "$"
     });
@@ -655,7 +650,7 @@ fn readme_examples_work() {
     sh.send("make t");
     sh.wait_for("the suggestion", |s| cursor_row(s) == "$ make test");
     // The completion function's items.
-    sh.send("\x15git s");
+    sh.send("\x18\x7fgit s");
     sh.wait_for("the menu", |s| {
         let row = s.cursor_position().0;
         cursor_row(s) == "$ git switch"
@@ -703,7 +698,7 @@ fn c_c_in_shell_code_an_after_change_function_runs() {
     assert!(!s.contents().contains("after"), "{}", dump(&s));
     sh.send("ab");
     sh.wait_for("the hook on the next line", |s| has_row(s, "seen ab"));
-    sh.send("\x15inkline status\r");
+    sh.send("\x18\x7finkline status\r");
     sh.wait_for("on", |s| has_row(s, "inkline: on"));
 }
 
@@ -912,7 +907,7 @@ bind -x '"\C-xo": inkline on'
     sh.wait_for("the typing", |s| cursor_row(s) == "$ zz foo ab");
     let s = sh.settle();
     assert!(!s.contents().contains("AC "), "{}", dump(&s));
-    sh.send("\x15\r");
+    sh.send("\x18\x7f\r");
     sh.wait_for("the next line", |s| {
         cursor_row(s) == "$" && s.cursor_position().0 > 0
     });
