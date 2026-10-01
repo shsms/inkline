@@ -7,10 +7,7 @@ use common::*;
 
 /// The fake mode server doing `does`, as a Lisp list of strings.
 fn fake_program(does: &str) -> String {
-    format!(
-        "(list \"{}/tests/data/fake-mode-server\" \"{does}\")",
-        env!("CARGO_MANIFEST_DIR")
-    )
+    format!("(list \"{}\" \"{does}\")", fake_mode_server().display())
 }
 
 /// Lisp, on one line, that defines `csvm-mode` with `program` and then
@@ -212,11 +209,7 @@ fn reload_stops_mode_servers() {
 #[test]
 fn a_plain_name_is_found_in_bashs_path() {
     let dir = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink(
-        format!("{}/tests/data/fake-mode-server", env!("CARGO_MANIFEST_DIR")),
-        dir.path().join("csvm-server"),
-    )
-    .unwrap();
+    std::os::unix::fs::symlink(fake_mode_server(), dir.path().join("csvm-server")).unwrap();
     // Not exported: only bash's own `PATH` holds the directory, never the
     // environment of the process.
     let mut sh = Shell::start(Options {
@@ -233,9 +226,9 @@ fn a_plain_name_is_found_in_bashs_path() {
 /// of strings.
 fn logging_program(does: &str, log: &std::path::Path) -> String {
     format!(
-        "(list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}/tests/data/fake-mode-server\" \"{does}\")",
+        "(list \"/usr/bin/env\" \"FAKE_LOG={}\" \"{}\" \"{does}\")",
         log.display(),
-        env!("CARGO_MANIFEST_DIR")
+        fake_mode_server().display()
     )
 }
 

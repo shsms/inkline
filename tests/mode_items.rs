@@ -22,10 +22,7 @@ fn start(program: &str, more: &str, history: Vec<&'static str>) -> Shell {
 
 /// The fake mode server in mode `does`, as the words of a Lisp list.
 fn server(does: &str) -> String {
-    format!(
-        "\"{}/tests/data/fake-mode-server\" \"{does}\"",
-        env!("CARGO_MANIFEST_DIR")
-    )
+    format!("\"{}\" \"{does}\"", fake_mode_server().display())
 }
 
 /// A shell whose `csvm` command uses the fake mode server in mode `does`,

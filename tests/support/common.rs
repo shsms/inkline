@@ -14,6 +14,29 @@ use std::time::{Duration, Instant};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 pub use vt100::Color;
 
+/// The crate's directory, found when the tests run, not when they are
+/// built: cargo can reuse a test binary built in another checkout that shares
+/// the target directory, and a path fixed at build time would name that
+/// checkout. `cargo test` sets `CARGO_MANIFEST_DIR` for the test process and
+/// runs it in the crate's directory.
+pub fn crate_dir() -> PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default()
+}
+
+/// The fake mode server the mode tests run, `tests/data/fake-mode-server`.
+pub fn fake_mode_server() -> PathBuf {
+    let server = crate_dir().join("tests/data/fake-mode-server");
+    assert!(
+        server.is_file(),
+        "fake-mode-server missing at {}",
+        server.display()
+    );
+    server
+}
+
 /// The bash to test: `$INKLINE_TEST_BASH` (made absolute, since the shells
 /// start in other directories); else the bash 5.3 that `make test` builds
 /// into `target/bash-5.3`, when it is there; else `bash` from `PATH`. It
@@ -25,7 +48,7 @@ pub fn bash_path() -> PathBuf {
         let bash = match std::env::var_os("INKLINE_TEST_BASH") {
             Some(path) => std::path::absolute(path).unwrap(),
             None => {
-                let built = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/bash-5.3/bin/bash");
+                let built = crate_dir().join("target/bash-5.3/bin/bash");
                 if built.is_file() {
                     built
                 } else {

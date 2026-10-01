@@ -47,7 +47,7 @@ fn older_bashes() -> Vec<(PathBuf, (u32, u32))> {
         );
         return vec![(bash, version)];
     }
-    let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    let target = crate_dir().join("target");
     let mut bashes: Vec<PathBuf> = std::fs::read_dir(target)
         .into_iter()
         .flatten()
