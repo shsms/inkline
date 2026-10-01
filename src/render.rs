@@ -19,8 +19,8 @@ pub use menu::MenuView;
 
 /// Everything `build` needs to repaint the line once.
 pub struct Repaint<'a> {
-    /// Columns used by the last line of the prompt.
-    pub prompt_width: usize,
+    /// Where the line starts, as `prompt_end` gives it.
+    pub prompt_end: (usize, usize),
     pub line: &'a str,
     /// Cursor position in `line`, in bytes.
     pub point: usize,
@@ -91,6 +91,187 @@ struct Style {
 /// outside `\[ \]` as a column, the terminal does not, so where the line starts
 /// is unknown.
 pub fn prompt_width(prompt: &[u8]) -> Option<usize> {
+    let visible = visible_last_line(prompt)?;
+    Some(visible.chars().map(|c| c.width().unwrap_or(0)).sum())
+}
+
+/// Where the line starts after `prompt` on a screen `cols` columns wide: the
+/// row, counted from the prompt's last line, and the column, worked out as
+/// readline does. Readline breaks the prompt's last line into rows each
+/// time the width of its visible characters reaches a multiple of `cols`;
+/// a wide character that would cross that multiple starts the next row
+/// instead, as on the terminal, but the column it leaves blank is not
+/// counted, so later breaks fall one column after the terminal's. The line
+/// starts on the row after the last break, after the columns that follow
+/// it: readline draws that row from its start, wherever the terminal put
+/// the prompt's characters. None as for `prompt_width`, on a screen 0
+/// columns wide, or where readline's column is not on the row: what
+/// follows the last break fills it, or escape sequences between `\001` and
+/// `\002` are on a row of the prompt other than the first and the last.
+pub fn prompt_end(prompt: &[u8], cols: usize) -> Option<(usize, usize)> {
+    if cols == 0 {
+        return None;
+    }
+    let last = prompt.rsplit(|&b| b == b'\n').next().unwrap_or(&[]);
+    let chars = prompt_chars(last);
+    // As readline's `expand_prompt`: the prompt without `\001` and `\002`;
+    // where each of its rows starts, as an index into it; the bytes of its
+    // visible characters and their width; the bytes of its invisible ones,
+    // all of them and those on the first row, once the width reaches `cols`.
+    let mut shown = Vec::new();
+    // Where in `shown` each invisible character is.
+    let mut hidden_at = Vec::new();
+    let mut breaks = vec![0];
+    let (mut visible_bytes, mut width, mut invisible) = (0, 0, 0);
+    let mut first_row_invisible = None;
+    let mut hidden = false;
+    // Whether the last visible character ended a row: invisible characters
+    // just after it then go on that row.
+    let mut ended_row = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if !hidden && c.ch == Some('\x01') {
+            hidden = true;
+            i += 1;
+            continue;
+        }
+        if hidden && c.ch == Some('\x02') {
+            hidden = false;
+            if ended_row {
+                *breaks.last_mut()? = shown.len();
+                if first_row_invisible.is_some() && breaks.len() == 2 {
+                    first_row_invisible = Some(invisible);
+                }
+            }
+            i += 1;
+            continue;
+        }
+        let end = char_group_end(&chars, i);
+        let group = &chars[i..end];
+        i = end;
+        shown.extend_from_slice(group);
+        let bytes: usize = group.iter().map(|c| c.len).sum();
+        if hidden {
+            invisible += bytes;
+            hidden_at.push(shown.len() - 1);
+        } else {
+            if group.iter().any(PromptChar::is_control) {
+                return None;
+            }
+            visible_bytes += bytes;
+            width += group.iter().map(PromptChar::columns).sum::<usize>();
+        }
+        if first_row_invisible.is_none() && width >= cols {
+            first_row_invisible = Some(invisible);
+        }
+        let bound = breaks.len() * cols;
+        if width >= bound {
+            // A wide character that crosses `bound` starts the next row.
+            breaks.push(if width > bound {
+                shown.len() - 1
+            } else {
+                shown.len()
+            });
+        }
+        if !hidden {
+            ended_row = width == bound;
+        }
+    }
+    if visible_bytes <= cols {
+        first_row_invisible = Some(invisible);
+    }
+    // As readline's `rl_redisplay`: past the last break, the width of what
+    // follows it, escape sequences included, less the invisible bytes not on
+    // the first row; without characters of more than one byte, the width
+    // past the last multiple of `cols`.
+    if width < cols {
+        return Some((0, width));
+    }
+    let row = breaks.len() - 1;
+    let middle_row = |&at: &usize| (1..row).contains(&(breaks.partition_point(|&b| b <= at) - 1));
+    if hidden_at.iter().any(middle_row) {
+        return None;
+    }
+    let col = if visible_bytes > width {
+        let after: usize = shown[*breaks.last()?..]
+            .iter()
+            .map(PromptChar::columns)
+            .sum();
+        after.checked_sub(invisible - first_row_invisible.unwrap_or(0))?
+    } else {
+        width - cols * row
+    };
+    (col < cols).then_some((row, col))
+}
+
+/// A character of the prompt as readline reads it: a byte that is not valid
+/// UTF-8 is a character of its own.
+#[derive(Clone, Copy)]
+struct PromptChar {
+    /// None for a byte that is not valid UTF-8.
+    ch: Option<char>,
+    /// Its length in bytes.
+    len: usize,
+}
+
+impl PromptChar {
+    fn is_control(&self) -> bool {
+        self.ch.is_some_and(char::is_control)
+    }
+
+    /// Its width as readline counts it: 1 for a control character or a byte
+    /// that is not valid UTF-8.
+    fn columns(&self) -> usize {
+        match self.ch {
+            Some(c) if !c.is_control() => c.width().unwrap_or(1),
+            _ => 1,
+        }
+    }
+
+    fn zero_width(&self) -> bool {
+        !self.is_control() && self.ch.is_some_and(|c| c.width() == Some(0))
+    }
+}
+
+/// The characters of `bytes`.
+fn prompt_chars(bytes: &[u8]) -> Vec<PromptChar> {
+    let mut chars = Vec::new();
+    for chunk in bytes.utf8_chunks() {
+        chars.extend(chunk.valid().chars().map(|c| PromptChar {
+            ch: Some(c),
+            len: c.len_utf8(),
+        }));
+        chars.extend(
+            chunk
+                .invalid()
+                .iter()
+                .map(|_| PromptChar { ch: None, len: 1 }),
+        );
+    }
+    chars
+}
+
+/// The end of the group of characters starting at `start` that readline
+/// takes as one: the zero-width characters before the next character with
+/// a width, it, and the zero-width characters after it.
+fn char_group_end(chars: &[PromptChar], start: usize) -> usize {
+    let mut end = start;
+    while let Some(c) = chars.get(end) {
+        end += 1;
+        if !c.zero_width() {
+            break;
+        }
+    }
+    while chars.get(end).is_some_and(PromptChar::zero_width) {
+        end += 1;
+    }
+    end
+}
+
+/// The visible text of the last line of `prompt`, or None when it has
+/// control characters: see `prompt_width`.
+fn visible_last_line(prompt: &[u8]) -> Option<String> {
     let last = prompt.rsplit(|&b| b == b'\n').next().unwrap_or(&[]);
     let mut visible = Vec::new();
     let mut hidden = false;
@@ -106,7 +287,7 @@ pub fn prompt_width(prompt: &[u8]) -> Option<usize> {
     if visible.chars().any(char::is_control) {
         return None;
     }
-    Some(visible.chars().map(|c| c.width().unwrap_or(0)).sum())
+    Some(visible.into_owned())
 }
 
 /// The bytes to write, or None when readline's own drawing should be left
@@ -124,9 +305,9 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
     {
         return None;
     }
-    let start = position(repaint.prompt_width, "", cols);
-    let cursor = position(repaint.prompt_width, &repaint.line[..repaint.point], cols);
-    let end = position(repaint.prompt_width, repaint.line, cols);
+    let start = repaint.prompt_end;
+    let cursor = position(start, &repaint.line[..repaint.point], cols);
+    let end = position(start, repaint.line, cols);
     if end.0 >= repaint.rows {
         return None;
     }
@@ -222,20 +403,19 @@ pub fn build(repaint: &Repaint) -> Option<Output> {
     })
 }
 
-/// Row and column after `text`, starting `prompt_width` cells into the first
-/// row, where readline puts each character: see `advance`.
-fn position(prompt_width: usize, text: &str, cols: usize) -> (usize, usize) {
-    let start = (prompt_width / cols, prompt_width % cols);
+/// Row and column after `text`, starting at `start`, where readline puts
+/// each character: see `advance`.
+fn position(start: (usize, usize), text: &str, cols: usize) -> (usize, usize) {
     text.chars().fold(start, |at, c| advance(at, c, cols))
 }
 
-/// How many screen rows `text` takes after a prompt `prompt_width` columns
-/// wide.
-pub fn rows(prompt_width: usize, text: &str, cols: usize) -> usize {
+/// How many screen rows `text` takes after a prompt that ends at
+/// `prompt_end` (see `prompt_end`).
+pub fn rows(prompt_end: (usize, usize), text: &str, cols: usize) -> usize {
     if cols == 0 {
         return 1;
     }
-    position(prompt_width, text, cols).0 + 1
+    position(prompt_end, text, cols).0 + 1
 }
 
 /// Where readline puts the next character after drawing `c` at `at`. A
@@ -449,7 +629,7 @@ mod tests {
         colors: &'a Colors,
     ) -> Repaint<'a> {
         Repaint {
-            prompt_width: 2,
+            prompt_end: (0, 2),
             line,
             point,
             spans,
@@ -826,6 +1006,90 @@ mod tests {
     }
 
     #[test]
+    fn the_prompt_ends_where_its_last_line_does() {
+        assert_eq!(prompt_end(b"$ ", 80), Some((0, 2)));
+        assert_eq!(prompt_end(b"top line\n> ", 80), Some((0, 2)));
+        assert_eq!(
+            prompt_end(b"\x01\x1b[32m\x02user\x01\x1b[0m\x02$ ", 80),
+            Some((0, 6))
+        );
+        assert_eq!(prompt_end(b"0123456789", 10), Some((1, 0)));
+        assert_eq!(prompt_end(b"0123456789ab", 10), Some((1, 2)));
+        assert_eq!(prompt_end(b"\x1b[32m$ \x1b[0m", 80), None);
+    }
+
+    /// A wide character that does not fit at the end of a row starts the
+    /// next one, leaving the last column blank, as the terminal draws it.
+    #[test]
+    fn a_wide_character_at_the_edge_of_the_prompt_starts_a_row() {
+        assert_eq!(prompt_end("012345678日> ".as_bytes(), 10), Some((1, 4)));
+        assert_eq!(prompt_end("01234567日".as_bytes(), 10), Some((1, 0)));
+        assert_eq!(
+            prompt_end("\x01\x1b[1m\x02日\x01\x1b[0m\x02本".as_bytes(), 3),
+            Some((1, 2))
+        );
+    }
+
+    /// Readline breaks the prompt every 10 columns not counting the blank
+    /// column a wrapped wide character leaves: its second row ends after
+    /// `>`, which the terminal wrapped to the third, and the line starts
+    /// after the space.
+    #[test]
+    fn the_prompt_breaks_on_readlines_rows_past_a_wrapped_wide_character() {
+        assert_eq!(
+            prompt_end("aaaaaaaaa日bbbbbbbb> ".as_bytes(), 10),
+            Some((2, 1))
+        );
+        assert_eq!(
+            prompt_end("aaaaaaaaa日bbbbbbbb>".as_bytes(), 10),
+            Some((2, 0))
+        );
+        // Readline's last row holds 10 columns: its column is off the row.
+        assert_eq!(prompt_end("aaaaaaaaa日bbbbbbbb".as_bytes(), 10), None);
+    }
+
+    /// Escape sequences between `\001` and `\002` count for no columns,
+    /// next to a break or on the last row.
+    #[test]
+    fn invisible_parts_next_to_a_break_of_the_prompt() {
+        assert_eq!(
+            prompt_end("01234567日\x01\x1b[0m\x02> ".as_bytes(), 10),
+            Some((1, 2))
+        );
+        assert_eq!(
+            prompt_end("01234567日> \x01\x1b[0m\x02".as_bytes(), 10),
+            Some((1, 2))
+        );
+    }
+
+    /// Readline counts escape sequences on a row between the first and the
+    /// last in the wrong place: inkline leaves the line to readline.
+    #[test]
+    fn invisible_parts_on_a_middle_row_of_the_prompt() {
+        assert_eq!(
+            prompt_end(b"aaaaaaaaaab\x01\x1b[1m\x02bbbbbbbbb> ", 10),
+            None
+        );
+        assert_eq!(
+            prompt_end(b"aaaaaaaaaab\x01\x1b[1m\x02bbbbbbbbb\x01\x1b[0m\x02> ", 10),
+            None
+        );
+    }
+
+    #[test]
+    fn the_line_starts_after_a_wide_character_the_prompt_wrapped() {
+        let colors = Colors::default();
+        let prompt_end = prompt_end("012345678日> ".as_bytes(), 10).unwrap();
+        let out = build(&Repaint {
+            prompt_end,
+            cols: 10,
+            ..repaint("ls", 2, &[], &colors)
+        })
+        .unwrap();
+        assert_eq!(text(&out), "\x1b7\r\x1b[4Cls\x1b8");
+    }
+
+    #[test]
     fn cursor_inside_a_character_is_left_to_readline() {
         let colors = Colors::default();
         assert!(build(&repaint("echo \u{e9}", 6, &[], &colors)).is_none());
@@ -1039,9 +1303,9 @@ mod tests {
 
     #[test]
     fn a_newline_after_a_full_row_leaves_a_blank_row() {
-        assert_eq!(position(2, "12345678\nx", 10), (2, 1));
-        assert_eq!(rows(2, "12345678\nx", 10), 3);
-        assert_eq!(rows(2, "ls", 10), 1);
+        assert_eq!(position((0, 2), "12345678\nx", 10), (2, 1));
+        assert_eq!(rows((0, 2), "12345678\nx", 10), 3);
+        assert_eq!(rows((0, 2), "ls", 10), 1);
     }
 
     #[test]

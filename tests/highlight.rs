@@ -182,6 +182,81 @@ fn colored_multiline_prompt() {
     assert_eq!(fg(&s, "ls"), Color::Idx(2));
 }
 
+/// A wide character of the prompt that does not fit at the end of a row
+/// starts the next one, leaving the last column blank. Readline still breaks
+/// its rows of the prompt every `cols` columns not counting that blank:
+/// past the row the wide character wrapped on, the terminal's rows and
+/// readline's differ, and the line starts where readline draws it.
+#[test]
+fn prompt_wrapping_a_wide_character() {
+    // 39 columns, then a wide character that needs 2.
+    same_line_after_prompt(
+        "abcdefghijklmnopqrstuvwxyz0123456789:AB日> ",
+        "日>",
+        "日> ls -l",
+    );
+    // 38 more columns, then `>`: readline ends its second row of the prompt
+    // after `>`, which the terminal wrapped to the third row, and starts the
+    // line on its third row, after the space.
+    let ps1 = format!("{}日{}> ", "a".repeat(39), "b".repeat(38));
+    same_line_after_prompt(&ps1, ">", " ls -l");
+}
+
+/// Readline places the line wrongly after a prompt with escape sequences on
+/// a row between its first and last: inkline leaves the line to readline.
+#[test]
+fn prompt_with_escapes_on_a_middle_row() {
+    let ps1 = format!(
+        "{}b\\[\\e[1m\\]{}\\[\\e[0m\\]{}> ",
+        "a".repeat(39),
+        "b".repeat(39),
+        "c".repeat(15)
+    );
+    let start = |inkline| {
+        let mut sh = Shell::spawn(Options {
+            rc: format!("PS1='{ps1}'\n"),
+            cols: 40,
+            inkline,
+            ..Options::default()
+        });
+        sh.wait_for("the first prompt", |s| s.contents().contains("ccc>"));
+        sh.send("ls -l");
+        sh
+    };
+    let mut with = start(true);
+    let mut plain = start(false);
+    wait_same(&with, &plain, "the line after the prompt");
+    with.send(" x");
+    plain.send(" x");
+    wait_same(&with, &plain, "typing after the prompt");
+}
+
+/// Types `ls -l` after `ps1` on a screen 40 columns wide, once a row shows
+/// `prompt_row`, with and without inkline: inkline's line, in colour, is on
+/// the cursor row, which reads `row`, and the screens are the same.
+fn same_line_after_prompt(ps1: &str, prompt_row: &str, row: &str) {
+    let start = |inkline| {
+        let mut sh = Shell::spawn(Options {
+            rc: format!("PS1='{ps1}'\n"),
+            cols: 40,
+            inkline,
+            ..Options::default()
+        });
+        sh.wait_for("the first prompt", |s| has_row(s, prompt_row));
+        sh.send("ls -l");
+        sh
+    };
+    let mut with = start(true);
+    let mut plain = start(false);
+    let s = with.wait_for("colours", |s| fg_is(s, "-l", Color::Idx(6)));
+    assert_eq!(cursor_row(&s), row);
+    assert_eq!(fg(&s, "ls"), Color::Idx(2));
+    wait_same(&with, &plain, "the line after the prompt");
+    with.send(" x");
+    plain.send(" x");
+    wait_same(&with, &plain, "typing after the prompt");
+}
+
 #[test]
 fn wide_characters() {
     let sh = typed(Options::default(), "echo 日本 \"x\"");

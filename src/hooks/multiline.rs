@@ -381,7 +381,8 @@ fn fits_more_rows(line: &str, point: usize, more: usize) -> bool {
 /// Whether readline can draw `text` after the prompt without scrolling.
 fn fits_on_screen(text: &str) -> bool {
     let (rows, cols) = ffi::screen_size();
-    render::rows(prompt_width(), text, cols) <= rows
+    let prompt_end = render::prompt_end(&ffi::display_prompt(), cols).unwrap_or((0, 0));
+    render::rows(prompt_end, text, cols) <= rows
 }
 
 /// Where Up and Down go past the first or last line.

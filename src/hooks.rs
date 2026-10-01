@@ -1393,10 +1393,10 @@ fn repaint_line() -> bool {
     {
         return false;
     }
-    let Some(prompt_width) = render::prompt_width(&ffi::display_prompt()) else {
+    let (rows, cols) = ffi::screen_size();
+    let Some(prompt_end) = render::prompt_end(&ffi::display_prompt(), cols) else {
         return false;
     };
-    let (rows, cols) = ffi::screen_size();
     let colors = crate::lisp::settings::colors();
     let suggestion_lines = crate::lisp::settings::suggestion_lines();
     let path = ffi::shell_variable("PATH").unwrap_or_default();
@@ -1448,7 +1448,7 @@ fn repaint_line() -> bool {
         // with no place on the line then shows nothing.
         let message = message.or(error_message);
         let repaint = Repaint {
-            prompt_width,
+            prompt_end,
             line: &line,
             point,
             spans: &painted.spans,
