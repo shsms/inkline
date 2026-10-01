@@ -1087,6 +1087,8 @@ fn take_interrupt(in_lisp: bool) -> bool {
 /// handed on last (`after_lisp`), outside `guard`: bash may jump from there to
 /// a new prompt.
 extern "C" fn pre_input() -> c_int {
+    // No count or other key is being read when a line starts.
+    ffi::forget_key_reads();
     let result = ffi::call_hook(originals().pre_input);
     guard(
         || {

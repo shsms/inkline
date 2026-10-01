@@ -414,6 +414,15 @@ pub fn normal_editing() -> bool {
     unsafe { rl_readline_state & busy == 0 && rl_done == 0 }
 }
 
+/// Forgets that readline was reading a count, or more keys for a command.
+/// `C-c` while readline waits for such a key leaves what it waited on
+/// noted, and `normal_editing` then stays false on later lines until
+/// another count or key sequence clears it.
+pub fn forget_key_reads() {
+    // SAFETY: rl_readline_state is a plain flag word readline keeps.
+    unsafe { rl_readline_state &= !(RL_STATE_NUMERICARG | RL_STATE_MOREINPUT) };
+}
+
 /// Whether readline is reading the key for the next command of a line.
 /// A key that a running command reads (a question, the key after `C-q`,
 /// the keys of a search) is not one, so while a Lisp command runs, this

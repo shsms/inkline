@@ -144,3 +144,44 @@ fn c_u_after_digits_hides_the_suggestion_while_it_waits() {
     assert_eq!(cursor_row(&s), "(arg: 2) ab");
     assert_eq!(row_text(&s, s.cursor_position().0 + 1), "");
 }
+
+/// `C-c` while a count or a command waits for a key leaves nothing of that
+/// behind: the next lines show suggestions again.
+#[test]
+fn c_c_while_a_key_is_awaited_leaves_suggestions_on() {
+    let mut sh = Shell::start(Options {
+        history: vec!["abcdef"],
+        ..Options::default()
+    });
+    for (name, keys, count) in [
+        ("C-u", "\x15", true),
+        ("M-2 C-u", "\x1b2\x15", true),
+        ("C-u 2", "\x152", true),
+        ("ESC", "\x1b", false),
+    ] {
+        sh.send("zz");
+        sh.wait_for("the typed text", |s| cursor_row(s) == "$ zz");
+        sh.send(keys);
+        if count {
+            sh.wait_for(&format!("the count after {name}"), |s| {
+                cursor_row(s).starts_with("(arg: ")
+            });
+        } else {
+            sh.settle();
+        }
+        sh.send("\x03");
+        sh.wait_for(&format!("the prompt after {name} C-c"), |s| {
+            cursor_row(s) == "$"
+        });
+        sh.send("true\r");
+        sh.wait_for(&format!("the prompt after true ({name})"), |s| {
+            s.cursor_position().0 > 1 && cursor_row(s) == "$"
+        });
+        sh.send("ab");
+        sh.wait_for(&format!("the suggestion after {name} C-c"), |s| {
+            cursor_row(s) == "$ abcdef"
+        });
+        sh.send("\x03");
+        sh.wait_for("the next prompt", |s| cursor_row(s) == "$");
+    }
+}
