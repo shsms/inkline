@@ -74,6 +74,34 @@ pub fn kill_forward(text: &str, point: usize) -> Range<usize> {
     }
 }
 
+/// What `C-k` kills with a count, as Emacs's `kill-line` does: for a count
+/// above 0, from `point` to the start of that many lines down, newlines and
+/// all, or to the end of `text` when it has fewer; for 0, back to the start
+/// of the line; for a count below 0, back to the start of that many lines
+/// up, or of `text`.
+pub fn kill_lines(text: &str, point: usize, count: i32) -> Range<usize> {
+    if count > 0 {
+        let mut end = point;
+        for _ in 0..count.unsigned_abs() {
+            end = line_end(text, end);
+            if end == text.len() {
+                return point..end;
+            }
+            end += 1;
+        }
+        point..end
+    } else {
+        let mut start = line_start(text, point);
+        for _ in 0..count.unsigned_abs() {
+            if start == 0 {
+                break;
+            }
+            start = line_start(text, start - 1);
+        }
+        start..point
+    }
+}
+
 /// What `C-x DEL` (`kill-to-line-start`) kills: back to the start of the
 /// line, or at its start, the newline before it.
 pub fn kill_backward(text: &str, point: usize) -> Range<usize> {
@@ -175,6 +203,26 @@ mod tests {
         assert_eq!(kill_backward("ab\ncd", 4), 3..4);
         assert_eq!(kill_backward("ab\ncd", 3), 2..3);
         assert_eq!(kill_backward("ab\ncd", 0), 0..0);
+    }
+
+    #[test]
+    fn counted_kills_take_whole_lines() {
+        let text = "ab\ncd\nef";
+        assert_eq!(kill_lines(text, 1, 1), 1..3);
+        assert_eq!(kill_lines(text, 1, 2), 1..6);
+        assert_eq!(kill_lines(text, 1, 3), 1..8);
+        assert_eq!(kill_lines(text, 1, 9), 1..8);
+        assert_eq!(kill_lines(text, 8, 1), 8..8);
+        assert_eq!(kill_lines(text, 4, 0), 3..4);
+        assert_eq!(kill_lines(text, 3, 0), 3..3);
+        assert_eq!(kill_lines(text, 4, -1), 0..4);
+        assert_eq!(kill_lines(text, 7, -1), 3..7);
+        assert_eq!(kill_lines(text, 7, -5), 0..7);
+        assert_eq!(kill_lines(text, 3, -1), 0..3);
+        assert_eq!(kill_lines(text, 0, i32::MIN), 0..0);
+        assert_eq!(kill_lines("abc", 1, 2), 1..3);
+        assert_eq!(kill_lines("abc", 1, 0), 0..1);
+        assert_eq!(kill_lines("abc", 1, -1), 0..1);
     }
 
     #[test]

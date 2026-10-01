@@ -141,6 +141,100 @@ fn at_a_line_edge_the_kills_join_lines() {
     sh.wait_for("joined by C-k", |s| row_text(s, 0) == "$ echo aecho b");
 }
 
+/// `C-k` with a count of 0 kills back to the start of the current line only,
+/// and `C-y` gives the text back.
+#[test]
+fn c_k_with_a_count_of_0_kills_back_to_the_line_start() {
+    for zero in ["\x150", "\x1b0"] {
+        let mut sh = Shell::start(Options::default());
+        block(&mut sh, &["echo a", "echo bc"]);
+        sh.send(&format!("\x02{zero}\x0b"));
+        sh.wait_for("killed back", |s| {
+            row_text(s, 0) == "$ echo a" && row_text(s, 1) == "c" && s.cursor_position() == (1, 0)
+        });
+        sh.send("\x19");
+        sh.wait_for("the yank", |s| row_text(s, 1) == "echo bc");
+    }
+}
+
+/// `C-k` with a count of 2 kills to the start of the second line down,
+/// newlines and all.
+#[test]
+fn c_k_with_a_count_kills_to_the_start_of_that_many_lines_down() {
+    let mut sh = Shell::start(Options::default());
+    block(&mut sh, &["echo abc", "echo d", "echo e"]);
+    sh.send(&format!("{UP}{UP}"));
+    sh.wait_for("the first line", |s| s.cursor_position() == (0, 6));
+    sh.send("\x152\x0b");
+    sh.wait_for("killed down", |s| {
+        row_text(s, 0) == "$ echoecho e" && row_text(s, 1).is_empty()
+    });
+    sh.send("\x19");
+    sh.wait_for("the yank", |s| {
+        row_text(s, 0) == "$ echo abc" && row_text(s, 1) == "echo d" && row_text(s, 2) == "echo e"
+    });
+}
+
+/// `C-k` with a count past the last line kills to the end of the command;
+/// `C-u` alone is a count of 4.
+#[test]
+fn c_k_with_a_count_past_the_last_line_kills_to_the_end() {
+    let mut sh = Shell::start(Options::default());
+    block(&mut sh, &["echo a", "b", "c", "d", "e", "f"]);
+    sh.send(&format!("{UP}{UP}{UP}{UP}{UP}\x01"));
+    sh.wait_for("the first line", |s| s.cursor_position() == (0, 2));
+    sh.send("\x15\x0b");
+    sh.wait_for("four lines killed", |s| {
+        row_text(s, 0) == "$ e" && row_text(s, 1) == "f" && row_text(s, 2).is_empty()
+    });
+    sh.send("\x01\x159\x0b");
+    sh.wait_for("the rest killed", |s| {
+        row_text(s, 0) == "$" && row_text(s, 1).is_empty()
+    });
+}
+
+/// `C-k` with a count below 0 kills back from the start of that many lines
+/// up, or of the command.
+#[test]
+fn c_k_with_a_count_below_0_kills_from_lines_up() {
+    let mut sh = Shell::start(Options::default());
+    block(&mut sh, &["echo a", "echo b", "echo cd"]);
+    sh.send("\x02\x1b-\x0b");
+    sh.wait_for("killed from the line above", |s| {
+        row_text(s, 0) == "$ echo a" && row_text(s, 1) == "d" && s.cursor_position() == (1, 0)
+    });
+    sh.send("\x19");
+    sh.wait_for("the yank", |s| {
+        row_text(s, 1) == "echo b" && row_text(s, 2) == "echo cd"
+    });
+    sh.send("\x15-5\x0b");
+    sh.wait_for("killed from the start", |s| {
+        row_text(s, 0) == "$ d" && row_text(s, 1).is_empty()
+    });
+}
+
+/// On a command of one line, `C-k` with a count above 0 kills to the end, and
+/// with 0 or below back to the start. Kills in a row join, as readline's do.
+#[test]
+fn c_k_with_a_count_on_one_line() {
+    let mut sh = Shell::start(Options::default());
+    sh.send("echo abc\x02\x02");
+    sh.wait_for("the cursor", |s| s.cursor_position() == (0, 8));
+    sh.send("\x152\x0b");
+    sh.wait_for("killed to the end", |s| cursor_row(s) == "$ echo a");
+    sh.send("\x19");
+    sh.wait_for("the yank", |s| cursor_row(s) == "$ echo abc");
+    sh.send("\x02\x02\x1b0\x0b");
+    sh.wait_for("killed back", |s| {
+        cursor_row(s) == "$ bc" && s.cursor_position() == (0, 2)
+    });
+    // The next kill joins the last: one yank gives back both.
+    sh.send("\x0b\x19");
+    sh.wait_for("both yanked", |s| cursor_row(s) == "$ echo abc");
+    sh.send("\x02\x02\x1b-\x0b");
+    sh.wait_for("killed back", |s| cursor_row(s) == "$ bc");
+}
+
 /// A shell whose Up and Down run `up` and `down`.
 fn arrow_keys(up: &str, down: &str, history: Vec<&'static str>) -> Options {
     Options {

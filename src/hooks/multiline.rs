@@ -1,6 +1,7 @@
 //! The readline commands for a command that spans several lines.
 
 use std::ffi::c_int;
+use std::ops::Range;
 use std::sync::atomic::Ordering;
 
 use super::{STATE, guard, status_of};
@@ -703,20 +704,43 @@ pub(super) fn end_of_line(count: c_int, key: c_int) -> c_int {
     })
 }
 
+/// `C-k`: kills to the end of the line, or at its end, the newline. With a
+/// count it kills whole lines, as Emacs's `kill-line` does (see
+/// `lines::kill_lines`), on a command of one line too.
 pub(super) extern "C" fn kill_to_line_end(count: c_int, key: c_int) -> c_int {
-    on_line(count, key, ffi::kill_line, |line, point| {
-        let kill = lines::kill_forward(line, point);
-        ffi::kill_text(kill.start, kill.end);
-        ffi::set_point(kill.start);
-    })
+    guard(
+        || match active_line() {
+            // `C-u` alone gives a count of 4 that readline does not mark as typed.
+            Some(line) if count != 1 || ffi::explicit_count() => {
+                kill(lines::kill_lines(&line, ffi::point(), count), count > 0);
+                0
+            }
+            Some(line) if line.contains('\n') => {
+                kill(lines::kill_forward(&line, ffi::point()), true);
+                0
+            }
+            _ => ffi::kill_line(count, key),
+        },
+        || ffi::kill_line(count, key),
+    )
 }
 
 pub(super) extern "C" fn kill_to_line_start(count: c_int, key: c_int) -> c_int {
     on_line(count, key, ffi::backward_kill_line, |line, point| {
-        let kill = lines::kill_backward(line, point);
-        ffi::kill_text(kill.end, kill.start);
-        ffi::set_point(kill.start);
+        kill(lines::kill_backward(line, point), false);
     })
+}
+
+/// Kills `range` onto the kill ring, after the last kill going `forward`,
+/// in front of it going back, as readline's kills join, and puts the cursor
+/// at its start.
+fn kill(range: Range<usize>, forward: bool) {
+    if forward {
+        ffi::kill_text(range.start, range.end);
+    } else {
+        ffi::kill_text(range.end, range.start);
+    }
+    ffi::set_point(range.start);
 }
 
 /// Runs `edit` on the line and cursor. Readline's `fallback` runs instead
