@@ -5,7 +5,7 @@
 
 use crate::lexer::Kind;
 
-pub const DEFAULT: &str = "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2:menu-note=2";
+pub const DEFAULT: &str = "command=32:unknown=31:keyword=35:option=36:string=33:variable=34:operator=1:comment=2:suggestion=90:number=36:function=32:script=2:menu-selected=7:menu-source=2:menu-note=2:search-match=7";
 
 /// The start of the syntax-error underline: a plain underline first, which
 /// every terminal shows, then a wavy one in red where the terminal supports
@@ -31,6 +31,9 @@ pub struct Colors {
     menu_source: String,
     /// The SGR codes of a menu row's note.
     menu_note: String,
+    /// The SGR codes drawn on top of the text an incremental search
+    /// matched; empty means no mark.
+    search_match: String,
 }
 
 impl Colors {
@@ -45,6 +48,7 @@ impl Colors {
             menu_selected: String::new(),
             menu_source: String::new(),
             menu_note: String::new(),
+            search_match: String::new(),
         };
         colors.apply(DEFAULT);
         colors.apply(spec);
@@ -88,6 +92,7 @@ impl Colors {
             "menu-selected" => &mut self.menu_selected,
             "menu-source" => &mut self.menu_source,
             "menu-note" => &mut self.menu_note,
+            "search-match" => &mut self.search_match,
             _ => return None,
         })
     }
@@ -126,6 +131,10 @@ impl Colors {
 
     pub fn menu_note(&self) -> &str {
         &self.menu_note
+    }
+
+    pub fn search_match(&self) -> &str {
+        &self.search_match
     }
 
     /// These colours with `set`'s on top. A separator the set leaves out
@@ -748,6 +757,18 @@ mod tests {
         // A mode's own colours cannot set them.
         assert!(ColorSet::from_entries(&pairs(&[("menu", "1")])).is_err());
         assert!(ColorSet::from_entries(&pairs(&[("menu-note", "1")])).is_err());
+    }
+
+    #[test]
+    fn the_search_match_colour_has_a_default_and_can_be_set() {
+        assert_eq!(Colors::default().search_match(), "7");
+        assert_eq!(Colors::parse("search-match=4").search_match(), "4");
+        let c = Colors::from_entries(&entries(&[("search-match", "bold")])).unwrap();
+        assert_eq!(c.search_match(), "1");
+        let c = Colors::from_entries(&entries(&[("search-match", "")])).unwrap();
+        assert_eq!(c.search_match(), "");
+        // A mode's own colours cannot set it.
+        assert!(ColorSet::from_entries(&entries(&[("search-match", "1")])).is_err());
     }
 
     /// The first entry for a name wins, but a later one is checked too.
