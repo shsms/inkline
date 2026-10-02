@@ -294,7 +294,7 @@ Every variable, function, command and hook inkline adds to Lisp is listed in
   arrows move between the lines of a command only. `C-w` kills the region,
   `M-w` copies it, and Backspace and `C-d` delete it without putting it on
   the kill ring. `C-x C-x` swaps the cursor and the mark. `C-SPC` again at
-  the mark, `C-g`, or any other change to the line ends the region. With no
+  the mark, `C-g`, Tab, or any other change to the line ends the region. With no
   active region `C-w` and `C-d` do what they do in bash, and `M-w` rings the
   bell. A region with the mark at the cursor is empty: Backspace and `C-d`
   delete a character, as in Emacs. A count before `C-w` is ignored while the
@@ -352,10 +352,11 @@ m  amended_at  column
 ```
 
 A row marked `c` is what bash's own completion offers for the word at the
-cursor, as Tab would: commands, files, variables, and what the `complete`
-rules other tools install give (git's branches, for example). Each is
-written as Tab would put it on the line, with a `/` after a directory and
-a space after a finished word, and taking it puts exactly that there:
+cursor, as bash's own Tab would: commands, files, variables, and what the
+`complete` rules other tools install give (git's branches, for example). Each
+is written as bash's own Tab would put it on the line, with a `/` after a
+directory and a space after a finished word, and taking it puts exactly that
+there:
 
 ```
 $ cat my
@@ -401,7 +402,12 @@ last row says how many more.
   it and does not start moving, so `cd s` Tab gives `cd src/` and the menu
   then lists what is inside. While bash's copy of the shell or a mode server
   is still working, more items may come, so the key starts moving instead.
-- With no menu, Tab completes as bash does, and a second Tab lists the choices.
+- With no menu, Tab shows it, even where `C-g`, a cursor move or a line
+  brought back from history hid it. With nothing to offer, as on an empty
+  line, and no items still coming, it rings the bell.
+  It does not run bash's own completion, and `M-?` lists the choices. With
+  inkline off, with `inkline-show-menu` off, or where readline draws the
+  line, Tab completes as bash does, and a second Tab lists the choices.
   With no menu, Shift-Tab runs what the key had before inkline bound it, or
   rings the bell when it had nothing.
 - Enter keeps the row and stops moving, without running the line; a second
@@ -410,36 +416,35 @@ last row says how many more.
   the row only while it runs `accept-or-newline` (the `multi-line` group).
   `M-RET` runs the line as it is.
 - `C-g` after a move puts back what you typed and hides the menu until the
-  line's text changes; with no move it just hides the menu, so `C-g` then Tab
-  completes as bash does. With no menu, `C-g` is readline's `abort`. Any other
-  key after a move keeps the row and does its own job.
+  line's text changes; with no move it just hides the menu, and Tab shows it
+  again. With no menu, `C-g` is readline's `abort`. Any other key after a move
+  keeps the row and does its own job.
 - The row a move writes is one undo step: `C-_` gives back what you typed.
 - Moving the cursor without changing the text (`<left>`, `C-a`, …) hides the
-  menu until you type again, so the arrows and `C-n`/`C-p` then move between
-  the lines of a command. Set `inkline-menu-on-move` to keep the menu wherever
-  the cursor stops.
-- A line brought back from history (`C-p`, `<up>`, a search) shows no menu
-  and no grey text until you change it. With no menu, `C-p`/`<up>` search
-  history, newest first, for commands holding the text before the cursor
-  anywhere in them, passing over those that repeat the line or the last
-  match, and `C-n`/`<down>` go back to newer matches; `<down>` past the
-  newest match puts back the line and cursor as they were when the search
-  started. With nothing older, `C-p`/`<up>` ring the bell and leave the
+  menu until you type again or press Tab, so the arrows and `C-n`/`C-p` then
+  move between the lines of a command. Set `inkline-menu-on-move` to keep the
+  menu wherever the cursor stops.
+- A line brought back from history (`C-p`, `<up>`, a search) shows no menu and
+  no grey text until you change it; Tab shows the menu. With no menu,
+  `C-p`/`<up>` search history, newest first, for commands holding the text
+  before the cursor anywhere in them, passing over those that repeat the line
+  or the last match, and `C-n`/`<down>` go back to newer matches; `<down>`
+  past the newest match puts back the line and cursor as they were when the
+  search started. With nothing older, `C-p`/`<up>` ring the bell and leave the
   line. With nothing before the cursor, or on a command brought back by
-  walking history or by `C-r`, they walk history instead; on a command the
-  up and down keys' own search found, by substring or by prefix, they start
-  a new search. Where inputrc binds `<up>` and `<down>` to
-  `history-search-backward` and `history-search-forward`, they search for
-  commands starting with the text as readline's prefix search does: on any
-  line, from where the line is in history, `<up>` for older commands and
-  `<down>` for newer ones, leaving the cursor after the text. They pass
-  over commands that repeat the last match, though on a command from
-  history they go to one when they find nothing else, so they go through
-  history in order. On a typed line, as the substring search does, they
-  also pass over commands that repeat the line, and in a search `<down>`
-  past the newest match puts back the line and cursor as they were when
-  it started; on a command from history, `<down>` past the newest match
-  rings the bell. `C-p` and `C-n` keep the substring search. With
+  walking history or by `C-r`, they walk history instead; on a command the up
+  and down keys' own search found, by substring or by prefix, they start a new
+  search. Where inputrc binds `<up>` and `<down>` to `history-search-backward`
+  and `history-search-forward`, they search for commands starting with the
+  text as readline's prefix search does: on any line, from where the line is
+  in history, `<up>` for older commands and `<down>` for newer ones, leaving
+  the cursor after the text. They pass over commands that repeat the last
+  match, though on a command from history they go to one when they find
+  nothing else, so they go through history in order. On a typed line, as the
+  substring search does, they also pass over commands that repeat the line,
+  and in a search `<down>` past the newest match puts back the line and cursor
+  as they were when it started; on a command from history, `<down>` past the
+  newest match rings the bell. `C-p` and `C-n` keep the substring search. With
   readline's `search-ignore-case` on, case is ignored.
 
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey

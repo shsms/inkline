@@ -20,11 +20,11 @@ change takes effect on the next key.
   suggestion to show, an integer of at least 1. It applies only while no
   menu or message shows under the line; with one, a multi-line suggestion
   takes one row.
-- `inkline-show-menu` (default `t`): whether the completion menu shows. A
-  line brought back from history (with `C-p`, `<up>`, a search and the like)
-  shows no menu and no grey text until you change it. With no menu, `C-n`
-  and `C-p` move between lines and search history by substring, as `<down>`
-  and `<up>` do.
+- `inkline-show-menu` (default `t`): whether the completion menu shows. A line
+  brought back from history (with `C-p`, `<up>`, a search and the like) shows
+  no menu and no grey text until you change it or press Tab. With no menu,
+  `C-n` and `C-p` move between lines and search history by substring, as
+  `<down>` and `<up>` do.
 - `inkline-show-suggestion` (default `t`): whether the grey suggestion text
   shows.
 - `inkline-menu-lines` (default `8`): the most rows the completion menu
@@ -64,11 +64,13 @@ change takes effect on the next key.
   `inkline-menu-sources`, it limits only the menu.
 - `inkline-menu-on-move` (default `nil`): when `nil`, a key that moves the
   cursor without changing the line's text hides the menu until the text
-  changes, so `C-n`, `C-p` and the arrows then move between the lines of a
-  command; when non-nil, the menu shows again wherever the cursor stops.
+  changes or you press Tab, so `C-n`, `C-p` and the arrows then move between
+  the lines of a command; when non-nil, the menu shows again wherever the
+  cursor stops.
 - `inkline-bash-completion` (default `t`): whether the menu gets items from
-  bash's own completion, marked `c`: what Tab would offer for the word at the
-  cursor, found in a copy of the shell. With `nil` no copy is started.
+  bash's own completion, marked `c`: what bash's own Tab would offer for the
+  word at the cursor, found in a copy of the shell. With `nil` no copy is
+  started.
 - `inkline-command-min-chars` (default `1`): how many characters of a command
   name you type before bash's items for it are listed, an integer of at least
   0. Other words get bash's items at once.
@@ -406,9 +408,9 @@ changed the line: after the command has returned, and before the line is drawn.
 Called with the line as a string whenever inkline gathers the completion
 menu's items: the line is not empty, the cursor is at its end, and inkline
 draws the line, in plain editing. Items are not gathered for a line brought
-back from history until you change it, nor while `inkline-show-menu` and
-`inkline-show-suggestion` are both `nil`. No items are gathered while moving
-through the menu.
+back from history until you change it or press Tab, nor while
+`inkline-show-menu` and `inkline-show-suggestion` are both `nil`. No items are
+gathered while moving through the menu.
 
 - The first function that returns a string that starts with the line and is
   longer wins. Any other value is no answer, and the next function is asked.

@@ -196,9 +196,11 @@ above.
 
 In readline's emacs keymap, =M-ESC= (Esc Esc) is also ~complete~: after
 a Tab that completed nothing more, it lists the choices, as a second Tab
-does. Tab now runs ~menu-take~, so readline records ~menu-take~ as the
-last command, and the ~complete~ that Esc Esc runs next does not see a
-completion just before it: it does not list. Tab Tab still lists.
+does. Where Tab completes as bash does (~inkline-show-menu~ off, or
+readline drawing the line), it runs ~menu-take~, so readline records
+~menu-take~ as the last command, and the ~complete~ that Esc Esc runs
+next does not see a completion just before it: it does not list. Tab Tab
+still lists.
 
 ** TODO Known limits of a mode server's completion items
 
