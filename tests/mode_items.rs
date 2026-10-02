@@ -112,6 +112,28 @@ fn late_items_show_without_a_key() {
     sh.wait_for("the late items", |s| find(s, "m  amount").is_some());
 }
 
+/// Tab before the mode server's items have come rings no bell: they show
+/// when they come.
+#[test]
+fn tab_while_items_are_coming_waits_for_them() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            "(inkline-define-mode 'fake-mode '({}))\n\
+             (push '(\"csvm\" . fake-mode) inkline-command-mode-alist)\n",
+            server("late-complete")
+        )),
+        rc: "bind 'set bell-style audible'\n".into(),
+        ..Options::default()
+    });
+    sh.send("csvm 'sort am");
+    sh.wait_for("the line", |s| find(s, "csvm 'sort am").is_some());
+    sh.take_output();
+    sh.send("\t");
+    sh.wait_for("the late items", |s| find(s, "m  amount").is_some());
+    let out = sh.take_output();
+    assert!(!out.contains(&0x07), "no bell: {out:?}");
+}
+
 /// While moving, the menu keeps the rows it had at the first move: items
 /// that come later are not added.
 #[test]

@@ -56,13 +56,20 @@ struct State {
     /// The completion menu for the line and cursor it was made for.
     menu: Option<Menu>,
     /// The line text `C-g` hid the menu on: no menu and no grey text show
-    /// until a draw in plain editing finds another text.
+    /// until a draw in plain editing finds another text, or Tab shows the
+    /// menu.
     hidden_on: Option<String>,
     /// The line text and cursor of the last draw in plain editing.
     drawn_at: Option<(String, usize)>,
+    /// The line text and cursor Tab asked for the menu on (see `menu_take`):
+    /// the menu shows there even on a line brought back from history, until
+    /// a draw in plain editing finds another text or cursor.
+    asked_on: Option<(String, usize)>,
+    /// What the last draw did with the line.
+    last_draw: LineDraw,
     /// Whether the cursor moved since the line's text last changed: unless
     /// `inkline-menu-on-move` is set, no menu shows until a draw in plain
-    /// editing finds another text.
+    /// editing finds another text, or Tab shows the menu.
     cursor_moved: bool,
     /// Set when bash may have printed while the line was being edited: the
     /// cursor may not be where readline thinks it is, so readline draws the
@@ -209,6 +216,8 @@ thread_local! {
         menu: None,
         hidden_on: None,
         drawn_at: None,
+        asked_on: None,
+        last_draw: LineDraw::ByReadline,
         cursor_moved: false,
         displaced: false,
         unloaded: false,
@@ -1153,6 +1162,7 @@ extern "C" fn pre_input() -> c_int {
                 s.moving = None;
                 s.hidden_on = None;
                 s.drawn_at = None;
+                s.asked_on = None;
                 s.cursor_moved = false;
             });
             // A new line at the main prompt drops the mode servers' replies;
@@ -1395,7 +1405,9 @@ fn repaint_now() {
 /// take from the suggestion and `M-2 C-n` can move through the menu;
 /// `accept` checks the suggestion against the line before using it.
 fn draw() {
-    if !repaint_line() {
+    let drawn = repaint_line();
+    STATE.with_borrow_mut(|s| s.last_draw = drawn);
+    if drawn != LineDraw::Repainted {
         // Readline's plain drawing has no underline, and an error that shows
         // up later, even the same one, waits for a new pause.
         STATE.with_borrow_mut(|s| {
@@ -1412,10 +1424,22 @@ fn draw() {
     }
 }
 
-/// Does `draw`'s work. Returns whether it repainted the line. The active
+/// What a draw did with the line.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LineDraw {
+    /// inkline repainted it.
+    Repainted,
+    /// It is empty, with no message to show under it: readline's drawing
+    /// is left as it is.
+    Empty,
+    /// Readline draws it on its own.
+    ByReadline,
+}
+
+/// Does `draw`'s work, and says what it did with the line. The active
 /// region is drawn with the `region` colour, and while it is active nothing is
 /// gathered for the menu or the grey text.
-fn repaint_line() -> bool {
+fn repaint_line() -> LineDraw {
     let editing = ffi::normal_editing();
     let searching = ffi::searching_incrementally();
     let line = ffi::line();
@@ -1450,6 +1474,12 @@ fn repaint_line() -> bool {
             if s.hidden_on.as_deref() != text {
                 s.hidden_on = None;
             }
+            if s.asked_on
+                .as_ref()
+                .is_some_and(|(on, at)| text != Some(on) || *at != point)
+            {
+                s.asked_on = None;
+            }
             let same_text = matches!((&s.drawn_at, text), (Some((was, _)), Some(l)) if was == l);
             let moved = s.drawn_at.as_ref().is_some_and(|(_, at)| *at != point);
             s.cursor_moved = same_text && (s.cursor_moved || moved);
@@ -1457,24 +1487,24 @@ fn repaint_line() -> bool {
         }
     });
     let Some(line) = line else {
-        return false;
+        return LineDraw::ByReadline;
     };
-    if (line.is_empty() && MESSAGE.with_borrow(Option::is_none))
-        || STATE.with_borrow(|s| s.displaced)
-        || left_to_readline()
-    {
-        return false;
+    if STATE.with_borrow(|s| s.displaced) || left_to_readline() {
+        return LineDraw::ByReadline;
+    }
+    if line.is_empty() && MESSAGE.with_borrow(Option::is_none) {
+        return LineDraw::Empty;
     }
     let prompt = ffi::display_prompt();
     // A newline typed into the search text (`C-v C-j`) is part of readline's
     // search prompt, which readline measures whole, not from its last
     // newline as it does `PS1`.
     if searching && prompt.contains(&b'\n') {
-        return false;
+        return LineDraw::ByReadline;
     }
     let (rows, cols) = ffi::screen_size();
     let Some(prompt_end) = render::prompt_end(&prompt, cols) else {
-        return false;
+        return LineDraw::ByReadline;
     };
     let colors = crate::lisp::settings::colors();
     let suggestion_lines = crate::lisp::settings::suggestion_lines();
@@ -1489,7 +1519,8 @@ fn repaint_line() -> bool {
         && !line.is_empty()
         && (show_menu || (show_suggestion && point == line.len()))
         && !is_hidden(&line)
-        && !recalled(&line)
+        // Tab asked for the menu on this text and cursor.
+        && (!recalled(&line) || STATE.with_borrow(|s| s.asked_on.is_some()))
         // No menu or grey text while the region is active.
         && !region::active();
     let began = Instant::now();
@@ -1566,7 +1597,7 @@ fn repaint_line() -> bool {
             cols,
         };
         let Some(out) = render::build(&repaint) else {
-            return false;
+            return LineDraw::ByReadline;
         };
         ffi::write_queued(&out.bytes);
         s.shown_at = out.suggestion_col;
@@ -1587,7 +1618,7 @@ fn repaint_line() -> bool {
         if let (Some(_), Some(rest)) = (out.suggestion_col, suggestion) {
             s.suggestion = Some((line.clone(), rest));
         }
-        true
+        LineDraw::Repainted
     })
 }
 
@@ -2068,18 +2099,20 @@ fn menu_fallback(
     }
 }
 
-/// Tab: moves through the menu, or writes its only row (see `moving::tab`).
-/// With no menu, readline's `complete`, and right after a Tab that ran it,
-/// the listing of readline's second Tab. `complete` may jump back to
-/// readline's or bash's top level, so it runs last with nothing here to
-/// drop.
+/// Tab: ends the region, then moves through the menu, or writes its only
+/// row (see `moving::tab`). With no menu, shows it (see `show_menu_now`).
+/// Where inkline shows no menu, readline's `complete`, and right after a
+/// Tab that ran it, the listing of readline's second Tab. `complete` may
+/// jump back to readline's or bash's top level, so it runs last with
+/// nothing here to drop.
 extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
     let (done, again) = guard(
         || {
             let right_after = last_command()
                 .is_some_and(|f| std::ptr::fn_addr_eq(f, menu_take as ffi::CommandFn));
             let again = right_after && STATE.with_borrow(|s| s.completing);
-            let done = moving::tab(true);
+            region::end();
+            let done = moving::tab(true) || show_menu_now();
             STATE.with_borrow_mut(|s| s.completing = !done);
             (done, again)
         },
@@ -2092,6 +2125,42 @@ extern "C" fn menu_take(count: c_int, key: c_int) -> c_int {
         ffi::continue_completion();
     }
     ffi::complete(count, key)
+}
+
+/// Shows the menu for the line and cursor as they are, even where `C-g`, a
+/// cursor move or a line brought back from history hid it. Rings the bell
+/// when there is nothing to show and no items still coming, as on an empty
+/// line. False when inkline shows no menu: inkline is off,
+/// `inkline-show-menu` is off, or readline draws the line.
+fn show_menu_now() -> bool {
+    if !crate::lisp::settings::show_menu() {
+        return false;
+    }
+    let (Some(line), point) = (ffi::line(), ffi::point()) else {
+        return false;
+    };
+    STATE.with_borrow_mut(|s| {
+        s.hidden_on = None;
+        s.cursor_moved = false;
+        s.asked_on = Some((line.clone(), point));
+        // A redraw that does not reach `draw` leaves the line to readline.
+        s.last_draw = LineDraw::ByReadline;
+    });
+    repaint_now();
+    let (drawn, coming) = STATE.with_borrow(|s| {
+        let menu = s.menu.as_ref().filter(|m| m.is_for(&line, point));
+        (
+            s.last_draw,
+            menu.is_some_and(|m| m.shown || m.mode_waiting || m.bash_waiting),
+        )
+    });
+    if drawn == LineDraw::ByReadline {
+        return false;
+    }
+    if !coming {
+        ffi::ding();
+    }
+    true
 }
 
 /// Shift-Tab: moves up through the menu, or writes its only row (see

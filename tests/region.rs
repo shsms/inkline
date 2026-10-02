@@ -149,6 +149,37 @@ fn typing_ends_the_region() {
     assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
 }
 
+/// Tab ends the region and shows the menu.
+#[test]
+fn tab_ends_the_region_and_shows_the_menu() {
+    let mut sh = typed_with_menu();
+    sh.send(C_SPC);
+    sh.wait_for("no menu", |s| below(s).is_empty());
+    sh.send("\t");
+    let s = sh.wait_for("the menu", |s| below(s) == "h  echo hello world");
+    assert_eq!(s.cursor_position(), (0, 12), "{}", dump(&s));
+    // The region ended: `C-b` moves the cursor without marking text.
+    sh.send("\x02");
+    let s = sh.wait_for("the cursor moved", |s| s.cursor_position() == (0, 11));
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
+/// With the menu off, Tab ends the region too, then completes as bash does.
+#[test]
+fn tab_with_the_menu_off_ends_the_region() {
+    let mut sh = Shell::start(Options {
+        init_el: Some("(setq inkline-show-menu nil)".to_owned()),
+        ..Options::default()
+    });
+    type_text(&mut sh, "echo qqqxyzw");
+    sh.send(C_SPC);
+    sh.send("\x02\x02");
+    sh.wait_for("the region", |s| every_cell(s, "zw", vt100::Cell::inverse));
+    sh.send("\t\x02");
+    let s = sh.wait_for("the cursor moved", |s| s.cursor_position() == (0, 11));
+    assert!(!any_on_screen(&s, vt100::Cell::inverse), "{}", dump(&s));
+}
+
 /// `C-g` ends the region and leaves the line and the cursor.
 #[test]
 fn ctrl_g_ends_the_region_only() {

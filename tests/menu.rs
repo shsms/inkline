@@ -600,30 +600,143 @@ fn with_zzfile(dir: &tempfile::TempDir, history: Vec<&'static str>) -> Options {
     }
 }
 
+/// `C-g` hides the menu; Tab shows it again, with no row picked, and a
+/// second Tab moves to the top row.
 #[test]
-fn ctrl_g_then_tab_completes_as_bash_does() {
+fn ctrl_g_then_tab_shows_the_menu_again() {
+    let mut sh = two_items();
+    sh.send(C_G);
+    sh.wait_for("no menu", |s| row_text(s, 1).is_empty());
+    sh.send("\t");
+    let s = sh.wait_for("the menu again", |s| row_text(s, 1) == "h  git status");
+    assert_eq!(row_text(&s, 2), "h  git stash", "{}", dump(&s));
+    assert!(!picked(&s, 1), "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 8), "{}", dump(&s));
+    sh.send("\t");
+    sh.wait_for("the top row", |s| {
+        picked(s, 1) && cursor_row(s) == "$ git status"
+    });
+}
+
+/// With nothing to offer, Tab rings the bell and changes nothing, however
+/// often it is pressed: it never completes or lists as bash does, even
+/// where bash would find files.
+#[test]
+fn tab_with_nothing_to_offer_rings_the_bell() {
     let dir = tempfile::tempdir().unwrap();
-    let mut sh = menu_showing(with_zzfile(&dir, vec!["ls zz-old"]), "ls z", "h  ls zz-old");
-    sh.send(&format!("{C_G}\t"));
+    let opts = Options {
+        rc: "bind 'set bell-style audible'\n".into(),
+        ..with_zzfile(&dir, vec![])
+    };
+    std::fs::write(dir.path().join("zzfoo"), "").unwrap();
+    let mut sh = Shell::start(opts);
+    sh.wait_for("the prompt", |s| cursor_row(s) == "$");
+    sh.take_output();
+    sh.send("\t");
+    sh.wait_for_output("the bell on an empty line", b"\x07");
+    sh.send("\t");
+    sh.wait_for_output("the bell again", b"\x07");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$", "nothing listed: {}", dump(&s));
+    sh.send("ls zz");
+    sh.wait_for("the line", |s| cursor_row(s) == "$ ls zz");
+    sh.take_output();
+    sh.send("\t");
+    sh.wait_for_output("the bell", b"\x07");
+    sh.send("\t");
+    sh.wait_for_output("the bell again", b"\x07");
+    let s = sh.settle();
+    assert_eq!(cursor_row(&s), "$ ls zz", "{}", dump(&s));
+    assert_eq!(s.cursor_position(), (0, 7), "{}", dump(&s));
+    assert!(find(&s, "zzfoo").is_none(), "{}", dump(&s));
+}
+
+/// On a line brought back from history Tab shows the menu; `C-g` still
+/// hides it, and Tab shows it again.
+#[test]
+fn tab_shows_the_menu_on_a_recalled_line() {
+    let mut sh = Shell::start(with_history(vec!["git", "git status", "git st"]));
+    sh.settle();
+    sh.send(C_P);
+    sh.wait_for("the entry", |s| {
+        cursor_row(s) == "$ git st" && s.cursor_position() == (0, 8)
+    });
+    sh.send("\t");
+    sh.wait_for("the menu", |s| row_text(s, 1) == "h  git status");
+    sh.send(C_G);
+    sh.wait_for("no menu", |s| row_text(s, 1).is_empty());
+    sh.send("\t");
+    let s = sh.wait_for("the menu again", |s| row_text(s, 1) == "h  git status");
+    assert!(!picked(&s, 1), "{}", dump(&s));
+    // Another entry from history (`M-<`, the oldest) shows no menu again.
+    sh.send("\x1b<");
+    sh.wait_for("the oldest entry", |s| cursor_row(s) == "$ git");
+    let s = sh.settle();
+    assert_eq!(row_text(&s, 1), "", "no menu: {}", dump(&s));
+}
+
+/// After the cursor moved, Tab shows the menu for where it is now.
+#[test]
+fn tab_shows_the_menu_where_the_cursor_moved() {
+    let mut sh = menu_showing(with_init(WORDS, vec![]), "echo s\x0aecho  sh", "l  show");
+    sh.send("\x1b[D");
+    sh.wait_for("the cursor moved", |s| s.cursor_position() == (1, 7));
+    sh.wait_for("no menu", |s| !has_row(s, "l  s"));
+    sh.send("\t");
+    let s = sh.wait_for("the menu", |s| has_row(s, "l  show"));
+    assert_eq!(s.cursor_position(), (1, 7), "{}", dump(&s));
+}
+
+/// Where readline draws the line (with `mark-modified-lines`, or a control
+/// character in the line), and with inkline off, Tab completes as bash
+/// does.
+#[test]
+fn tab_completes_as_bash_does_where_inkline_shows_no_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = Options {
+        inputrc: Some("set mark-modified-lines on\n".into()),
+        ..with_zzfile(&dir, vec![])
+    };
+    let mut sh = Shell::start(opts);
+    sh.send("ls z\t");
+    sh.wait_for("the file name", |s| {
+        cursor_row(s).starts_with("$ ls zzfile")
+    });
+    let mut sh = Shell::start(with_zzfile(&dir, vec![]));
+    // `C-v C-a` puts a control character in the line.
+    sh.send("echo \x16\x01; ls z\t");
+    sh.wait_for("the file name", |s| cursor_row(s).contains("ls zzfile"));
+    let mut sh = Shell::start(with_zzfile(&dir, vec![]));
+    sh.send("inkline off\r");
+    sh.wait_for("the next prompt", |s| {
+        s.cursor_position().0 > 0 && cursor_row(s) == "$"
+    });
+    sh.send("ls z\t");
     sh.wait_for("the file name", |s| {
         cursor_row(s).starts_with("$ ls zzfile")
     });
 }
 
-/// With no menu, Tab completes as bash does, and a second Tab lists the
-/// choices. The typed `zzf` is all the files have in common, so the first
-/// Tab leaves the line as it is: readline lists on a second Tab only after
-/// one that changed nothing.
+/// With `inkline-show-menu` off, Tab completes as bash does, and a second
+/// Tab lists the choices. The typed `zzf` is all the files have in common,
+/// so the first Tab leaves the line as it is: readline lists on a second
+/// Tab only after one that changed nothing.
 #[test]
-fn ctrl_g_then_two_tabs_list_the_choices() {
+fn with_the_menu_off_tab_completes_as_bash_does() {
     let dir = tempfile::tempdir().unwrap();
-    let opts = with_zzfile(&dir, vec!["ls zzf-old"]);
-    std::fs::write(dir.path().join("zzfoo"), "").unwrap();
-    let mut sh = menu_showing(opts, "ls zzf", "h  ls zzf-old");
-    sh.send(&format!("{C_G}\t"));
-    sh.wait_for("no menu", |s| {
-        cursor_row(s) == "$ ls zzf" && row_text(s, 1).is_empty()
+    let opts = Options {
+        init_el: Some("(setq inkline-show-menu nil)".to_owned()),
+        ..with_zzfile(&dir, vec![])
+    };
+    let mut sh = Shell::start(opts);
+    sh.send("ls z\t");
+    sh.wait_for("the file name", |s| {
+        cursor_row(s).starts_with("$ ls zzfile")
     });
+    sh.send("\x18\x7f");
+    std::fs::write(dir.path().join("zzfoo"), "").unwrap();
+    sh.send("ls zzf\t");
+    sh.wait_for("the line", |s| cursor_row(s) == "$ ls zzf");
     sh.send("\t");
     sh.wait_for("the listing", |s| {
         find(s, "zzfoo").is_some() && find(s, "zzfile").is_some()

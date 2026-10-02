@@ -234,6 +234,33 @@ fn a_late_answer_shows_without_a_key() {
     typed_then(&mut sh, "late ", "c  later");
 }
 
+/// Tab while bash's items are still coming rings no bell and does not
+/// complete in the shell itself: the items show when they come.
+#[test]
+fn tab_while_items_are_coming_waits_for_them() {
+    let dir = files();
+    let mut sh = shell_in(
+        dir.path(),
+        "_late() { sleep 1; COMPREPLY=(later); }\ncomplete -F _late late\n\
+         bind 'set bell-style audible'\n",
+        "",
+    );
+    sh.send("late ");
+    sh.wait_for("the line", |s| cursor_row(s) == "$ late");
+    sh.take_output();
+    sh.send("\t");
+    let s = sh.wait_for("the row", |s| has_row(s, "c  later"));
+    assert_eq!(
+        cursor_row(&s),
+        "$ late later",
+        "the grey text: {}",
+        dump(&s)
+    );
+    assert_eq!(s.cursor_position(), (0, 7), "{}", dump(&s));
+    let out = sh.take_output();
+    assert!(!out.contains(&0x07), "no bell: {out:?}");
+}
+
 /// A pipeline in a rule that a signal ends leaves the terminal as readline
 /// set it: keys still come one at a time.
 #[test]
