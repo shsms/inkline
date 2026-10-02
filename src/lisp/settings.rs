@@ -18,7 +18,7 @@ const DEFINITIONS: &str = "
 (defvar inkline-show-menu t)
 (defvar inkline-show-suggestion t)
 (defvar inkline-menu-lines 8)
-(defvar inkline-completion-style 'substring)
+(defvar inkline-completion-style 'orderless)
 (defvar inkline-completion-ignore-case nil)
 (defvar inkline-menu-sources '(history lisp mode bash))
 (defvar inkline-menu-min-chars 0)
@@ -477,7 +477,7 @@ fn completion_style() -> Style {
         "inkline-completion-style",
         |s| &s.completion_style,
         parse_style,
-        Style::Substring,
+        Style::Orderless,
     )
 }
 
@@ -838,7 +838,7 @@ mod tests {
         assert!(show_menu());
         assert!(show_suggestion());
         assert_eq!(menu_lines(), 8);
-        assert_eq!(completion_style(), Style::Substring);
+        assert_eq!(completion_style(), Style::Orderless);
         assert!(!completion_matching().ignore_case);
         assert!(!menu_on_move());
         assert_eq!(
@@ -878,7 +878,7 @@ mod tests {
         crate::lisp::eval("(progn (setq inkline-menu-lines 0 inkline-completion-style 'x) nil)")
             .unwrap();
         assert_eq!(menu_lines(), 8);
-        assert_eq!(completion_style(), Style::Substring);
+        assert_eq!(completion_style(), Style::Orderless);
         assert_eq!(
             problems(),
             vec![

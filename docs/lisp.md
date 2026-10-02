@@ -29,7 +29,7 @@ change takes effect on the next key.
   shows.
 - `inkline-menu-lines` (default `8`): the most rows the completion menu
   takes, an integer of at least 1.
-- `inkline-completion-style` (default `substring`): how the text you typed
+- `inkline-completion-style` (default `orderless`): how the text you typed
   matches a completion item, the symbol `orderless` (the item holds each word
   you typed, split at blanks, anywhere and in any order), `substring` (the
   item holds what you typed anywhere, as one piece), `prefix` (the item starts

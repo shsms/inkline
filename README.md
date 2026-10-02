@@ -337,12 +337,13 @@ l  switch
 l  show
 ```
 
-A row marked `h` is a past command that holds what you typed, newest first
-among those that match equally well. A row marked `l` is an item your own Lisp
-function offers. A row marked `m` is an item from a command's mode server (see
-"Command modes"), such as a column name from a `csvm` script; some come with a
-short note after them, saying what they are. They show once you stop typing
-for a moment. Here the cursor is right after `am`, inside the quotes:
+A row marked `h` is a past command that holds the words you typed, newest
+first among those that match equally well. A row marked `l` is an item your
+own Lisp function offers. A row marked `m` is an item from a command's mode
+server (see "Command modes"), such as a column name from a `csvm` script; some
+come with a short note after them, saying what they are. They show once you
+stop typing for a moment. Here the cursor is right after `am`, inside the
+quotes:
 
 ```
 $ csvm 'sort am' data.csv
@@ -442,16 +443,18 @@ last row says how many more.
   readline's `search-ignore-case` on, case is ignored.
 
 `inkline-show-menu` and `inkline-show-suggestion` turn the menu and the grey
-text off on their own. `inkline-completion-style` is `substring` by default:
-an item matches when it holds what you typed anywhere, and those that start
-with it are listed first, whatever their source. Set to `prefix` it lists only
-those that start with it, and set to `fuzzy` it lets the letters you typed
-match with gaps. `inkline-completion-ignore-case` matches items whatever their
-case; `inkline-menu-sources` picks which sources the menu lists (`history`,
-`lisp`, `mode` and `bash`), and `inkline-menu-min-chars` how many characters
-you type before it lists an item. See
-[`docs/lisp.md`](docs/lisp.md). The menu's colours are set with the `menu`,
-`menu-selected`, `menu-source` and `menu-note` keys (see "Colours").
+text off on their own. `inkline-completion-style` is `orderless` by default:
+an item matches when it holds each word you typed anywhere, in any order, so
+`car ru` finds `cargo run`. Those that start with what you typed are listed
+first, whatever their source, then those that hold your words in the order you
+typed them. Set to `substring` it finds what you typed only as one piece, set
+to `prefix` it lists only the items that start with it, and set to `fuzzy` it
+lets the letters you typed match with gaps. `inkline-completion-ignore-case`
+matches items whatever their case; `inkline-menu-sources` picks which sources
+the menu lists (`history`, `lisp`, `mode` and `bash`), and
+`inkline-menu-min-chars` how many characters you type before it lists an item.
+See [`docs/lisp.md`](docs/lisp.md). The menu's colours are set with the
+`menu`, `menu-selected`, `menu-source` and `menu-note` keys (see "Colours").
 
 To move with `M-n` and `M-p` instead, and keep `C-n`, `C-p` and the arrows
 for moving between lines and through history:
