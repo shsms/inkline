@@ -704,7 +704,8 @@ fn a_late_reply_waits_for_a_question_to_be_answered() {
     });
     sh.send("csvm 'select' a");
     sh.wait_for("typed", |s| cursor_row(s) == "$ csvm 'select' a");
-    sh.send("\t\t");
+    // `M-?` lists the choices with the menu on.
+    sh.send("\x1b?");
     let question = "Display all 3 possibilities? (y or n)";
     sh.wait_for("the question", |s| cursor_row(s) == question);
     // Well past the reply.

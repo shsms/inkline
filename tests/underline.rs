@@ -162,11 +162,12 @@ fn a_pause_waits_while_readline_asks_a_question() {
         rc: "inkline eval '(setq inkline-colors \"error=4\")' >/dev/null\n\
              complete -W 'a1 a2 a3' echo\n"
             .into(),
-        inputrc: Some("set completion-query-items 2\nset show-all-if-ambiguous on\n".into()),
+        inputrc: Some("set completion-query-items 2\n".into()),
         ..Options::default()
     });
-    // The Tab comes before the pause for the error at `fi` is over.
-    sh.send("fi; echo a\t");
+    // `M-?`, which lists the choices with the menu on, comes before the
+    // pause for the error at `fi` is over.
+    sh.send("fi; echo a\x1b?");
     let question = "Display all 3 possibilities? (y or n)";
     sh.wait_for("the question", |s| cursor_row(s) == question);
     let s = quiet(&sh);

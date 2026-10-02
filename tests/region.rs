@@ -864,7 +864,8 @@ fn ctrl_c_while_listing_completions_matches_plain_bash() {
             sh.send(C_SPC);
             sh.send("\x05");
             sh.wait_for("the cursor at the end", |s| s.cursor_position() == (0, 7));
-            sh.send("\t\t");
+            // `M-?` lists the choices with the menu on as well.
+            sh.send("\x1b?");
             sh.wait_for(what, |s| cursor_row(s).starts_with(shown));
         }
         for sh in [&mut with, &mut plain] {

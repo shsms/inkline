@@ -115,7 +115,8 @@ fn files_and_directories_are_taken_as_tab_would() {
             && has_row(s, "c  alpha.txt")
     });
     sh.send("\x18\x7fcat s");
-    sh.wait_for("the directory", |s| has_row(s, "c  src/"));
+    // The menu for `cat s`, not the one before it, which also lists `src/`.
+    sh.wait_for("the directory", |s| bash_rows(s) == ["c  src/"]);
     sh.send("\t");
     sh.wait_for("the directory taken and its files", |s| {
         cursor_row(s) == "$ cat src/main.rs"
