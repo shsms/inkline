@@ -161,9 +161,9 @@ pub fn parse_flag(v: &TulispObject) -> Result<bool, String> {
     Ok(!v.null())
 }
 
-/// The symbol `prefix`, `fuzzy` or `substring`.
+/// The symbol `prefix`, `fuzzy`, `substring` or `orderless`.
 pub fn parse_style(v: &TulispObject) -> Result<Style, String> {
-    let bad = || Err("expected prefix, fuzzy or substring".to_owned());
+    let bad = || Err("expected prefix, fuzzy, substring or orderless".to_owned());
     if !v.symbolp() {
         return bad();
     }
@@ -171,6 +171,7 @@ pub fn parse_style(v: &TulispObject) -> Result<Style, String> {
         "prefix" => Ok(Style::Prefix),
         "fuzzy" => Ok(Style::Fuzzy),
         "substring" => Ok(Style::Substring),
+        "orderless" => Ok(Style::Orderless),
         _ => bad(),
     }
 }
@@ -765,7 +766,11 @@ mod tests {
             parse_style(&value(&mut ctx, "'substring")),
             Ok(Style::Substring)
         );
-        let bad = Err("expected prefix, fuzzy or substring".to_owned());
+        assert_eq!(
+            parse_style(&value(&mut ctx, "'orderless")),
+            Ok(Style::Orderless)
+        );
+        let bad = Err("expected prefix, fuzzy, substring or orderless".to_owned());
         assert_eq!(parse_style(&value(&mut ctx, "'other")), bad);
         assert_eq!(parse_style(&value(&mut ctx, r#""fuzzy""#)), bad);
     }
@@ -878,7 +883,8 @@ mod tests {
             problems(),
             vec![
                 "inkline-menu-lines: expected a number of at least 1".to_owned(),
-                "inkline-completion-style: expected prefix, fuzzy or substring".to_owned(),
+                "inkline-completion-style: expected prefix, fuzzy, substring or orderless"
+                    .to_owned(),
             ]
         );
     }

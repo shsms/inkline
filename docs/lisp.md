@@ -30,13 +30,17 @@ change takes effect on the next key.
 - `inkline-menu-lines` (default `8`): the most rows the completion menu
   takes, an integer of at least 1.
 - `inkline-completion-style` (default `substring`): how the text you typed
-  matches a completion item, the symbol `substring` (the item holds what you
-  typed anywhere), `prefix` (the item starts with what you typed) or `fuzzy`
-  (the letters you typed appear in the item in order, with gaps allowed). The
-  items that start with what you typed come first, whatever their source. Then
-  come, under `substring`, the items that only hold it somewhere else, and
-  under `fuzzy` the items that match with gaps, those whose letters lie
-  closest together first. Items that match equally well go by source (see
+  matches a completion item, the symbol `orderless` (the item holds each word
+  you typed, split at blanks, anywhere and in any order), `substring` (the
+  item holds what you typed anywhere, as one piece), `prefix` (the item starts
+  with what you typed) or `fuzzy` (the letters you typed appear in the item in
+  order, with gaps allowed). The items that start with what you typed come
+  first, whatever their source. Then come, under `orderless`, the items that
+  hold your words in the order you typed them, each after the one before, and
+  then those that hold them in another order; under `substring`, the items
+  that only hold it somewhere else; and under `fuzzy` the items that match
+  with gaps, those whose letters lie closest together first. Items that match
+  equally well go by source (see
   [`inkline-completion-functions`](#inkline-completion-functions)), and then
   in the source's own order (history newest first). A mode server's item that
   starts with a quote mark is also matched against the text after that mark

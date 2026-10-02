@@ -62,6 +62,9 @@ pub enum Style {
     Prefix,
     /// The item contains the typed text.
     Substring,
+    /// The item contains each word of the typed text (split at blanks), in
+    /// any order.
+    Orderless,
     /// The typed text's characters appear in the item in order, with gaps.
     Fuzzy,
 }
@@ -88,6 +91,23 @@ fn fold(c: char) -> char {
         (Some(l), None) => l,
         _ => c,
     }
+}
+
+/// Whether `text` contains each word of `typed` (split at blanks), in order
+/// and each after the one before. Each word is taken at its earliest place
+/// after the one before, which leaves the most room for the words after it.
+fn holds_words_in_order(typed: &str, text: &str) -> bool {
+    let mut rest = text;
+    typed.split_whitespace().all(|word| {
+        rest.find(word)
+            .map(|at| rest = &rest[at + word.len()..])
+            .is_some()
+    })
+}
+
+/// Whether `text` contains each word of `typed` (split at blanks), anywhere.
+fn holds_words(typed: &str, text: &str) -> bool {
+    typed.split_whitespace().all(|word| text.contains(word))
 }
 
 /// `text` with each character folded (see [`fold`]).
@@ -127,6 +147,30 @@ impl Matching {
         text.contains(typed) || (self.ignore_case && folded(text).contains(folded_typed))
     }
 
+    /// How `text` holds the words of `typed` (split at blanks), in any case
+    /// when case is ignored: `Contains` when in the typed order, each after
+    /// the one before, `Unordered` when in another order. `folded_typed` is
+    /// `typed` folded (see [`folded`]), made once by a caller that looks for
+    /// it in many texts. With case ignored only the folded texts are
+    /// compared: each character folds on its own, so a match in the typed
+    /// case is a match there too.
+    fn holds(self, typed: &str, folded_typed: &str, text: &str) -> Option<Rank> {
+        let folded_text;
+        let (typed, text) = if self.ignore_case {
+            folded_text = folded(text);
+            (folded_typed, folded_text.as_str())
+        } else {
+            (typed, text)
+        };
+        if !holds_words(typed, text) {
+            None
+        } else if holds_words_in_order(typed, text) {
+            Some(Rank::Contains)
+        } else {
+            Some(Rank::Unordered)
+        }
+    }
+
     /// Whether the characters of `typed` appear in `text` in order.
     fn in_order(self, typed: &str, text: &str) -> bool {
         let mut rest = text.chars();
@@ -137,7 +181,9 @@ impl Matching {
 /// The most history items gathered for one line of each kind: those that
 /// start with it in the same case, those that start with it in another case,
 /// and the others that match it: those that contain it, in the substring
-/// style, or match it with gaps, in the fuzzy style.
+/// style, or match it with gaps, in the fuzzy style. In the orderless style
+/// those that hold its words in the typed order and those that hold them in
+/// another order are each a kind of their own.
 pub const HISTORY_LIMIT: usize = 50;
 
 /// Whether `text` can be drawn: it has no control character other than a
@@ -150,7 +196,9 @@ pub fn drawable(text: &str) -> bool {
 
 /// How well an item matched, lower first: every item that starts with the typed
 /// text, then those that start with it in another case, then the others. In
-/// the substring style those contain it and all rank the same; in the fuzzy
+/// the substring style those contain it and all rank the same; in the
+/// orderless style those that hold its words in the typed order come before
+/// those that hold them in another order; in the fuzzy
 /// style they match it with gaps and go by how many characters their tightest
 /// match skips and then by where it starts (in characters). The menu is
 /// ordered by rank before source (see [`assemble`]), and a history entry is
@@ -162,6 +210,7 @@ enum Rank {
     Prefix,
     OtherCasePrefix,
     Contains,
+    Unordered,
     Gapped { skipped: usize, start: usize },
 }
 
@@ -216,6 +265,7 @@ fn rank(how: Matching, typed: &str, text: &str) -> Option<Rank> {
         Style::Substring => how
             .contains(typed, &folded(typed), text)
             .then_some(Rank::Contains),
+        Style::Orderless => how.holds(typed, &folded(typed), text),
         Style::Fuzzy => {
             let typed: Vec<char> = typed.chars().collect();
             let text: Vec<char> = text.chars().collect();
@@ -253,14 +303,14 @@ fn item_rank(how: Matching, typed: &str, item: &Item) -> Option<Rank> {
 /// Gathers history items for `line`: offered entries come newest first.
 pub struct HistoryGather {
     line: String,
-    /// `line` folded (see [`folded`]), for the substring style with case
-    /// ignored.
+    /// `line` folded (see [`folded`]), for the substring and orderless
+    /// styles with case ignored.
     folded_line: String,
     how: Matching,
     items: Vec<Item>,
     seen: HashSet<String>,
     /// How many of `items` are of each `Kind`.
-    taken: [usize; 3],
+    taken: [usize; 4],
 }
 
 /// How a history entry matches the line.
@@ -271,9 +321,24 @@ enum Kind {
     /// It starts with the line in another case.
     OtherCase,
     /// It does not start with the line: it is taken only when it contains
-    /// the line, in the substring style, or matches it with gaps, in the
-    /// fuzzy style.
+    /// the line, in the substring style, holds the line's words in their
+    /// order, in the orderless style, or matches it with gaps, in the fuzzy
+    /// style.
     NotPrefix,
+    /// It holds the line's words in another order, in the orderless style.
+    Unordered,
+}
+
+impl Kind {
+    /// The kind of an entry that matches the line with `rank`.
+    fn of(rank: Rank) -> Kind {
+        match rank {
+            Rank::Prefix => Kind::SameCase,
+            Rank::OtherCasePrefix => Kind::OtherCase,
+            Rank::Contains | Rank::Gapped { .. } => Kind::NotPrefix,
+            Rank::Unordered => Kind::Unordered,
+        }
+    }
 }
 
 impl HistoryGather {
@@ -284,7 +349,7 @@ impl HistoryGather {
             how,
             items: Vec::new(),
             seen: HashSet::new(),
-            taken: [0; 3],
+            taken: [0; 4],
         }
     }
 
@@ -295,22 +360,28 @@ impl HistoryGather {
     /// higher. True once `HISTORY_LIMIT` entries that start with the line in
     /// the same case are taken: the scan can stop.
     pub fn offer(&mut self, entry: &str) -> bool {
-        let kind = match self.how.starts(&self.line, entry) {
-            Some(Rank::Prefix) => Kind::SameCase,
-            Some(Rank::OtherCasePrefix) => Kind::OtherCase,
-            Some(Rank::Contains | Rank::Gapped { .. }) | None => Kind::NotPrefix,
-        };
-        let room = self.taken[kind as usize] < HISTORY_LIMIT;
-        let matches = room
-            && match (kind, self.how.style) {
-                (Kind::SameCase | Kind::OtherCase, _) => true,
-                (Kind::NotPrefix, Style::Prefix) => false,
-                (Kind::NotPrefix, Style::Substring) => {
-                    self.how.contains(&self.line, &self.folded_line, entry)
-                }
-                (Kind::NotPrefix, Style::Fuzzy) => self.how.in_order(&self.line, entry),
-            };
-        if matches && entry != self.line && !self.seen.contains(entry) && drawable(entry) {
+        let room = |kind: Kind| self.taken[kind as usize] < HISTORY_LIMIT;
+        let kind = self
+            .how
+            .starts(&self.line, entry)
+            .map(Kind::of)
+            .or_else(|| match self.how.style {
+                Style::Prefix => None,
+                Style::Substring => (room(Kind::NotPrefix)
+                    && self.how.contains(&self.line, &self.folded_line, entry))
+                .then_some(Kind::NotPrefix),
+                Style::Orderless => (room(Kind::NotPrefix) || room(Kind::Unordered))
+                    .then(|| self.how.holds(&self.line, &self.folded_line, entry))
+                    .flatten()
+                    .map(Kind::of),
+                Style::Fuzzy => (room(Kind::NotPrefix) && self.how.in_order(&self.line, entry))
+                    .then_some(Kind::NotPrefix),
+            });
+        if let Some(kind) = kind.filter(|&k| room(k))
+            && entry != self.line
+            && !self.seen.contains(entry)
+            && drawable(entry)
+        {
             self.taken[kind as usize] += 1;
             self.seen.insert(entry.to_owned());
             self.items.push(Item {
@@ -557,6 +628,10 @@ mod tests {
         style: Style::Substring,
         ignore_case: false,
     };
+    const ORDERLESS: Matching = Matching {
+        style: Style::Orderless,
+        ignore_case: false,
+    };
 
     fn history(line: &str, how: Matching, entries: &[&str]) -> Vec<String> {
         let mut gather = HistoryGather::new(line, how);
@@ -794,6 +869,153 @@ mod tests {
         assert!(!matches(SUBSTRING, "gst", "git status"));
         assert!(!matches(SUBSTRING, "Stat", "git status"));
         assert!(!matches(SUBSTRING, "status!", "git status"));
+    }
+
+    #[test]
+    fn substring_does_not_split_the_typed_text_at_blanks() {
+        assert!(matches(SUBSTRING, "ha be", "alpha beta"));
+        assert!(!matches(SUBSTRING, "al be", "alpha beta"));
+    }
+
+    #[test]
+    fn orderless_matches_each_typed_word_anywhere_in_any_order() {
+        let text = "alpha beta gamma";
+        assert!(matches(ORDERLESS, "al ga", text));
+        assert!(matches(ORDERLESS, "mm ph et", text));
+        assert!(matches(ORDERLESS, "pha", text));
+        // Every word must be there.
+        assert!(!matches(ORDERLESS, "al delta", text));
+        // A word is found whole, not letter by letter.
+        assert!(!matches(ORDERLESS, "agm", text));
+        assert!(matches(ORDERLESS, "é ü", "über café"));
+    }
+
+    /// Any run of blanks splits the words, and blanks around them count for
+    /// nothing; with no word at all every item matches.
+    #[test]
+    fn orderless_splits_at_any_run_of_blanks() {
+        let text = "alpha beta";
+        assert!(matches(ORDERLESS, "al  be", text));
+        assert!(matches(ORDERLESS, "al\tbe", text));
+        assert!(matches(ORDERLESS, "al\nbe", text));
+        assert!(matches(ORDERLESS, " al be ", text));
+        assert!(matches(ORDERLESS, "", text));
+        assert!(matches(ORDERLESS, "  ", text));
+        // The blank between the words need not be in the item.
+        assert!(matches(ORDERLESS, "ha be", "alphabeta"));
+    }
+
+    /// Each word is looked for on its own, so two words may match the same
+    /// characters, and a word typed twice needs only one place.
+    #[test]
+    fn orderless_words_may_share_characters() {
+        assert!(matches(ORDERLESS, "alph pha", "alpha"));
+        assert!(matches(ORDERLESS, "al al", "alpha"));
+    }
+
+    #[test]
+    fn orderless_keeps_or_ignores_case() {
+        assert!(!matches(ORDERLESS, "Al be", "alpha beta"));
+        let how = Matching {
+            style: Style::Orderless,
+            ignore_case: true,
+        };
+        assert!(matches(how, "BE Al", "alpha beta"));
+        assert!(matches(how, "be al", "ALPHA BETA"));
+        // One character at a time, as in the substring style.
+        assert!(matches(how, "x δοσ", "x ΟΔΟΣ"));
+        assert!(!matches(how, "x δος", "x ΟΔΟΣ"));
+        assert!(!matches(how, "i x", "xİy"));
+    }
+
+    /// Items that start with the typed text come first, then those that hold
+    /// its words in the typed order, each word after the one before, then
+    /// those that hold them in another order; each group in list order.
+    #[test]
+    fn orderless_puts_words_in_the_typed_order_before_the_others() {
+        let items = assemble(
+            "a b",
+            3,
+            ORDERLESS,
+            vec![],
+            None,
+            vec![],
+            vec![],
+            vec![
+                word("b a", 0, 3),
+                word("xa yb", 0, 3),
+                word("ab", 0, 3),
+                word("a b c", 0, 3),
+                word("ba", 0, 3),
+                word("x a b", 0, 3),
+                word("c", 0, 3),
+            ],
+        );
+        let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, ["a b c", "xa yb", "ab", "x a b", "b a", "ba"]);
+    }
+
+    /// A word typed twice is in the typed order only where it is there
+    /// twice, one after the other.
+    #[test]
+    fn orderless_in_the_typed_order_takes_each_word_after_the_one_before() {
+        let items = assemble(
+            "a a",
+            3,
+            ORDERLESS,
+            vec![],
+            None,
+            vec![],
+            vec![],
+            vec![word("xa", 0, 3), word("xaya", 0, 3), word("xaa", 0, 3)],
+        );
+        let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, ["xaya", "xaa", "xa"]);
+    }
+
+    /// The typed order counts with case ignored too.
+    #[test]
+    fn orderless_finds_the_typed_order_in_another_case() {
+        let how = Matching {
+            style: Style::Orderless,
+            ignore_case: true,
+        };
+        let items = assemble(
+            "a b",
+            3,
+            how,
+            vec![],
+            None,
+            vec![],
+            vec![],
+            vec![word("B A", 0, 3), word("X A B", 0, 3)],
+        );
+        let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(texts, ["X A B", "B A"]);
+    }
+
+    #[test]
+    fn orderless_history_takes_entries_that_hold_every_word() {
+        let found = history(
+            "a b",
+            ORDERLESS,
+            &["b a", "a c", "x a b", "b a", "a b", "a b x"],
+        );
+        // Newest first, without repeats or the line itself; `assemble`
+        // orders them by rank.
+        assert_eq!(found, ["b a", "x a b", "a b x"]);
+    }
+
+    /// Newer entries that hold the words out of order do not crowd out an
+    /// older one that holds them in order.
+    #[test]
+    fn orderless_history_keeps_room_for_entries_in_the_typed_order() {
+        let mut entries: Vec<String> = (0..80).map(|i| format!("b a {i}")).collect();
+        entries.push("x a b".to_owned());
+        let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+        let found = history("a b", ORDERLESS, &refs);
+        assert_eq!(found.len(), HISTORY_LIMIT + 1);
+        assert_eq!(found.last().map(String::as_str), Some("x a b"));
     }
 
     #[test]
