@@ -1,7 +1,7 @@
-//! Reading Lisp values without ever printing them whole. tulisp prints a
-//! value into the text of some errors (`car` of a value that is not a list,
-//! a string or a number read from anything else), and printing a list that
-//! holds itself never ends: it overflows the stack and takes bash down.
+//! Reading Lisp values without ever printing them whole. tulisp prints a value
+//! into the text of some errors (`car` of a value that is not a list, a string
+//! or a number read from anything else), and it prints a long list whole,
+//! however long, where inkline's settings are read on every draw.
 
 use tulisp::{Error, TulispObject};
 

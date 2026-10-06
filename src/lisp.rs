@@ -237,4 +237,20 @@ mod tests {
             Err(format!("{path}:2: Too many arguments (in (car 1 2))"))
         );
     }
+
+    /// tulisp prints a list that holds itself with `#N` for the repeat, as
+    /// Emacs does, so `inkline eval` and an error's text can show one.
+    #[test]
+    fn a_value_that_holds_itself_prints() {
+        use values::{HOLDS_ITSELF, QUOTES_ITSELF};
+        assert_eq!(eval(HOLDS_ITSELF), Ok(Some("(#0)".into())));
+        for program in [
+            QUOTES_ITSELF.to_owned(),
+            format!("(upcase {HOLDS_ITSELF})"),
+            format!("(+ 1 {QUOTES_ITSELF})"),
+        ] {
+            let result = eval(&program);
+            assert!(format!("{result:?}").contains("#"), "{program}: {result:?}");
+        }
+    }
 }

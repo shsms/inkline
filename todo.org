@@ -165,7 +165,11 @@ These only cost colours: a backquote inside =${x:-…}=, =$`= in an unquoted
 here-document body, =#= inside backquotes, a command on the same line as a
 here-document start, and empty backquotes.
 
-** TODO A value that holds itself crashes bash when tulisp prints it
+** DONE A value that holds itself crashes bash when tulisp prints it
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-10-06 Di 20:32] \\
+  tulisp 0.31 prints a list that holds itself with #N for the repeat, as Emacs does, so every path that prints one now ends.
+:END:
 
 tulisp prints a value into the text of some errors: =car= or =cdr= of a
 value that is not a list, and a string or a number read from any other
