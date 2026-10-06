@@ -274,7 +274,6 @@ mod tests {
 
     fn eval(program: &str) -> String {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         super::register(&mut ctx);
         match ctx.eval_string(program) {
             Ok(v) => v.to_string(),

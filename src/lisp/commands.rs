@@ -237,6 +237,15 @@ fn message(text: &str) {
     }
 }
 
+/// `(format ARGS…)`.
+fn format_args(
+    ctx: &mut TulispContext,
+    args: impl IntoIterator<Item = TulispObject>,
+) -> Result<String, Error> {
+    let format = ctx.intern("format");
+    String::try_from(ctx.apply(&format, args.into_iter().collect::<Vec<_>>())?)
+}
+
 /// Shows `text` under the line while a line is being edited, else writes it
 /// to stdout at once.
 fn print(text: &str) -> Result<(), Error> {
@@ -331,7 +340,7 @@ pub(crate) fn failure_of(ctx: &TulispContext, e: &Error) -> Failure {
     {
         return Failure::Quit;
     }
-    match errors::user_error_text(e) {
+    match errors::user_error_text(e, ctx) {
         Some(text) => Failure::Refused(text),
         None => Failure::Error(errors::describe(e, ctx, None)),
     }
@@ -820,7 +829,7 @@ pub fn register(ctx: &mut TulispContext) {
                 }
                 return Ok(TulispObject::nil());
             }
-            let text = errors::format_args(ctx, std::iter::once(format).chain(args))?;
+            let text = format_args(ctx, std::iter::once(format).chain(args))?;
             message(&text);
             Ok(TulispObject::from(text))
         },

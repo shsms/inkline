@@ -736,7 +736,6 @@ mod tests {
 
     fn ctx() -> TulispContext {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         crate::lisp::emacs::register(&mut ctx);
         register(&mut ctx);
         ctx

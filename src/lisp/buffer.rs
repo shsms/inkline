@@ -809,7 +809,6 @@ mod tests {
     /// returns `(RESULT POINT TEXT)` as Emacs would print it.
     fn run(text: &str, pos: i64, program: &str) -> String {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         crate::lisp::emacs::register(&mut ctx);
         register(&mut ctx);
         let point = to_byte(text, pos);
@@ -831,7 +830,6 @@ mod tests {
     /// Like `run`, but with no buffer installed at all.
     fn run_without_buffer(program: &str) -> String {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         crate::lisp::emacs::register(&mut ctx);
         register(&mut ctx);
         let wrapped = format!(
@@ -980,7 +978,6 @@ mod tests {
     #[test]
     fn without_a_buffer_the_line_is_empty() {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         register(&mut ctx);
         assert_eq!(
             ctx.eval_string("(list (buffer-string) (point) (point-max))")
@@ -1101,7 +1098,6 @@ mod tests {
     #[test]
     fn changing_needs_a_writable_line() {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         register(&mut ctx);
         let e = ctx.eval_string(r#"(insert "x")"#).unwrap_err();
         assert_eq!(e.desc(), "no line is being edited");
@@ -1133,7 +1129,6 @@ mod tests {
     #[test]
     fn the_read_only_error_names_the_hook_that_runs() {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         register(&mut ctx);
         let _installed = install(Box::new(TextBuffer {
             text: "ab".into(),
@@ -1185,7 +1180,6 @@ mod tests {
     #[test]
     fn a_line_that_is_not_utf8_is_an_error() {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         register(&mut ctx);
         let _installed = install(Box::new(NotUtf8));
         for program in [
@@ -1242,7 +1236,6 @@ mod tests {
     #[test]
     fn use_region_p_needs_a_region_that_is_not_empty() {
         let mut ctx = TulispContext::new();
-        crate::lisp::errors::register(&mut ctx);
         register(&mut ctx);
         let _installed = install(Box::new(Active(TextBuffer {
             text: "abc".into(),

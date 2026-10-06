@@ -1,11 +1,6 @@
-//! Lisp errors: `error` and `user-error` as in Emacs, and the one line inkline
-//! shows for an error.
+//! The one line inkline shows for a Lisp error.
 
-use tulisp::{Error, ErrorKind, Rest, TulispContext, TulispObject};
-
-/// Starts the text of an error raised by `user-error`, so it can be told
-/// apart from other errors. Never shown.
-const USER_ERROR: &str = "\u{0}user-error\u{0}";
+use tulisp::{Error, ErrorKind, TulispContext};
 
 /// The `catch` tag `quit` throws to. A command that ends with it shows
 /// nothing.
@@ -14,39 +9,9 @@ pub const QUIT: &str = "inkline--quit";
 /// The most characters of a form shown after an error.
 const FORM_WIDTH: usize = 60;
 
-pub fn register(ctx: &mut TulispContext) {
-    ctx.defun(
-        "error",
-        |ctx: &mut TulispContext, args: Rest<TulispObject>| -> Result<TulispObject, Error> {
-            Err(Error::lisp_error(format_args(ctx, args)?))
-        },
-    );
-    ctx.defun(
-        "user-error",
-        |ctx: &mut TulispContext, args: Rest<TulispObject>| -> Result<TulispObject, Error> {
-            Err(Error::lisp_error(format!(
-                "{USER_ERROR}{}",
-                format_args(ctx, args)?
-            )))
-        },
-    );
-}
-
-/// `(format ARGS…)`.
-pub fn format_args(
-    ctx: &mut TulispContext,
-    args: impl IntoIterator<Item = TulispObject>,
-) -> Result<String, Error> {
-    let format = ctx.intern("format");
-    String::try_from(ctx.apply(&format, args.into_iter().collect::<Vec<_>>())?)
-}
-
 /// The message of an error raised by `user-error`.
-pub fn user_error_text(err: &Error) -> Option<String> {
-    if !matches!(err.kind(), ErrorKind::LispError) {
-        return None;
-    }
-    err.desc().strip_prefix(USER_ERROR).map(str::to_owned)
+pub fn user_error_text(err: &Error, ctx: &TulispContext) -> Option<String> {
+    err.is_a(ctx, "user-error").then(|| err.desc().into_owned())
 }
 
 /// The error as one line: `<file>:<line>: <text>` for an error in `file`,
@@ -62,7 +27,7 @@ pub fn describe(err: &Error, ctx: &TulispContext, file: Option<&str>) -> String 
         }
         return format!("no catch for {tag}");
     }
-    if let Some(text) = user_error_text(err) {
+    if let Some(text) = user_error_text(err, ctx) {
         return text;
     }
     let names_no_form = matches!(
@@ -121,6 +86,7 @@ fn line_from(desc: &str, trace: &str, file: Option<&str>, add_form: bool) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tulisp::TulispObject;
 
     const TRACE: &str = "ERR ArityMismatch: Too many arguments\n\
         /home/u/.config/inkline/init.el:4.25-4.33:  at (car 1 2)\n\
@@ -177,27 +143,29 @@ mod tests {
     #[test]
     fn error_and_user_error_format_their_arguments() {
         let mut ctx = TulispContext::new();
-        register(&mut ctx);
         let e = ctx
             .eval_string(r#"(error "bad %s: %d" "x" 3)"#)
             .unwrap_err();
         assert_eq!(e.desc(), "bad x: 3");
-        assert_eq!(user_error_text(&e), None);
+        assert_eq!(user_error_text(&e, &ctx), None);
         let e = ctx
             .eval_string(r#"(user-error "no %s" "way")"#)
             .unwrap_err();
-        assert_eq!(user_error_text(&e).as_deref(), Some("no way"));
+        assert_eq!(user_error_text(&e, &ctx).as_deref(), Some("no way"));
         assert_eq!(describe(&e, &ctx, None), "no way");
     }
 
     #[test]
-    fn condition_case_catches_user_error_as_an_error() {
+    fn condition_case_catches_user_error_as_itself_or_an_error() {
         let mut ctx = TulispContext::new();
-        register(&mut ctx);
-        let caught = ctx
-            .eval_string(r#"(condition-case nil (user-error "x") (error 'caught))"#)
-            .unwrap();
-        assert_eq!(caught.to_string(), "caught");
+        for handler in ["user-error", "error"] {
+            let caught = ctx
+                .eval_string(&format!(
+                    r#"(condition-case e (user-error "x") ({handler} e))"#
+                ))
+                .unwrap();
+            assert_eq!(caught.to_string(), r#"(user-error "x")"#);
+        }
     }
 
     #[test]

@@ -671,10 +671,9 @@ README's ["Command modes"](../README.md#command-modes), and
   or `nil`.
 - `(error FORMAT &rest ARGS)` — formats `FORMAT` and `ARGS` as `format`
   does, and raises a Lisp error with that text.
-- `(user-error FORMAT &rest ARGS)` — like `error`, but shown as just its
-  text, with no file, line or form. `condition-case` catches it only as
-  `error`, not as `user-error`, and the message text a handler sees starts
-  with `user-error` between two NUL characters.
+- `(user-error FORMAT &rest ARGS)` — like `error`, but shown as just its text,
+  with no file, line or form. `condition-case` catches it as `user-error` or as
+  `error`.
 
 ## Emacs functions inkline adds
 
