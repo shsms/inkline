@@ -2,7 +2,7 @@
 
 use tulisp::{Error, Rest, TulispContext, TulispObject};
 
-use super::values::read_str;
+use super::values::{read_str, wrong_type};
 
 /// The ones easiest to write in Lisp. tulisp calls the innermost binding of
 /// an operator's name, so no parameter may share a name with a function the
@@ -44,7 +44,6 @@ const PRELUDE: &str = r#"
 (defun ignore (&rest _args) nil)
 (defun identity (x) x)
 (defun zerop (n) (= n 0))
-(defun defalias (symbol definition &optional _doc) (set symbol definition) symbol)
 "#;
 
 pub fn register(ctx: &mut TulispContext) {
@@ -184,6 +183,30 @@ pub fn register(ctx: &mut TulispContext) {
         |ctx: &mut TulispContext, symbol: TulispObject| fbound(ctx, &symbol),
     );
     ctx.defun("symbol-name", |symbol: TulispObject| symbol.symbol_name());
+    // A DEFINITION that names a function gives that function, as it is now. A
+    // SYMBOL that `make-symbol` made gets it as its own value.
+    ctx.defun(
+        "defalias",
+        |ctx: &mut TulispContext,
+         symbol: TulispObject,
+         definition: TulispObject,
+         _doc: Option<TulispObject>|
+         -> Result<TulispObject, Error> {
+            let function = if !definition.symbolp() {
+                definition
+            } else if fbound(ctx, &definition)? {
+                definition.get()?
+            } else {
+                return Err(Error::void_function(&definition));
+            };
+            match interned_name(ctx, &symbol)? {
+                Some(name) => ctx.fset(&name, function)?,
+                None if function.functionp(ctx) => symbol.set(function)?,
+                None => return Err(wrong_type("functionp", &function)),
+            }
+            Ok(symbol)
+        },
+    );
     ctx.eval_prelude("<inkline>", PRELUDE)
         .expect("inkline's own Lisp compiles");
 }
@@ -386,6 +409,40 @@ mod tests {
         assert_eq!(
             eval("(progn (defalias 'twice (lambda (x) (* 2 x))) (twice 4))"),
             "8"
+        );
+        assert_eq!(eval("(progn (defalias 'kar 'car) (kar '(1 2)))"), "1");
+        assert_eq!(
+            eval(
+                "(progn (defun k () 1) (defun uses-k () (k)) (uses-k)
+                        (defalias 'k (lambda () 2)) (uses-k))"
+            ),
+            "2",
+            "calls compiled before the defalias see it"
+        );
+        assert_eq!(
+            eval(
+                r#"(progn (defun foo () 1)
+                          (let ((s (make-symbol "foo"))) (defalias s (lambda () 2))
+                            (list (funcall s) (foo))))"#
+            ),
+            "(2 1)",
+            "an uninterned SYMBOL leaves the interned one alone"
+        );
+        assert_eq!(
+            eval("(defalias 'f 'not-yet-defined)"),
+            "ERROR function is void: not-yet-defined"
+        );
+        for refused in [
+            "(defalias 'f 'if)",
+            "(defalias 'f 5)",
+            "(defalias 5 'car)",
+            r#"(defalias (make-symbol "f") 'if)"#,
+        ] {
+            assert!(eval(refused).starts_with("ERROR"), "{refused}");
+        }
+        assert_eq!(
+            eval(r#"(defalias (make-symbol "f") 5)"#),
+            "ERROR Wrong type argument: functionp, 5"
         );
         assert_eq!(eval("(progn (defconst k 5) k)"), "5");
     }

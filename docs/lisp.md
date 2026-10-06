@@ -740,10 +740,11 @@ tulisp lacks these; inkline defines them so they behave as Emacs's do.
 - `(identity X)` — returns `X`.
 - `(zerop N)` — whether `N` is 0.
 - `(defalias SYMBOL DEFINITION)` — makes `SYMBOL` name the function
-  `DEFINITION`. `DEFINITION` must be a function itself, such as a `lambda`;
-  a symbol that names a function does not work: `(defalias 'kar 'car)`
-  itself succeeds, but calling `kar` then fails with "function is void:
-  car".
+  `DEFINITION`, such as a `lambda`, also for code that already calls it. A
+  `DEFINITION` that names a function gives `SYMBOL` that function as it is now:
+  `(defalias 'kar 'car)` works, but unlike in Emacs, `kar` does not follow a
+  later change to `car`, and `car` must have a function already. A `SYMBOL` that
+  `make-symbol` made takes only a function, not a macro.
 - `(defconst SYMBOL VALUE)` — defines `SYMBOL` as a variable and sets it to
   `VALUE`.
 

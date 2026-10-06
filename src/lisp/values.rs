@@ -3,7 +3,7 @@
 //! a string or a number read from anything else), and printing a list that
 //! holds itself never ends: it overflows the stack and takes bash down.
 
-use tulisp::TulispObject;
+use tulisp::{Error, TulispObject};
 
 /// A string's content. `None` for anything else.
 pub fn read_str(v: &TulispObject) -> Option<String> {
@@ -103,6 +103,15 @@ const MOST_ATOMS: usize = 32;
 
 /// The deepest `describe` goes into lists inside lists.
 const MOST_DEPTH: usize = 8;
+
+/// The error for `value`, which is not what `expected` names, with `value`
+/// printed short (`describe`).
+pub fn wrong_type(expected: &str, value: &TulispObject) -> Error {
+    Error::type_mismatch(format!(
+        "Wrong type argument: {expected}, {}",
+        describe(value)
+    ))
+}
 
 /// `v` as Lisp prints it, cut short: `...` stands for what is past
 /// `MOST_ATOMS` atoms or `MOST_DEPTH` levels, and for any value other than

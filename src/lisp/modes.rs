@@ -6,7 +6,7 @@ use tulisp::{Error, TulispContext, TulispObject};
 
 use super::buffer::refuse_when_read_only;
 use super::settings::parse_color_set;
-use super::values::{describe, items, read_str};
+use super::values::{items, read_str, wrong_type};
 
 const NAME: &str = "inkline-define-mode";
 
@@ -68,13 +68,6 @@ fn program_words(program: &TulispObject) -> Result<Vec<String>, Error> {
         return Err(wrong_type("a list of strings", program));
     }
     Ok(words)
-}
-
-fn wrong_type(expected: &str, value: &TulispObject) -> Error {
-    Error::type_mismatch(format!(
-        "Wrong type argument: {expected}, {}",
-        describe(value)
-    ))
 }
 
 #[cfg(test)]
