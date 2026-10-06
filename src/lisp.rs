@@ -115,6 +115,7 @@ pub fn with_lisp<R>(f: impl FnOnce(&mut TulispContext) -> R) -> Result<R, Busy> 
     }
     let mut held = PutBack(Some(ctx));
     RUNNING.store(true, Ordering::Relaxed);
+    errors::forget_quit();
     let ctx = held.0.as_mut().expect("just put there");
     Ok(f(ctx))
 }

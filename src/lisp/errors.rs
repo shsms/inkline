@@ -1,5 +1,8 @@
 //! The one line inkline shows for a Lisp error, and `quit`.
 
+use std::cell::Cell;
+use std::time::{Duration, Instant};
+
 use tulisp::{Error, ErrorKind, TulispContext};
 
 /// The most characters of a form shown after an error.
@@ -8,16 +11,47 @@ const FORM_WIDTH: usize = 60;
 /// The text of `quit`'s error.
 const QUIT: &str = "Quit";
 
+/// How long the `unwind-protect` cleanups a quit passes get to finish, before
+/// tulisp's interrupt check stops them too.
+const CLEANUP_TIME: Duration = Duration::from_secs(1);
+
+thread_local! {
+    /// When the running Lisp's quit began, if it has.
+    static QUIT_SINCE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
 /// The error `quit` raises. No `condition-case` or `catch` catches it, and only
 /// `unwind-protect` cleanups run as it passes. A command that ends with it
 /// shows nothing.
 pub fn quit() -> Error {
+    start_quit_clock();
     Error::interrupted(QUIT)
 }
 
-/// What tulisp's interrupt check returns to stop running Lisp with `quit`.
+/// What tulisp's interrupt check returns when running Lisp should stop: `quit`,
+/// unless a quit began less than `CLEANUP_TIME` ago, which lets its cleanups
+/// finish.
 pub fn stop() -> tulisp::Interrupt {
+    if QUIT_SINCE
+        .get()
+        .is_some_and(|since| since.elapsed() < CLEANUP_TIME)
+    {
+        return tulisp::Interrupt::Continue;
+    }
+    start_quit_clock();
     tulisp::Interrupt::Stop(QUIT.to_owned())
+}
+
+/// Notes when the running Lisp's quit began, unless it already has.
+fn start_quit_clock() {
+    if QUIT_SINCE.get().is_none() {
+        QUIT_SINCE.set(Some(Instant::now()));
+    }
+}
+
+/// Forgets the quit of the last Lisp run, as a new one starts.
+pub fn forget_quit() {
+    QUIT_SINCE.set(None);
 }
 
 /// Whether `err` is a `quit`.

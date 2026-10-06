@@ -786,6 +786,70 @@ fn c_c_stops_a_lisp_command_that_never_ends() {
     assert!(!has_row(&s, "$ abW"), "{}", dump(&s));
 }
 
+const INIT_CLEANUP: &str = r#"
+(defvar cleaned nil)
+(defun count-to (n) (setq cleaned 0) (dotimes (i n) (setq cleaned (1+ cleaned))))
+(keymap-global-set "C-x w" (lambda () (ding) (unwind-protect (while t) (count-to 5000))))
+(keymap-global-set "C-x q" (lambda () (unwind-protect (y-or-n-p "q? ") (count-to 6000))))
+(keymap-global-set "C-x m"
+  (lambda () (ding) (unwind-protect (unwind-protect (while t) (while t)) (count-to 5000))))
+"#;
+
+/// The looping commands ring the bell as they start, so a test can send `C-c`
+/// once they run.
+fn cleanup_shell() -> Shell {
+    let sh = Shell::start(Options {
+        init_el: Some(format!("{INIT}{INIT_CLEANUP}")),
+        rc: "bind 'set bell-style audible'\n".into(),
+        ..Options::default()
+    });
+    sh.take_output();
+    sh
+}
+
+/// Runs the looping command on `key` and quits it with `C-c` once it runs.
+fn quit_loop(sh: &mut Shell, key: &str) {
+    sh.send(key);
+    sh.wait_for_output("the loop", b"\x07");
+    quit_to_new_prompt(sh);
+}
+
+/// Sends `C-c` and waits for the prompt on the next row.
+fn quit_to_new_prompt(sh: &mut Shell) {
+    let row = sh.screen().cursor_position().0;
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| {
+        s.cursor_position().0 > row && cursor_row(s) == "$"
+    });
+}
+
+/// A quit leaves the `unwind-protect` cleanups it passes a second to finish,
+/// enough for one that passes several interrupt checks.
+#[test]
+fn a_quit_lets_its_cleanups_finish() {
+    let mut sh = cleanup_shell();
+    quit_loop(&mut sh, "\x18w");
+    sh.send("inkline eval cleaned\r");
+    sh.wait_for("the cleanup finished", |s| has_row(s, "5000"));
+}
+
+/// A cleanup that never ends is stopped once the quit's second has passed, and
+/// so are the cleanups around it: the second counts from when the quit began. A
+/// quit in the next Lisp run, from `C-c` at a question, gets a second of its
+/// own.
+#[test]
+fn a_cleanup_that_never_ends_is_stopped() {
+    let mut sh = cleanup_shell();
+    quit_loop(&mut sh, "\x18m");
+    sh.send("inkline eval '(< cleaned 5000)'\r");
+    sh.wait_for("the outer cleanup stopped", |s| has_row(s, "t"));
+    sh.send("\x18q");
+    sh.wait_for("the question", |s| row_below(s) == "q? (y or n)");
+    quit_to_new_prompt(&mut sh);
+    sh.send("inkline eval cleaned\r");
+    sh.wait_for("the next quit's cleanup finished", |s| has_row(s, "6000"));
+}
+
 /// `C-c` stops `inkline eval` of Lisp that never ends.
 #[test]
 fn c_c_stops_inkline_eval_that_never_ends() {
