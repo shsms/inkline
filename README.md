@@ -1015,9 +1015,6 @@ for the whole state.
 - A key bound with `keymap-global-set` that starts a longer sequence, such as
   `C-x` or `ESC`, runs only after readline's `keyseq-timeout` has passed, or
   as soon as a key arrives that does not continue the sequence.
-- Lisp can crash bash by recursing too deep: printing a list nested about
-  15,000 levels deep, dropping one nested about 85,000 levels deep (with
-  bash's usual 8 MB stack), or calling `equal` on two circular lists.
 
 ## Testing
 

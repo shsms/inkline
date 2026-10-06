@@ -754,10 +754,8 @@ tulisp lacks these; inkline defines them so they behave as Emacs's do.
 
 - `split-string` splits on plain text, not a regular expression; with no
   `SEPARATORS`, it splits on runs of whitespace, as Emacs does.
-- `format` — and so `error` and `user-error` — supports only `%s`, `%S`,
-  `%d` and `%f`.
-- A name is either a function or a variable, not both:
-  `(let ((list 5)) (list 1))` fails, unlike in Emacs.
+- A name's global value and its function are one, unlike in Emacs: after
+  `(defvar n 3)`, `(defun n () 'f)` makes the value of `n` that function.
 - `push`'s `PLACE` must be a plain variable, not a general place such as a slot
   of a structure.
 - `add-hook` does not know Emacs's hook depths: any non-`nil` `AT-END`,
@@ -767,5 +765,3 @@ tulisp lacks these; inkline defines them so they behave as Emacs's do.
 - `(interactive)` does nothing, `print` writes plain text, and there is no
   narrowing, so `point-min` is always 1; see [Commands](#commands) and
   [The line](#the-line).
-- `?\s` reads as `?s` in tulisp — the character `s`, the number 115 — not
-  the space character; write `? ` or `32` for a space instead.
