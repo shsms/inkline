@@ -139,15 +139,17 @@ way inkline prints one line; it does not undo what already ran.
 
 Before reading `init.el`, inkline leaves a marker in `$XDG_STATE_HOME/inkline`
 (or `~/.local/state/inkline`), and removes it as soon as `init.el` has been
-read. If a shell's `init.el` never finishes — an endless loop, for example —
-its marker stays. A later shell that finds it, once the stuck shell has ended
-or the marker is more than 10 seconds old, skips `init.el` until the file
-changes, and says so; fix the file, then run `inkline reload`. The same
-happens when a function in `inkline-line-start-functions` never finishes at a
-shell's first line (see [`docs/lisp.md`](docs/lisp.md#hooks)). The marker
-directory gets the same owner and permission checks as `init.el`'s
-directory. If it fails them, inkline prints one line saying so and reads
-`init.el` without markers, so a looping `init.el` is not skipped.
+read. `C-c` stops an `init.el` that never finishes — an endless loop, for
+example — and the rest of `.bashrc` with it, as `C-c` does in `.bashrc`; the
+marker goes. If the shell ends instead, its marker stays. A later shell that
+finds it, once the stuck shell has ended or the marker is more than 10 seconds
+old, skips `init.el` until the file changes, and says so; fix the file, then run
+`inkline reload`. The same happens when a function in
+`inkline-line-start-functions` never finishes at a shell's first line (see
+[`docs/lisp.md`](docs/lisp.md#hooks)). The marker directory gets the same owner
+and permission checks as `init.el`'s directory. If it fails them, inkline prints
+one line saying so and reads `init.el` without markers, so a looping `init.el`
+is not skipped.
 
 Example `init.el`:
 
@@ -996,11 +998,11 @@ for the whole state.
   moves away, comes back and then fails gets point and the mark put back,
   and keeps the change it made before it moved away. Moving through
   history with keys is not affected.
-- An endless loop in Lisp freezes the shell: there is no way yet to stop it
-  with `C-c`. Closing the terminal window ends the shell. The next shell
-  skips a looping `init.el` and says so; `bash --norc` starts a shell that
-  does not read `.bashrc`, and so does not load inkline, giving you a shell
-  to fix `init.el` in.
+- `C-c` stops an endless loop in Lisp, but a hook function that loops on every
+  line or every change loops again on the next one. Closing the terminal window
+  ends the shell. The next shell skips a looping `init.el` and says so; `bash
+  --norc` starts a shell that does not read `.bashrc`, and so does not load
+  inkline, giving you a shell to fix `init.el` in.
 - A tool that drives an interactive bash by sending the keys it wants typed,
   followed by `\n`, adds a line instead of running the command: the default
   layout binds Enter to `accept-or-newline`, and `\n` is `C-j`, which always

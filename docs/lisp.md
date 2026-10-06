@@ -213,21 +213,20 @@ can find it too.
   line it left, and one that moves away, comes back and then fails keeps
   the change it made before it moved away; see Limitations in the
   [README](../README.md#limitations).
-- Errors: an uncaught error in a command is shown under the line as
-  `inkline: NAME: TEXT` (`lambda` in place of `NAME` for a lambda), and the
-  line, point and mark go back to what they were. A bad setting value the
-  command left is reported in the same message, after the error, with `; `
-  between them. `quit` shows nothing at all. `quit` happens when `C-c`
-  arrives while the command is reading a key — in `y-or-n-p`, or inside a
-  readline command run with `call-interactively` — or when a readline
-  command run with `call-interactively` jumps back to readline's own top
-  level on its own (such as `C-g`, or yanking with an empty kill ring), or
-  runs shell code that fails in a way that makes bash drop the line (such as
-  `shell-expand-line` on `${x:?}`, or `C-c` at a `read -e` in that shell
-  code); once the command has stopped, bash then gives a new prompt as it
-  would have without Lisp. No `condition-case` catches `quit`, whatever
-  condition it names (`error`, `quit`, `t`, or anything else), and no
-  `catch` does either — only `unwind-protect` runs during it.
+- Errors: an uncaught error in a command is shown under the line as `inkline:
+  NAME: TEXT` (`lambda` in place of `NAME` for a lambda), and the line, point
+  and mark go back to what they were. A bad setting value the command left is
+  reported in the same message, after the error, with `; ` between them. `quit`
+  shows nothing at all. `quit` happens when `C-c` arrives while the command runs
+  — while it computes, as in an endless loop, or reads a key in `y-or-n-p` or
+  inside a readline command run with `call-interactively` — or when a readline
+  command run with `call-interactively` jumps back to readline's own top level
+  on its own (such as `C-g`, or yanking with an empty kill ring), or runs shell
+  code that fails in a way that makes bash drop the line (such as
+  `shell-expand-line` on `${x:?}`, or `C-c` at a `read -e` in that shell code);
+  once the command has stopped, bash then gives a new prompt as it would have
+  without Lisp. No `condition-case` or `catch` catches a `quit`; see
+  [Differences from Emacs](#differences-from-emacs).
 - Up to 256 Lisp commands — named functions and lambdas together — get a
   readline function of their own, so readline's `bind` can tell them
   apart. A key bound past that limit shares one function,
@@ -335,8 +334,9 @@ Also called for an empty line.
 - `(user-error …)` refuses the line: every change of this run is undone, its
   text shows under the line on its own (with no `inkline: NAME:`), and the line
   stays for editing. No later function runs. A `quit` refuses the line the same
-  way, and shows nothing. `C-c` at a `y-or-n-p` question is a `quit`; bash then
-  throws the line away and gives a new prompt, as `C-c` does.
+  way, and shows nothing. `C-c` while a function runs, also at a `y-or-n-p`
+  question, is a `quit`; bash then throws the line away and gives a new prompt,
+  as `C-c` does.
 - Any other error undoes that function's own changes, and prints `inkline: NAME:
   TEXT` on a row of its own above the command's output, so it stays in the
   scrollback. The next function runs, and the line still runs.
@@ -358,9 +358,9 @@ line.
   stays in the hook. `inkline: NAME: TEXT` shows under the line, and the next
   function runs.
 - A `quit` undoes every change of this run, and no later function runs. `C-c`
-  in a readline command a function runs with `call-interactively` (while it
-  reads a key or runs shell code) is a `quit`, and bash then gives a new prompt,
-  where the functions run again.
+  while a function runs, also in a readline command it runs with
+  `call-interactively` (while that reads a key or runs shell code), is a `quit`,
+  and bash then gives a new prompt, where the functions run again.
 - If a function never ends (an endless loop) at the first line of a shell, the
   next shell skips `init.el`, as it does for an `init.el` that never finishes
   (see the README). A function at the first line that waits for a key (in a
@@ -752,6 +752,12 @@ tulisp lacks these; inkline defines them so they behave as Emacs's do.
 
 ## Differences from Emacs
 
+- No `condition-case` catches `quit`, whatever condition it names (`error`,
+  `quit`, `t`, or anything else), and no `catch` does either. Only
+  `unwind-protect` runs during it, and its cleanups get one second to finish.
+  After that, a `C-c` stops them, and so does shell code that makes bash drop
+  the line. This is true even for the `C-c` or shell code that made the `quit`.
+  A jump back to readline's own top level, such as `C-g`, does not stop them.
 - `split-string` splits on plain text, not a regular expression; with no
   `SEPARATORS`, it splits on runs of whitespace, as Emacs does.
 - A name's global value and its function are one, unlike in Emacs: after
