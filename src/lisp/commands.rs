@@ -7,13 +7,11 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{c_int, c_void};
 use std::io::Write;
 
-use tulisp::{Error, ErrorKind, Form, Rest, TulispContext, TulispObject};
+use tulisp::{Error, Form, Rest, TulispContext, TulispObject};
 
 use super::buffer::{self, Buffer};
 use super::errors;
 use crate::ffi;
-
-use super::errors::QUIT;
 
 /// How many Lisp commands have a readline function of their own.
 pub const SLOT_COUNT: usize = 256;
@@ -335,9 +333,7 @@ pub(crate) enum Failure {
 
 /// What the Lisp error `e` means for the command or hook that raised it.
 pub(crate) fn failure_of(ctx: &TulispContext, e: &Error) -> Failure {
-    if let ErrorKind::Throw(thrown) = e.kind()
-        && thrown.car().is_ok_and(|tag| tag.to_string() == QUIT)
-    {
+    if errors::is_quit(e) {
         return Failure::Quit;
     }
     match errors::user_error_text(e, ctx) {
@@ -589,12 +585,6 @@ pub(crate) fn with_command_variables<R>(
     .map_err(|e| Failure::Error(errors::describe(&e, ctx, None)))?
 }
 
-/// The error `quit` raises: a throw to `QUIT`, which `condition-case`
-/// with `error` does not catch.
-fn quit_error(ctx: &mut TulispContext) -> Error {
-    Error::throw(ctx.intern(QUIT), TulispObject::nil())
-}
-
 /// `(call-interactively COMMAND)`: runs a readline, inkline or Lisp command
 /// with `current-prefix-arg` as its count. A Lisp command is called here,
 /// with the running interpreter; a readline command gets the key that ran
@@ -628,7 +618,7 @@ fn call_interactively(
             // to bash's top level, no more readline commands run.
             crate::hooks::take_interrupt_in_lisp();
             if crate::hooks::lisp_must_stop() {
-                return Err(quit_error(ctx));
+                return Err(errors::quit());
             }
             if IN_HOOK.get().is_some() && ffi::undo_command(f).is_some() {
                 return Err(Error::lisp_error(format!("{name} cannot run in a hook")));
@@ -649,7 +639,7 @@ fn call_interactively(
             // level, stops the Lisp command too.
             match result {
                 Ok(_) if !crate::hooks::lisp_must_stop() => Ok(TulispObject::nil()),
-                _ => Err(quit_error(ctx)),
+                _ => Err(errors::quit()),
             }
         }
     }
@@ -681,7 +671,7 @@ fn call_command(f: ffi::CommandFn, count: c_int, key: c_int) -> Result<c_int, ff
 /// before the question showed is not an answer, though macro text is.
 /// After a `C-c` or a jump to bash's top level, it quits without asking.
 /// It asks only in a command or in `inkline-accept-functions`.
-fn y_or_n_p(ctx: &mut TulispContext, prompt: &str) -> Result<TulispObject, Error> {
+fn y_or_n_p(prompt: &str) -> Result<TulispObject, Error> {
     buffer::refuse_when_read_only("y-or-n-p")?;
     // `UNDO_GROUP` is set while a Lisp step runs (`one_step`).
     if UNDO_GROUP.get().is_none()
@@ -697,13 +687,13 @@ fn y_or_n_p(ctx: &mut TulispContext, prompt: &str) -> Result<TulispObject, Error
     let question = format!("{prompt}(y or n) ");
     loop {
         if ffi::key_waiting() || crate::hooks::lisp_must_stop() {
-            return Err(quit_error(ctx));
+            return Err(errors::quit());
         }
         crate::hooks::show_message(&question);
         crate::hooks::show_message_now();
         // A jump readline or bash made while it waited quits too.
         let Ok(key) = call_command(ffi::read_key_command(), 1, 0) else {
-            return Err(quit_error(ctx));
+            return Err(errors::quit());
         };
         // Below 0: no key could be read.
         if key < 0
@@ -711,7 +701,7 @@ fn y_or_n_p(ctx: &mut TulispContext, prompt: &str) -> Result<TulispObject, Error
             || key == crate::hooks::CTRL_C
             || crate::hooks::lisp_must_stop()
         {
-            return Err(quit_error(ctx));
+            return Err(errors::quit());
         }
         match u8::try_from(key) {
             Ok(b'y' | b'Y') => return Ok(TulispObject::t()),
@@ -805,9 +795,7 @@ pub fn register(ctx: &mut TulispContext) {
         "call-interactively",
         |ctx: &mut TulispContext, command: TulispObject| call_interactively(ctx, &command),
     );
-    ctx.defun("y-or-n-p", |ctx: &mut TulispContext, prompt: String| {
-        y_or_n_p(ctx, &prompt)
-    });
+    ctx.defun("y-or-n-p", |prompt: String| y_or_n_p(&prompt));
     ctx.defun(
         "ding",
         |_arg: Option<TulispObject>| -> Result<TulispObject, Error> {

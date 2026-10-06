@@ -225,9 +225,9 @@ can find it too.
   runs shell code that fails in a way that makes bash drop the line (such as
   `shell-expand-line` on `${x:?}`, or `C-c` at a `read -e` in that shell
   code); once the command has stopped, bash then gives a new prompt as it
-  would have without Lisp. `quit` is a Lisp `throw`, and no `condition-case`
-  catches a `throw`, whatever condition it names (`error`, `t`, or anything
-  else) — only `unwind-protect` runs during it.
+  would have without Lisp. No `condition-case` catches `quit`, whatever
+  condition it names (`error`, `quit`, `t`, or anything else), and no
+  `catch` does either — only `unwind-protect` runs during it.
 - Up to 256 Lisp commands — named functions and lambdas together — get a
   readline function of their own, so readline's `bind` can tell them
   apart. A key bound past that limit shares one function,

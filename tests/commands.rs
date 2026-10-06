@@ -619,7 +619,7 @@ const INIT_ASK: &str = r#"
 (keymap-global-set "C-x w" (lambda () (insert "zz") (y-or-n-p "Q? ") (insert "after")))
 (keymap-global-set "C-x x"
   (lambda ()
-    (catch 'inkline--quit (y-or-n-p "Q? "))
+    (condition-case nil (y-or-n-p "Q? ") (t nil))
     (call-interactively 'reverse-search-history)
     (insert "after")))
 "#;
@@ -735,10 +735,10 @@ fn y_or_n_p_works_only_in_a_command() {
     });
 }
 
-/// A readline command run from Lisp that reads keys gets `C-c` too: the
-/// Lisp command stops, and bash gives a new prompt. Undo still works there,
-/// also after a command that changed the line before it asked. A command
-/// that catches the quit runs no readline command after it.
+/// A readline command run from Lisp that reads keys gets `C-c` too: the Lisp
+/// command stops, and bash gives a new prompt. Undo still works there, also
+/// after a command that changed the line before it asked. A command that asks
+/// inside a `condition-case` for `t` runs no readline command after it either.
 #[test]
 fn c_c_in_a_readline_command_run_from_lisp_gives_a_new_prompt() {
     for (key, reading) in [

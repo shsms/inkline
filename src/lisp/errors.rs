@@ -1,13 +1,21 @@
-//! The one line inkline shows for a Lisp error.
+//! The one line inkline shows for a Lisp error, and `quit`.
 
 use tulisp::{Error, ErrorKind, TulispContext};
 
-/// The `catch` tag `quit` throws to. A command that ends with it shows
-/// nothing.
-pub const QUIT: &str = "inkline--quit";
-
 /// The most characters of a form shown after an error.
 const FORM_WIDTH: usize = 60;
+
+/// The error `quit` raises. No `condition-case` or `catch` catches it, and only
+/// `unwind-protect` cleanups run as it passes. A command that ends with it
+/// shows nothing.
+pub fn quit() -> Error {
+    Error::interrupted("Quit")
+}
+
+/// Whether `err` is a `quit`.
+pub fn is_quit(err: &Error) -> bool {
+    matches!(err.kind(), ErrorKind::Interrupted)
+}
 
 /// The message of an error raised by `user-error`.
 pub fn user_error_text(err: &Error, ctx: &TulispContext) -> Option<String> {
@@ -18,14 +26,8 @@ pub fn user_error_text(err: &Error, ctx: &TulispContext) -> Option<String> {
 /// else `<text>`, with the innermost form added when the text does not name
 /// it.
 pub fn describe(err: &Error, ctx: &TulispContext, file: Option<&str>) -> String {
-    if let ErrorKind::Throw(thrown) = err.kind() {
-        let tag = thrown
-            .car()
-            .map_or_else(|_| thrown.to_string(), |t| t.to_string());
-        if tag == QUIT {
-            return "Quit".to_owned();
-        }
-        return format!("no catch for {tag}");
+    if is_quit(err) {
+        return err.desc().into_owned();
     }
     if let Some(text) = user_error_text(err, ctx) {
         return text;
@@ -173,14 +175,20 @@ mod tests {
         let mut ctx = TulispContext::new();
         let e = ctx.eval_string("(throw 'done 1)").unwrap_err();
         assert_eq!(describe(&e, &ctx, None), "No catch for tag: done, 1");
-        let e = Error::throw(ctx.intern("done"), 1.into());
-        assert_eq!(describe(&e, &ctx, None), "no catch for done");
     }
 
     #[test]
-    fn quit_reads_quit() {
+    fn quit_reads_quit_and_nothing_catches_it() {
         let mut ctx = TulispContext::new();
-        let e = Error::throw(ctx.intern(QUIT), TulispObject::nil());
-        assert_eq!(describe(&e, &ctx, None), "Quit");
+        ctx.defun("quit", || -> Result<TulispObject, Error> { Err(quit()) });
+        for program in [
+            "(quit)",
+            "(condition-case nil (quit) (t 'caught))",
+            "(catch 'x (quit))",
+        ] {
+            let e = ctx.eval_string(program).unwrap_err();
+            assert!(is_quit(&e), "{program}");
+            assert_eq!(describe(&e, &ctx, None), "Quit");
+        }
     }
 }
