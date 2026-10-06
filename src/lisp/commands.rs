@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{c_int, c_void};
 use std::io::Write;
 
-use tulisp::{Error, Form, Rest, TulispContext, TulispObject};
+use tulisp::{Error, Rest, TulispContext, TulispObject};
 
 use super::buffer::{self, Buffer};
 use super::errors;
@@ -790,7 +790,6 @@ impl Buffer for ReadlineBuffer {
 }
 
 pub fn register(ctx: &mut TulispContext) {
-    ctx.defspecial("interactive", |_args: Rest<Form>| TulispObject::nil());
     ctx.defun(
         "call-interactively",
         |ctx: &mut TulispContext, command: TulispObject| call_interactively(ctx, &command),
