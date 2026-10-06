@@ -715,9 +715,6 @@ tulisp lacks these; inkline defines them so they behave as Emacs's do.
 
 ### Lists and symbols
 
-- `(push NEWELT PLACE)` — a macro: sets the variable `PLACE` to a new list
-  with `NEWELT` added to the front. `PLACE` must be a plain variable, not a
-  general place such as a slot of a structure.
 - `(pop PLACE)` — a macro: removes and returns the first element of the
   list held in the variable `PLACE`.
 - `(add-to-list LIST-VAR ELEMENT &optional APPEND)` — adds `ELEMENT` to the
@@ -761,6 +758,8 @@ tulisp lacks these; inkline defines them so they behave as Emacs's do.
   `%d` and `%f`.
 - A name is either a function or a variable, not both:
   `(let ((list 5)) (list 1))` fails, unlike in Emacs.
+- `push`'s `PLACE` must be a plain variable, not a general place such as a slot
+  of a structure.
 - `add-hook` does not know Emacs's hook depths: any non-`nil` `AT-END`,
   even a negative number, adds the function at the end.
 - `string-to-number` with a `BASE` other than 10 reads no sign:

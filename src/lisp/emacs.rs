@@ -10,7 +10,6 @@ use super::values::{read_str, wrong_type};
 /// `append`), and `delq`'s list is `lst`. `(length ...)` before a walk down a
 /// list signals an error on a circular list, where the walk would never end.
 const PRELUDE: &str = r#"
-(defmacro push (newelt place) (list 'setq place (list 'cons newelt place)))
 (defmacro pop (place) (list 'prog1 (list 'car place) (list 'setq place (list 'cdr place))))
 (defmacro defconst (symbol value &optional _doc)
   (list 'progn (list 'defvar symbol) (list 'setq symbol value) (list 'quote symbol)))
