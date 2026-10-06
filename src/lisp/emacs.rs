@@ -181,20 +181,27 @@ pub fn register(ctx: &mut TulispContext) {
     });
     ctx.defun(
         "fboundp",
-        |ctx: &mut TulispContext, symbol: TulispObject| -> bool { symbol.functionp(ctx) },
+        |ctx: &mut TulispContext, symbol: TulispObject| fbound(ctx, &symbol),
     );
-    ctx.defun(
-        "symbol-name",
-        |symbol: TulispObject| -> Result<String, Error> {
-            if symbol.symbolp() {
-                Ok(symbol.to_string())
-            } else {
-                Err(Error::type_mismatch(format!("Expected a symbol: {symbol}")))
-            }
-        },
-    );
+    ctx.defun("symbol-name", |symbol: TulispObject| symbol.symbol_name());
     ctx.eval_prelude("<inkline>", PRELUDE)
         .expect("inkline's own Lisp compiles");
+}
+
+/// Whether `symbol` names a function, a macro or a special form. A symbol that
+/// `make-symbol` made is only asked whether its own value is a function.
+fn fbound(ctx: &mut TulispContext, symbol: &TulispObject) -> Result<bool, Error> {
+    Ok(match interned_name(ctx, symbol)? {
+        Some(name) => ctx.fboundp(&name),
+        None => symbol.functionp(ctx),
+    })
+}
+
+/// The name of `symbol`, when it is the symbol that name interns: tulisp looks
+/// functions up by name, and a symbol that `make-symbol` made is another one.
+fn interned_name(ctx: &mut TulispContext, symbol: &TulispObject) -> Result<Option<String>, Error> {
+    let name = symbol.symbol_name()?;
+    Ok(ctx.intern(&name).eq(symbol).then_some(name))
 }
 
 fn char_of(c: i64) -> Result<char, Error> {
@@ -356,10 +363,22 @@ mod tests {
         }
         assert_eq!(eval("(list (car-safe 5) (cdr-safe '(1 . 2)))"), "(nil 2)");
         assert_eq!(
-            eval("(list (fboundp 'car) (fboundp 'no-such-thing))"),
-            "(t nil)"
+            eval("(list (fboundp 'car) (fboundp 'no-such-thing) (fboundp 'when) (fboundp 'if))"),
+            "(t nil t t)"
         );
-        assert_eq!(eval("(symbol-name 'abc)"), r#""abc""#);
+        assert_eq!(
+            eval("(list (symbol-name 'abc) (symbol-name nil))"),
+            r#"("abc" "nil")"#
+        );
+        assert!(eval("(symbol-name 5)").starts_with("ERROR"));
+        assert_eq!(
+            eval(
+                r#"(let ((s (make-symbol "zz"))) (set s (lambda () 1))
+                     (list (fboundp (make-symbol "car")) (fboundp s) (fboundp 'zz)))"#
+            ),
+            "(nil t nil)",
+            "an uninterned symbol is asked about itself"
+        );
         assert_eq!(
             eval("(list (ignore 1 2) (identity 3) (zerop 0))"),
             "(nil 3 t)"

@@ -733,7 +733,8 @@ tulisp lacks these; inkline defines them so they behave as Emacs's do.
 - `(nreverse SEQ)` — `SEQ` reversed.
 - `(car-safe X)`, `(cdr-safe X)` — the `car`/`cdr` of `X`, or `nil` if `X`
   is not a cons.
-- `(fboundp SYMBOL)` — whether `SYMBOL` names a function.
+- `(fboundp SYMBOL)` — whether `SYMBOL` names a function, a macro or a special
+  form.
 - `(symbol-name SYMBOL)` — `SYMBOL`'s name, as a string.
 - `(ignore &rest ARGS)` — does nothing; returns `nil`.
 - `(identity X)` — returns `X`.
