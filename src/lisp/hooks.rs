@@ -489,7 +489,7 @@ fn ask(ctx: &mut TulispContext, line: &str, wins: impl Fn(&str) -> bool) -> Opti
     let mut answer = None;
     let mut stopped = false;
     for function in &hook_functions {
-        if crate::hooks::lisp_must_stop() || crate::ffi::interrupt_caught() {
+        if crate::hooks::lisp_should_stop() {
             stopped = true;
             break;
         }
@@ -510,7 +510,10 @@ fn ask(ctx: &mut TulispContext, line: &str, wins: impl Fn(&str) -> bool) -> Opti
                         function_name(function)
                     ));
                 }
-                Failure::Quit => break,
+                Failure::Quit => {
+                    stopped = crate::hooks::lisp_should_stop();
+                    break;
+                }
             },
         }
     }
@@ -642,9 +645,8 @@ fn ask_completions(ctx: &mut TulispContext, line: &str, point: usize) -> Option<
     let mut errors = Vec::new();
     let mut found = Vec::new();
     let mut stopped = false;
-    let mut quit = false;
     for function in &hook_functions {
-        if crate::hooks::lisp_must_stop() || crate::ffi::interrupt_caught() {
+        if crate::hooks::lisp_should_stop() {
             stopped = true;
             break;
         }
@@ -659,7 +661,8 @@ fn ask_completions(ctx: &mut TulispContext, line: &str, point: usize) -> Option<
             Err(e) => match super::commands::failure_of(ctx, &e) {
                 Failure::Error(text) | Failure::Refused(text) => Some(text),
                 Failure::Quit => {
-                    quit = true;
+                    found.clear();
+                    stopped = crate::hooks::lisp_should_stop();
                     break;
                 }
             },
@@ -675,13 +678,7 @@ fn ask_completions(ctx: &mut TulispContext, line: &str, point: usize) -> Option<
     if !errors.is_empty() {
         crate::hooks::show_message(&errors.join("; "));
     }
-    if stopped {
-        None
-    } else if quit {
-        Some(Vec::new())
-    } else {
-        Some(found)
-    }
+    (!stopped).then_some(found)
 }
 
 /// Runs the functions of the hook named `hook` on readline's line, in order,
@@ -715,10 +712,10 @@ fn run_hook(
                         .map(drop)
                         .map_err(|e| commands::failure_of(ctx, &e))
                 });
+                crate::hooks::take_interrupt_in_lisp();
                 if let Err(failure) = result {
                     on_failure(function, failure)?;
                 }
-                crate::hooks::take_interrupt_in_lisp();
                 if crate::hooks::lisp_must_stop() {
                     return Err(Failure::Quit);
                 }
