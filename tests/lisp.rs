@@ -386,6 +386,39 @@ fn a_group_writable_marker_directory_turns_markers_off() {
     });
 }
 
+/// `C-c` stops an `init.el` that never finishes, and the rest of `.bashrc` with
+/// it. Its marker goes, so the next shell reads `init.el` again.
+#[test]
+fn c_c_stops_a_looping_init_el() {
+    let home = tempfile::tempdir().unwrap();
+    let mut sh = Shell::spawn(Options {
+        home: Some(home.path().to_owned()),
+        init_el: Some("(while t)\n".to_owned()),
+        rc: "rc_done=yes\n".to_owned(),
+        ..Options::default()
+    });
+    let state = home.path().join(".local/state/inkline");
+    let loading = || {
+        std::fs::read_dir(&state)
+            .into_iter()
+            .flatten()
+            .any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with("loading.")))
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !loading() {
+        assert!(std::time::Instant::now() < deadline, "no marker");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    sh.send("\x03");
+    sh.wait_for("the quit", |s| {
+        (0..s.size().0).any(|r| row_text(s, r).ends_with("inkline: Quit"))
+    });
+    sh.settle();
+    sh.send("echo rc=${rc_done:-skipped}\r");
+    sh.wait_for("the rest of .bashrc skipped", |s| has_row(s, "rc=skipped"));
+    assert!(!loading(), "the marker goes");
+}
+
 #[test]
 fn a_looping_init_el_is_skipped_by_the_next_shell() {
     let home = tempfile::tempdir().unwrap();

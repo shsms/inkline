@@ -765,6 +765,39 @@ fn c_c_in_a_readline_command_run_from_lisp_gives_a_new_prompt() {
     }
 }
 
+/// `C-c` stops a Lisp command that never ends as a `quit`: its change is
+/// undone, and bash gives a new prompt.
+#[test]
+fn c_c_stops_a_lisp_command_that_never_ends() {
+    let mut sh = Shell::start(Options {
+        init_el: Some(format!(
+            r#"{INIT}(keymap-global-set "C-x w" (lambda () (insert "W") (while t)))"#
+        )),
+        ..Options::default()
+    });
+    sh.send("ab");
+    sh.wait_for("the typing", |s| cursor_row(s) == "$ ab");
+    sh.send("\x18w");
+    sh.settle();
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("cd\x18u");
+    let s = sh.wait_for("commands still run", |s| cursor_row(s) == "$ CD");
+    assert!(!has_row(&s, "$ abW"), "{}", dump(&s));
+}
+
+/// `C-c` stops `inkline eval` of Lisp that never ends.
+#[test]
+fn c_c_stops_inkline_eval_that_never_ends() {
+    let mut sh = shell();
+    sh.send("inkline eval '(while t)'\r");
+    sh.settle();
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("inkline eval '(+ 40 2)'\r");
+    sh.wait_for("Lisp runs again", |s| has_row(s, "42"));
+}
+
 #[test]
 fn y_or_n_p_asks_above_the_line_where_inkline_does_not_draw() {
     let mut sh = Shell::start(Options {

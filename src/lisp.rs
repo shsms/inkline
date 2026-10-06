@@ -68,6 +68,8 @@ pub fn start_for_shell() {
 fn new_context() -> TulispContext {
     let mut ctx = TulispContext::new();
     ctx.set_max_eval_depth(lockout::max_eval_depth(lockout::stack_limit()));
+    #[cfg(not(test))]
+    ctx.set_interrupt_check(crate::hooks::lisp_interrupt);
     emacs::register(&mut ctx);
     hooks::register(&mut ctx);
     buffer::register(&mut ctx);

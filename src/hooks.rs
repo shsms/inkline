@@ -677,6 +677,24 @@ pub fn lisp_must_stop() -> bool {
     INTERRUPTED_IN_LISP.get() || INTERRUPT_PASSED_ON.get() || SHELL_JUMP.get().is_some()
 }
 
+/// Whether running Lisp should stop now: it must (`lisp_must_stop`), or a `C-c`
+/// came that readline or bash has not acted on yet, such as one while Lisp
+/// computed, or while bash ran `inkline eval`, `inkline load` or `init.el`. The
+/// `C-c` stays where it is, for what runs once Lisp has stopped to hand on.
+pub fn lisp_should_stop() -> bool {
+    lisp_must_stop() || ffi::interrupt_caught() || ffi::interrupted()
+}
+
+/// tulisp's interrupt check, which it calls every so often while Lisp runs:
+/// Lisp stops as with `quit` when it should (`lisp_should_stop`).
+pub fn lisp_interrupt() -> tulisp::Interrupt {
+    if lisp_should_stop() {
+        crate::lisp::errors::stop()
+    } else {
+        tulisp::Interrupt::Continue
+    }
+}
+
 /// Puts inkline's key reader in place, and the one it replaces in
 /// `ORIGINALS`. Does nothing when inkline's reader is already in place, so
 /// its own reader never becomes the original, which it calls to read a

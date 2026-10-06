@@ -33,6 +33,23 @@ fn a_refused_line_stays_with_the_message() {
     sh.wait_for("the line ran", |s| has_row(s, "ok"));
 }
 
+/// `C-c` stops an accept function that never ends: the line does not run, and
+/// bash gives a new prompt.
+#[test]
+fn c_c_stops_an_accept_function_that_never_ends() {
+    let mut sh = shell(
+        r#"(add-hook 'inkline-accept-functions
+             (lambda () (when (string-search "lo''op" (buffer-string)) (while t))))"#,
+    );
+    sh.send("echo lo''op\r");
+    sh.settle();
+    sh.send("\x03");
+    sh.wait_for("a new prompt", |s| cursor_row(s) == "$");
+    sh.send("echo ok\r");
+    let s = sh.wait_for("the next line ran", |s| has_row(s, "ok"));
+    assert!(!has_row(&s, "loop"), "{}", dump(&s));
+}
+
 #[test]
 fn a_failing_accept_function_is_printed_above_the_output_and_undone() {
     let mut sh = shell(

@@ -5,11 +5,19 @@ use tulisp::{Error, ErrorKind, TulispContext};
 /// The most characters of a form shown after an error.
 const FORM_WIDTH: usize = 60;
 
+/// The text of `quit`'s error.
+const QUIT: &str = "Quit";
+
 /// The error `quit` raises. No `condition-case` or `catch` catches it, and only
 /// `unwind-protect` cleanups run as it passes. A command that ends with it
 /// shows nothing.
 pub fn quit() -> Error {
-    Error::interrupted("Quit")
+    Error::interrupted(QUIT)
+}
+
+/// What tulisp's interrupt check returns to stop running Lisp with `quit`.
+pub fn stop() -> tulisp::Interrupt {
+    tulisp::Interrupt::Stop(QUIT.to_owned())
 }
 
 /// Whether `err` is a `quit`.
