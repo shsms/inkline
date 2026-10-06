@@ -38,8 +38,7 @@ pub fn format_args(
     args: impl IntoIterator<Item = TulispObject>,
 ) -> Result<String, Error> {
     let format = ctx.intern("format");
-    ctx.apply(&format, args.into_iter().collect::<Vec<_>>())?
-        .as_string()
+    String::try_from(ctx.apply(&format, args.into_iter().collect::<Vec<_>>())?)
 }
 
 /// The message of an error raised by `user-error`.
@@ -75,10 +74,11 @@ pub fn describe(err: &Error, ctx: &TulispContext, file: Option<&str>) -> String 
             | ErrorKind::MissingArgument
             | ErrorKind::ArithError
     );
-    line_from(&err.desc(), &err.format(ctx), file, names_no_form)
+    let trace = err.clone().with_file_names(ctx).to_string();
+    line_from(&err.desc(), &trace, file, names_no_form)
 }
 
-/// One trace line of `Error::format`: `PATH:L.C-L.C:  at FORM`.
+/// One trace line of a printed `Error`: `PATH:L.C-L.C:  at FORM`.
 struct TraceLine<'a> {
     path: &'a str,
     line: &'a str,
@@ -204,15 +204,15 @@ mod tests {
     fn an_uncaught_throw_names_its_tag() {
         let mut ctx = TulispContext::new();
         let e = ctx.eval_string("(throw 'done 1)").unwrap_err();
+        assert_eq!(describe(&e, &ctx, None), "No catch for tag: done, 1");
+        let e = Error::throw(ctx.intern("done"), 1.into());
         assert_eq!(describe(&e, &ctx, None), "no catch for done");
     }
 
     #[test]
     fn quit_reads_quit() {
         let mut ctx = TulispContext::new();
-        let e = ctx
-            .eval_string(&format!("(throw '{QUIT} nil)"))
-            .unwrap_err();
+        let e = Error::throw(ctx.intern(QUIT), TulispObject::nil());
         assert_eq!(describe(&e, &ctx, None), "Quit");
     }
 }

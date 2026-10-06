@@ -9,6 +9,7 @@ use super::buffer::refuse_when_read_only;
 use super::commands::{self, Command, LispCommand};
 use super::keydesc;
 use super::layout::{self, Group};
+use super::values::read_str;
 use crate::ffi;
 
 /// The Lisp command a sequence runs.
@@ -437,8 +438,8 @@ pub fn register(ctx: &mut TulispContext) {
         "inkline-set-readline-variable",
         |name: String, value: TulispObject| -> Result<TulispObject, Error> {
             refuse_when_read_only("inkline-set-readline-variable")?;
-            let text = if value.stringp() {
-                value.as_string()?
+            let text = if let Some(text) = read_str(&value) {
+                text
             } else if value.null() {
                 "off".into()
             } else if value.symbolp() && value.to_string() == "t" {

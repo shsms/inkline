@@ -7,6 +7,8 @@ use std::cell::{Cell, RefCell};
 use tulisp::{Error, Rest, TulispContext, TulispObject};
 use unicode_width::UnicodeWidthChar;
 
+use super::values::read_str;
+
 /// A line being edited. Positions `point`, `mark`, `start` and `end` are
 /// byte offsets into `text()`.
 pub trait Buffer {
@@ -470,8 +472,8 @@ fn range(a: &TulispObject, b: &TulispObject) -> Result<(usize, usize, bool), Err
 fn insert_text(args: Rest<TulispObject>) -> Result<String, Error> {
     let mut out = String::new();
     for arg in args {
-        if arg.stringp() {
-            out.push_str(&arg.as_string()?);
+        if let Some(text) = read_str(&arg) {
+            out.push_str(&text);
         } else {
             let code = i64::try_from(&arg)?;
             let c = u32::try_from(code)

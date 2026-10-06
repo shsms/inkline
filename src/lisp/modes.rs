@@ -6,7 +6,7 @@ use tulisp::{Error, TulispContext, TulispObject};
 
 use super::buffer::refuse_when_read_only;
 use super::settings::parse_color_set;
-use super::values::{describe, items};
+use super::values::{describe, items, read_str};
 
 const NAME: &str = "inkline-define-mode";
 
@@ -55,10 +55,9 @@ fn program_words(program: &TulispObject) -> Result<Vec<String>, Error> {
     let words = elements
         .by_ref()
         .map(|item| {
-            if !item.stringp() {
+            let Some(word) = read_str(&item) else {
                 return Err(wrong_type("stringp", &item));
-            }
-            let word = item.as_string()?;
+            };
             if word.is_empty() {
                 return Err(wrong_type("a non-empty string", &item));
             }

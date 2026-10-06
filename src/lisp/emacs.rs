@@ -2,6 +2,8 @@
 
 use tulisp::{Error, Rest, TulispContext, TulispObject};
 
+use super::values::read_str;
+
 /// The ones easiest to write in Lisp. tulisp calls the innermost binding of
 /// an operator's name, so no parameter may share a name with a function the
 /// body calls: `add-to-list`'s third parameter is `at-end` (the body calls
@@ -207,10 +209,10 @@ fn change_case(
     one: fn(char) -> char,
     all: fn(&str) -> String,
 ) -> Result<TulispObject, Error> {
-    if x.stringp() {
-        Ok(all(&x.as_string()?).into())
+    if let Some(text) = read_str(x) {
+        Ok(all(&text).into())
     } else {
-        Ok((one(char_of(x.as_int()?)?) as i64).into())
+        Ok((one(char_of(i64::try_from(x)?)?) as i64).into())
     }
 }
 

@@ -495,8 +495,7 @@ fn ask(ctx: &mut TulispContext, line: &str, wins: impl Fn(&str) -> bool) -> Opti
         }
         match ctx.funcall(function, (line.to_owned(),)) {
             Ok(value) => {
-                if value.stringp()
-                    && let Ok(text) = value.as_string()
+                if let Some(text) = super::values::read_str(&value)
                     && wins(&text)
                 {
                     answer = Some(text);

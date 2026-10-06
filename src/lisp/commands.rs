@@ -571,33 +571,13 @@ pub(crate) fn with_command_variables<R>(
     last: Option<&str>,
     f: impl FnOnce(&mut TulispContext) -> Result<R, Failure>,
 ) -> Result<R, Failure> {
-    let mut symbol = |name: Option<&str>| name.map_or_else(TulispObject::nil, |n| ctx.intern(n));
-    let values = [
-        (
-            "current-prefix-arg",
-            prefix.map_or_else(TulispObject::nil, |n| TulispObject::from(i64::from(n))),
-        ),
-        ("this-command", symbol(this)),
-        ("last-command", symbol(last)),
-    ];
-    /// Takes the variables' bindings off again on every path.
-    struct Unbind(Vec<TulispObject>);
-    impl Drop for Unbind {
-        fn drop(&mut self) {
-            for variable in &self.0 {
-                let _ = variable.unset();
-            }
-        }
-    }
-    let mut unbind = Unbind(Vec::new());
-    for (variable, value) in values {
-        let variable = ctx.intern(variable);
-        variable
-            .set_scope(value)
-            .map_err(|e| Failure::Error(errors::describe(&e, ctx, None)))?;
-        unbind.0.push(variable);
-    }
-    f(ctx)
+    let (this, last) = (this.map(|n| ctx.intern(n)), last.map(|n| ctx.intern(n)));
+    ctx.with_binding("current-prefix-arg", prefix.map(i64::from), |ctx| {
+        ctx.with_binding("this-command", this, |ctx| {
+            ctx.with_binding("last-command", last, |ctx| Ok(f(ctx)))
+        })
+    })
+    .map_err(|e| Failure::Error(errors::describe(&e, ctx, None)))?
 }
 
 /// The error `quit` raises: a throw to `QUIT`, which `condition-case`

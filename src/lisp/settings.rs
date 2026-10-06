@@ -213,8 +213,8 @@ pub fn parse_colors(v: &TulispObject) -> Result<Colors, String> {
 /// forms `inkline-colors` takes. Unlike `inkline-colors`, a string with an
 /// entry that cannot be read is an error.
 pub fn parse_color_set(v: &TulispObject) -> Result<ColorSet, String> {
-    if v.stringp() {
-        return ColorSet::parse(&v.as_string().map_err(|e| e.desc())?);
+    if let Some(text) = read_str(v) {
+        return ColorSet::parse(&text);
     }
     if !v.consp() {
         return Err(BAD_COLORS.to_owned());
@@ -341,9 +341,15 @@ fn read<T>(
     }
 }
 
-/// `equal`, except that it gives up and says yes after 4096 conses or 32
-/// levels of nesting, or on two atoms that are not symbols, strings or
-/// numbers, so a circular value cannot make it recurse forever.
+/// The most conses `looks_equal` compares and `snapshot` copies.
+const MOST_CONSES: usize = 4096;
+
+/// The deepest `looks_equal` compares and `snapshot` copies lists inside lists.
+const MOST_DEPTH: usize = 32;
+
+/// `equal`, except that it gives up and says yes after `MOST_CONSES` conses or
+/// `MOST_DEPTH` levels of nesting, or on two atoms that are not symbols,
+/// strings or numbers, so a circular value cannot make it recurse forever.
 fn looks_equal(a: &TulispObject, b: &TulispObject) -> bool {
     fn walk(a: &TulispObject, b: &TulispObject, depth: usize, budget: &mut usize) -> bool {
         let (mut a, mut b) = (a.clone(), b.clone());
@@ -369,7 +375,29 @@ fn looks_equal(a: &TulispObject, b: &TulispObject) -> bool {
             (a, b) = (a_cdr, b_cdr);
         }
     }
-    walk(a, b, 32, &mut 4096)
+    walk(a, b, MOST_DEPTH, &mut { MOST_CONSES })
+}
+
+/// A copy of `value`'s conses, so that a later change to the value in place
+/// does not change what was reported. Copies only as far as `looks_equal`
+/// compares, and shares the rest.
+fn snapshot(value: &TulispObject) -> TulispObject {
+    fn copy(value: &TulispObject, depth: usize, budget: &mut usize) -> TulispObject {
+        let mut cars = Vec::new();
+        let mut rest = value.clone();
+        while rest.consp() && depth > 0 && *budget > 0 {
+            let (Ok(car), Ok(cdr)) = (rest.car(), rest.cdr()) else {
+                break;
+            };
+            *budget -= 1;
+            cars.push(copy(&car, depth - 1, budget));
+            rest = cdr;
+        }
+        cars.into_iter()
+            .rev()
+            .fold(rest, |tail, car| TulispObject::cons(car, tail))
+    }
+    copy(value, MOST_DEPTH, &mut { MOST_CONSES })
 }
 
 fn note(name: &'static str, value: &TulispObject, why: String) {
@@ -379,8 +407,7 @@ fn note(name: &'static str, value: &TulispObject, why: String) {
             .iter()
             .any(|(n, v)| *n == name && looks_equal(v, value))
         {
-            c.reported
-                .push((name, value.deep_copy().unwrap_or_else(|_| value.clone())));
+            c.reported.push((name, snapshot(value)));
             c.pending.push(format!("{name}: {why}"));
         }
     });
@@ -1003,6 +1030,17 @@ mod tests {
             ]
         );
         assert!(problems().is_empty(), "reported once");
+    }
+
+    #[test]
+    fn a_bad_value_changed_in_place_to_another_is_reported_again() {
+        crate::lisp::start();
+        crate::lisp::eval(r#"(setq inkline-command-mode-alist (list (cons "c" "m")))"#).unwrap();
+        assert!(command_modes().is_empty());
+        assert_eq!(problems().len(), 1);
+        crate::lisp::eval(r#"(setcdr (car inkline-command-mode-alist) "n")"#).unwrap();
+        assert!(command_modes().is_empty());
+        assert_eq!(problems().len(), 1, "the changed value is reported");
     }
 
     #[test]

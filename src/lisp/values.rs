@@ -8,7 +8,7 @@ use tulisp::TulispObject;
 /// A string's content. `None` for anything else.
 pub fn read_str(v: &TulispObject) -> Option<String> {
     if v.stringp() {
-        v.as_string().ok()
+        String::try_from(v).ok()
     } else {
         None
     }
@@ -16,7 +16,11 @@ pub fn read_str(v: &TulispObject) -> Option<String> {
 
 /// An integer's value. `None` for anything else.
 pub fn read_int(v: &TulispObject) -> Option<i64> {
-    if v.integerp() { v.as_int().ok() } else { None }
+    if v.integerp() {
+        i64::try_from(v).ok()
+    } else {
+        None
+    }
 }
 
 /// The elements of the list `list`, in order. See `Items`.
