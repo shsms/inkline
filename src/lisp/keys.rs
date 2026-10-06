@@ -442,7 +442,7 @@ pub fn register(ctx: &mut TulispContext) {
                 text
             } else if value.null() {
                 "off".into()
-            } else if value.symbolp() && value.to_string() == "t" {
+            } else if value.eq(&TulispObject::t()) {
                 "on".into()
             } else {
                 value.to_string()
